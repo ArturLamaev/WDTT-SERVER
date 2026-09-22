@@ -20,7 +20,7 @@ Install options:
   --user NAME         Panel administrator login (default: admin)
   --password VALUE    Panel administrator password (12+ characters)
   --email ADDRESS     Email for Let's Encrypt notifications
-  --https-port PORT   Public HTTPS port (default: 8443)
+  --https-port PORT   Public HTTPS port (default: 9999)
   --path VALUE        Secret URL path (empty = generate)
   --wdtt MODE         WDTT mode: auto or no
   --wdtt-password PWD Main WDTT password for a clean server
@@ -218,7 +218,7 @@ EOF
     PANEL_EMAIL="$(prompt_value "Email для Let's Encrypt, необязательно")"
   fi
   PANEL_USER="${PANEL_USER:-$(prompt_value 'Логин администратора' 'admin')}"
-  PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-$(prompt_value 'HTTPS-порт панели' '8443')}"
+  PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-$(prompt_value 'HTTPS-порт панели' '9999')}"
   if [ -z "${PANEL_PATH:-}" ]; then
     PANEL_PATH="$(prompt_value 'Секретный URL-путь (16-80 символов), Enter = сгенерировать')"
   fi
@@ -312,7 +312,7 @@ run_action() {
   export PANEL_USER="${PANEL_USER:-admin}"
   export PANEL_PASSWORD="${PANEL_PASSWORD:-}"
   export PANEL_EMAIL="${PANEL_EMAIL:-}"
-  export PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-8443}"
+  export PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-9999}"
   export PANEL_PATH="${PANEL_PATH:-}"
   export INSTALL_WDTT="${INSTALL_WDTT:-auto}"
   export WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"

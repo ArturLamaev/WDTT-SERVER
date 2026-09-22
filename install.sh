@@ -23,7 +23,7 @@
 # Использование:
 #   sudo ./install.sh [--non-interactive] [--domain panel.example.com] [--ip A.B.C.D]
 #                     [--user admin] [--password '...'] [--email '...']
-#                     [--https-port 8443] [--path /secret] [--wdtt-password '...']
+#                     [--https-port 9999] [--path /secret] [--wdtt-password '...']
 #                     [--telegram-token '123:...' --telegram-admin-id 123456]
 #   sudo ./install.sh status | update | renew-cert | change-password | clean-system | uninstall
 # =============================================================================

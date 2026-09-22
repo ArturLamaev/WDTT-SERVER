@@ -37,7 +37,7 @@ PANEL_USER="${PANEL_USER:-admin}"
 PANEL_PASSWORD="${PANEL_PASSWORD:-}"
 PANEL_PATH="${PANEL_PATH:-}"
 PANEL_HOST="${PANEL_HOST:-}"
-PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-8443}"
+PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-9999}"
 PANEL_LISTEN_PORT="${PANEL_LISTEN_PORT:-8787}"
 PANEL_EMAIL="${PANEL_EMAIL:-}"
 INSTALL_WDTT="${INSTALL_WDTT:-auto}"
@@ -197,7 +197,7 @@ for key, default in (
     ("username", "admin"),
     ("base_path", "/"),
     ("public_host", ""),
-    ("https_port", 8443),
+    ("https_port", 9999),
     ("listen_port", 8787),
     ("certificate_path", ""),
     ("tls_mode", "self-signed"),

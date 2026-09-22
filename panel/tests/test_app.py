@@ -25,7 +25,7 @@ class AppSmokeTests(unittest.TestCase):
                     "session_secret": "test-session-secret",
                     "base_path": "/private-panel-path/",
                     "public_host": "panel.example.com",
-                    "https_port": 8443,
+                    "https_port": 9999,
                     "listen_host": "127.0.0.1",
                     "listen_port": 8787,
                     "certificate_path": "",

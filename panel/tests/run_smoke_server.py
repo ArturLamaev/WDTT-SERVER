@@ -21,7 +21,7 @@ config.write_text(
             "session_secret": "browser-smoke-session-secret",
             "base_path": "/private-panel-path/",
             "public_host": "panel.example.com",
-            "https_port": 8443,
+            "https_port": 9999,
             "listen_host": "127.0.0.1",
             "listen_port": 8877,
             "certificate_path": "",
