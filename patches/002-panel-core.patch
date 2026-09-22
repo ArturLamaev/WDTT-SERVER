@@ -1,0 +1,14 @@
+diff --git "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\wdtt-control-panel\\wdtt_panel\\core.py" "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\panel\\wdtt_panel\\core.py"
+index 6d5454e..2ff2f2e 100644
+--- "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\wdtt-control-panel\\wdtt_panel\\core.py"
++++ "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\panel\\wdtt_panel\\core.py"
+@@ -10,7 +10,8 @@ from datetime import datetime, timezone
+ from typing import Any
+ 
+ 
+-MAX_USERS = 10
++MAX_USERS = 10000  # WDTT-SERVER: ╨╗╨╕╨╝╨╕╤В ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╡╨╣/╨║╨╗╤О╤З╨╡╨╣ ╨┐╨╛╨┤╨╜╤П╤В ╤Б 10 ╨┤╨╛ 10000
++DEFAULT_MAX_DEVICES = 10000  # WDTT-SERVER: ╨╗╨╕╨╝╨╕╤В ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓ ╨╜╨░ ╨╜╨╛╨▓╤Л╨╣ ╨║╨╗╤О╤З (0 = ╨▒╨╡╨╖ ╨╛╨│╤А╨░╨╜╨╕╤З╨╡╨╜╨╕╤П)
+ PASSWORD_RE = re.compile(r"^[A-Za-z0-9._~-]{8,64}$")
+ HASH_RE = re.compile(r"^[A-Za-z0-9_-]{3,256}$")
+ MAX_USER_LABEL_LENGTH = 64

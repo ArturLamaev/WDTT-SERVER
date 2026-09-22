@@ -1,0 +1,1676 @@
+(() => {
+  "use strict";
+
+  const meta = (name) => document.querySelector(`meta[name="${name}"]`).content;
+  const BASE = meta("base-path");
+  const CSRF = meta("csrf-token");
+  const PUBLIC_HOST = meta("public-host");
+  const PANEL_VERSION = meta("panel-version");
+  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
+
+  const $ = (selector) => document.querySelector(selector);
+  const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+  function renderSidebarState() {
+    const collapsed = document.body.classList.contains("sidebar-collapsed");
+    $("#sidebar-toggle-icon").textContent = collapsed ? "›" : "‹";
+    $("#sidebar-toggle").setAttribute("aria-label", collapsed ? "Развернуть боковое меню" : "Свернуть боковое меню");
+    $("#sidebar-toggle").setAttribute("title", collapsed ? "Развернуть боковое меню" : "Свернуть боковое меню");
+    $("#sidebar-toggle").setAttribute("aria-expanded", String(!collapsed));
+  }
+
+  function restoreSidebarState() {
+    try { document.body.classList.toggle("sidebar-collapsed", localStorage.getItem("wdtt-sidebar-collapsed") === "1"); }
+    catch (_) { /* Browser storage can be disabled. */ }
+    renderSidebarState();
+  }
+
+  function renderTheme() {
+    const light = document.body.classList.contains("light-theme");
+    $("#theme-toggle-label").textContent = light ? "Тёмная тема" : "Светлая тема";
+    $("#theme-toggle").setAttribute("aria-pressed", String(light));
+  }
+
+  function restoreTheme() {
+    try { document.body.classList.toggle("light-theme", localStorage.getItem("wdtt-theme") === "light"); }
+    catch (_) { /* Browser storage can be disabled. */ }
+    renderTheme();
+  }
+
+  function activateTab(tabName, persist = true) {
+    const button = $$(".nav-item").find((item) => item.dataset.tab === tabName) || $(".nav-item");
+    const name = button.dataset.tab;
+    $$(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
+    $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.id === `tab-${name}`));
+    $("#page-title").textContent = button.textContent;
+    if (persist) {
+      try { localStorage.setItem("wdtt-active-tab", name); }
+      catch (_) { /* Browser storage can be disabled. */ }
+    }
+    if (name === "logs") loadLogs();
+    if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); loadTelegramSettings(); }
+  }
+
+  function restoreActiveTab() {
+    let tabName = "overview";
+    try { tabName = localStorage.getItem("wdtt-active-tab") || tabName; }
+    catch (_) { /* Browser storage can be disabled. */ }
+    activateTab(tabName, false);
+  }
+
+  function setUserAutoRefresh(persist = true) {
+    const select = $("#user-auto-refresh-interval");
+    const seconds = Number(select.value) || 0;
+    if (state.userRefreshTimer) clearInterval(state.userRefreshTimer);
+    state.userRefreshTimer = null;
+    $("#user-auto-refresh-status").textContent = seconds ? `Каждые ${seconds} сек.` : "Выключено";
+    if (seconds) state.userRefreshTimer = setInterval(() => loadUsers().catch(() => {}), seconds * 1000);
+    if (persist) {
+      try { localStorage.setItem("wdtt-user-auto-refresh", String(seconds)); }
+      catch (_) { /* Browser storage can be disabled. */ }
+    }
+  }
+
+  function restoreUserAutoRefresh() {
+    const select = $("#user-auto-refresh-interval");
+    try {
+      const saved = Number(localStorage.getItem("wdtt-user-auto-refresh"));
+      if ([0, 5, 10, 30, 60].includes(saved)) select.value = String(saved);
+    } catch (_) { /* Browser storage can be disabled. */ }
+    setUserAutoRefresh(false);
+  }
+  const formatBytes = (bytes) => {
+    const value = Number(bytes || 0);
+    if (value < 1024) return `${value} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let size = value;
+    let unit = -1;
+    do { size /= 1024; unit += 1; } while (size >= 1024 && unit < units.length - 1);
+    return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unit]}`;
+  };
+  const formatDate = (stamp) => stamp ? new Date(stamp * 1000).toLocaleString("ru-RU") : "Бессрочно";
+  const formatActivityDate = (stamp) => stamp ? new Date(stamp * 1000).toLocaleString("ru-RU") : "ещё не было";
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
+
+  function dateInputValue(date) {
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 10);
+  }
+
+  function addCalendarMonths(date, months) {
+    const result = new Date(date);
+    const day = result.getDate();
+    result.setDate(1);
+    result.setMonth(result.getMonth() + months);
+    result.setDate(Math.min(day, new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate()));
+    return result;
+  }
+
+  function setExpiryPreset(prefix, months, base = null) {
+    const input = $(`#${prefix}-expires`);
+    const start = base || (input.dataset.baseStamp ? new Date(Number(input.dataset.baseStamp) * 1000) : new Date());
+    input.value = dateInputValue(addCalendarMonths(start, months));
+    input.dataset.months = String(months);
+    $$(`[data-expiry-preset^="${prefix}:"]`).forEach((button) => button.classList.toggle("active", button.dataset.expiryPreset === `${prefix}:${months}`));
+    const traffic = $(`#${prefix}-traffic`) || $(`#${prefix}-primary`);
+    if (traffic) traffic.value = String(35 * months);
+  }
+
+  function expirationPayload(prefix) {
+    const input = $(`#${prefix}-expires`);
+    if (input.dataset.months) return { months: Number(input.dataset.months) };
+    const stamp = Math.floor(new Date(`${input.value}T23:59:59`).getTime() / 1000);
+    return { expires_at: stamp };
+  }
+
+  function clearExpiryPreset(prefix) {
+    const input = $(`#${prefix}-expires`);
+    input.dataset.months = "";
+    $$(`[data-expiry-preset^="${prefix}:"]`).forEach((button) => button.classList.remove("active"));
+  }
+
+  async function api(route, options = {}) {
+    const init = { method: options.method || "GET", headers: { "Accept": "application/json" } };
+    if (init.method === "POST") {
+      init.headers["Content-Type"] = "application/json";
+      init.headers["X-CSRF-Token"] = CSRF;
+      init.body = JSON.stringify(options.body || {});
+    }
+    const response = await fetch(`${BASE}api/${route}`, init);
+    const data = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    if (!response.ok || data.ok === false) throw new Error(data.error || "Ошибка запроса");
+    return data.result ?? data;
+  }
+
+  function toast(message, error = false) {
+    const node = $("#toast");
+    node.textContent = message;
+    node.classList.toggle("error", error);
+    node.hidden = false;
+    clearTimeout(node.timer);
+    node.timer = setTimeout(() => { node.hidden = true; }, 4200);
+  }
+
+  function setBusy(button, busy) {
+    if (!button) return;
+    button.disabled = busy;
+    if (busy) button.dataset.label = button.textContent;
+    button.textContent = busy ? "Выполнение..." : (button.dataset.label || button.textContent);
+  }
+
+  function renderVkHashLibrary() {
+    const hashes = state.vkHashes;
+    $("#vk-hashes-list").innerHTML = hashes.length ? hashes.map((hash) => `<div class="hash-library-row"><code>${escapeHtml(hash)}</code><button type="button" class="danger" data-delete-vk-hash="${escapeHtml(hash)}">Удалить</button></div>`).join("") : '<p class="muted">Библиотека пока пуста.</p>';
+  }
+
+  function renderVkHashPickers() {
+    const options = state.vkHashes.map((hash) => `<option value="${escapeHtml(hash)}">${escapeHtml(hash)}</option>`).join("");
+    ["#edit-saved-hash", "#bulk-saved-hash"].forEach((selector) => {
+      const select = $(selector);
+      select.innerHTML = `<option value="">Выберите хеш из библиотеки</option>${options}`;
+    });
+  }
+
+  async function loadVkHashes() {
+    const result = await api("vk-hashes");
+    state.vkHashes = result.hashes || [];
+    renderVkHashPickers();
+    renderVkHashLibrary();
+  }
+
+  function appendSavedHash(selectId, inputId) {
+    const select = $(selectId);
+    const hash = select.value;
+    select.value = "";
+    if (!hash) return;
+    const input = $(inputId);
+    const hashes = input.value.trim() ? input.value.trim().split(/[,\s]+/).filter(Boolean) : [];
+    if (hashes.includes(hash)) return;
+    if (hashes.length >= 4) { toast("WDTT поддерживает не более четырех VK-хешей", true); return; }
+    input.value = [...hashes, hash].join(",");
+  }
+
+  async function saveVkHashes(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#vk-hashes-dialog").close(); return; }
+    const input = $("#new-vk-hashes");
+    if (!input.value.trim()) { toast("Укажите хотя бы один VK-хеш", true); return; }
+    const button = $("#save-vk-hashes");
+    setBusy(button, true);
+    try {
+      await api("vk-hashes", { method: "POST", body: { hashes: input.value } });
+      input.value = "";
+      await loadVkHashes();
+      toast("Библиотека VK-хешей обновлена");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function deleteVkHash(hash) {
+    try {
+      await api("vk-hashes/delete", { method: "POST", body: { hash } });
+      await loadVkHashes();
+      toast("Хеш удалён из библиотеки");
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function exportVkHashes() {
+    try {
+      const result = await api("vk-hashes/export");
+      downloadText(result.name, result.content);
+      toast(`Экспортировано VK-хешей: ${result.count || 0}`);
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function importVkHashes(file) {
+    if (!file) return;
+    try {
+      const result = await api("vk-hashes/import", { method: "POST", body: { name: file.name, content: await file.text() } });
+      state.vkHashes = result.hashes || [];
+      renderVkHashPickers();
+      renderVkHashLibrary();
+      toast(`Импортировано новых VK-хешей: ${result.imported || 0}`);
+    } catch (error) { toast(error.message, true); }
+    finally { $("#vk-hashes-upload").value = ""; }
+  }
+
+  function renderTelegramSettings() {
+    const settings = state.telegram || {};
+    const enabled = Boolean(settings.enabled);
+    $("#telegram-enabled").checked = enabled;
+    $("#telegram-admin-id").value = settings.admin_id || "";
+    $("#telegram-bot-token").value = "";
+    $("#telegram-bot-token").placeholder = settings.bot_token_set ? `Сохранён: ${settings.bot_token_hint}` : "123456:ABC...";
+    $("#telegram-status").className = `badge ${enabled ? "ok" : "warn"}`;
+    $("#telegram-status").textContent = enabled ? "включён" : "выключен";
+    $("#telegram-info").textContent = enabled
+      ? `Бот привязан к Admin ID ${settings.admin_id}. Пустой token при сохранении оставит текущий ключ.`
+      : "Бот выключен. Для включения укажите Bot Token и Admin ID.";
+  }
+
+  async function loadTelegramSettings() {
+    try {
+      state.telegram = await api("telegram");
+      renderTelegramSettings();
+    } catch (error) {
+      $("#telegram-info").textContent = error.message;
+      $("#telegram-status").className = "badge bad";
+      $("#telegram-status").textContent = "ошибка";
+    }
+  }
+
+  async function saveTelegramSettings() {
+    const button = $("#save-telegram");
+    setBusy(button, true);
+    try {
+      state.telegram = await api("telegram/save", { method: "POST", body: {
+        enabled: $("#telegram-enabled").checked,
+        admin_id: $("#telegram-admin-id").value.trim(),
+        bot_token: $("#telegram-bot-token").value.trim(),
+      }});
+      renderTelegramSettings();
+      toast("Настройки Telegram сохранены");
+      await loadOverview();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function testTelegramSettings() {
+    const button = $("#test-telegram");
+    setBusy(button, true);
+    try {
+      await api("telegram/test", { method: "POST", body: { message: `WDTT Control Panel ${PANEL_VERSION}: тест Telegram` } });
+      toast("Тестовое сообщение отправлено в Telegram");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function healthRow(label, ok, value) {
+    return `<div class="health-item"><span><i class="status-dot ${ok ? "ok" : "bad"}"></i>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+  }
+
+  async function loadOverview() {
+    const overview = await api("overview");
+    state.overview = overview;
+    const service = overview.service || {};
+    const stats = overview.stats || {};
+    const active = Boolean(service.active);
+    $("#service-label").textContent = active ? "Сервис работает" : "Сервис остановлен";
+    $("#service-detail").textContent = active ? `NAT: ${stats.nat || "определяется"} · uptime ${stats.uptime || "0м"}` : "Активные туннели недоступны";
+    $("#service-dot").className = `status-dot large ${active ? "ok" : "bad"}`;
+    $("#sidebar-dot").className = `status-dot ${active ? "ok" : "bad"}`;
+    $("#sidebar-status").textContent = active ? "WDTT активен" : "WDTT остановлен";
+    $("#active-conns").textContent = stats.active ?? 0;
+    $("#total-conns").textContent = `${stats.total ?? 0} всего`;
+    $("#user-count").textContent = overview.users ?? 0;
+    $("#device-count").textContent = `${overview.devices ?? 0} устройств · онлайн: ${overview.online_devices ?? 0}`;
+    const up = Number(stats.up_gb || 0), down = Number(stats.down_gb || 0);
+    $("#traffic-total").textContent = `${(up + down).toFixed(2)} GB`;
+    $("#traffic-split").textContent = `↑${up.toFixed(2)} / ↓${down.toFixed(2)}`;
+    const system = overview.system || {}, memory = system.memory || {}, disk = overview.disk || {};
+    $("#cpu-load").textContent = `${Number(system.cpu_percent || 0).toFixed(1)}%`;
+    $("#system-load").textContent = `load ${Number((system.load_average || [0])[0]).toFixed(2)}`;
+    $("#memory-load").textContent = `${Number(memory.percent || 0).toFixed(1)}%`;
+    $("#memory-detail").textContent = `${formatBytes(memory.used)} / ${formatBytes(memory.total)}`;
+    $("#disk-load").textContent = `${Number(disk.percent || 0).toFixed(1)}%`;
+    $("#disk-detail").textContent = `${formatBytes(disk.used)} / ${formatBytes(disk.total)}`;
+    $("#health-list").innerHTML = [
+      healthRow("systemd unit", service.exists, service.exists ? "найден" : "не найден"),
+      healthRow("wdtt-server", service.binary, service.binary ? "установлен" : "отсутствует"),
+      healthRow("IPv4 forwarding", String(service.ip_forward) === "1", String(service.ip_forward) === "1" ? "включен" : "выключен"),
+    ].join("");
+    renderCertificate(overview.certificate || {});
+    await loadHistory();
+  }
+
+  function renderCertificate(cert) {
+    const rows = [];
+    rows.push(`<div class="detail-row"><span>Режим</span><strong>${escapeHtml(cert.mode || "неизвестно")}</strong></div>`);
+    rows.push(`<div class="detail-row"><span>Файл</span><strong>${cert.exists ? "найден" : "не найден"}</strong></div>`);
+    rows.push(`<div class="detail-row"><span>HTTPS локально</span><strong>${cert.local_tls_ok ? "работает" : "не отвечает"}</strong></div>`);
+    rows.push(`<div class="detail-row"><span>Порт</span><strong>${cert.listening ? "слушается" : "не слушается"}</strong></div>`);
+    if (cert.expires_at) rows.push(`<div class="detail-row"><span>Истекает</span><strong>${escapeHtml(formatDate(cert.expires_at))}</strong></div>`);
+    if (cert.days_left !== undefined && cert.days_left !== null) rows.push(`<div class="detail-row"><span>Осталось</span><strong>${escapeHtml(cert.days_left)} дней</strong></div>`);
+    if (cert.error) rows.push(`<div class="detail-row"><span>Ошибка</span><strong>${escapeHtml(cert.error)}</strong></div>`);
+    if (cert.mode === "self-signed") rows.push(`<p class="muted">Self-signed сертификат шифрует соединение, но браузер покажет предупреждение, пока сертификат не добавлен в доверенные.</p>`);
+    $("#certificate-info").innerHTML = rows.join("") || `<p class="muted">Данные сертификата недоступны.</p>`;
+  }
+
+  async function loadHistory() {
+    const history = await api("history");
+    drawChart(history.points || []);
+  }
+
+  function drawChart(points) {
+    const canvas = $("#activity-chart");
+    const ratio = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(600, rect.width * ratio);
+    canvas.height = 280 * ratio;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(ratio, ratio);
+    const width = canvas.width / ratio, height = 280;
+    ctx.clearRect(0, 0, width, height);
+    ctx.strokeStyle = "#1f2b3c"; ctx.lineWidth = 1;
+    for (let y = 30; y < height; y += 52) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+    if (!points.length) {
+      ctx.fillStyle = "#718198"; ctx.font = "12px sans-serif"; ctx.fillText("История появится после нескольких обновлений", 18, 34); return;
+    }
+    const values = points.map((item) => Number(item[1] || 0));
+    const max = Math.max(4, ...values);
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, "rgba(89,225,194,.3)"); gradient.addColorStop(1, "rgba(89,225,194,0)");
+    ctx.beginPath();
+    points.forEach((item, index) => {
+      const x = points.length === 1 ? width / 2 : index * (width / (points.length - 1));
+      const y = height - 28 - (Number(item[1] || 0) / max) * (height - 52);
+      index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
+    ctx.beginPath();
+    points.forEach((item, index) => {
+      const x = points.length === 1 ? width / 2 : index * (width / (points.length - 1));
+      const y = height - 28 - (Number(item[1] || 0) / max) * (height - 52);
+      index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.strokeStyle = "#59e1c2"; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  async function loadUsers() {
+    const result = await api("users");
+    state.users = [...(result.admins || []), ...(result.users || [])];
+    const available = new Set((result.users || []).map((user) => user.password));
+    state.selectedUsers.forEach((password) => { if (!available.has(password)) state.selectedUsers.delete(password); });
+    state.limit = result.limit || 10000;
+    $("#user-limit").textContent = `${(result.users || []).length} / ${state.limit}`;
+    renderUsers();
+  }
+
+  function userStatus(user) {
+    if (user.connected) return ["ok", "подключен"];
+    if (user.expired) return ["bad", "истек"];
+    if (user.is_deactivated) return ["warn", "выключен"];
+    if (user.device_id) return ["warn", "не в сети"];
+    return ["ok", "свободен"];
+  }
+
+  function lastUserActivity(user) {
+    return Math.max(
+      Number(user.last_handshake || 0),
+      Number(user.last_upload_at || 0),
+      Number(user.last_download_at || 0),
+    );
+  }
+
+  function lastUserActivityKind(user) {
+    const stamp = lastUserActivity(user);
+    if (!stamp) return "ещё не было";
+    if (stamp === Number(user.last_download_at || 0)) return "загрузка";
+    if (stamp === Number(user.last_upload_at || 0)) return "отправка";
+    return "подключение";
+  }
+
+  function userSortValue(user, key) {
+    if (key === "label") return user.label || "";
+    if (key === "access") return user.password || "";
+    if (key === "status") {
+      if (user.connected) return 0;
+      if (!user.expired && !user.is_deactivated && !user.device_id) return 1;
+      if (!user.expired && !user.is_deactivated) return 2;
+      if (user.is_deactivated) return 3;
+      return 4;
+    }
+    if (key === "expires") return user.expires_at || Number.MAX_SAFE_INTEGER;
+    if (key === "device") return `${user.device?.device_id || user.device_id || ""} ${user.device?.ip || ""}`;
+    if (key === "traffic") return Number(user.down_bytes || 0) + Number(user.up_bytes || 0);
+    if (key === "activity") return lastUserActivity(user);
+    return "";
+  }
+
+  function sortedUsers(users) {
+    const { key, direction } = state.userSort;
+    if (!key) return users;
+    const factor = direction === "desc" ? -1 : 1;
+    return [...users].sort((left, right) => {
+      const first = userSortValue(left, key);
+      const second = userSortValue(right, key);
+      const comparison = typeof first === "number" && typeof second === "number"
+        ? first - second : String(first).localeCompare(String(second), "ru", { numeric: true, sensitivity: "base" });
+      return comparison * factor || String(left.password).localeCompare(String(right.password), "ru", { numeric: true });
+    });
+  }
+
+  function renderUserSortControls() {
+    $$("[data-user-sort]").forEach((button) => {
+      const active = button.dataset.userSort === state.userSort.key;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+      const indicator = button.querySelector(".sort-indicator");
+      if (indicator) indicator.textContent = active ? (state.userSort.direction === "asc" ? "↑" : "↓") : "↕";
+    });
+  }
+
+  function renderUsers() {
+    const query = $("#user-search").value.toLowerCase();
+    const users = sortedUsers(state.users.filter((user) => JSON.stringify(user).toLowerCase().includes(query)));
+    $("#users-body").innerHTML = users.map((user) => {
+      const [statusClass, status] = userStatus(user);
+      const quotaManaged = user.role !== "admin" && user.traffic_managed;
+      const quotaUsed = Number(user.traffic_quota_used_bytes || 0);
+      const quotaLimit = Number(user.traffic_limit_bytes || 0);
+      const quotaPercent = quotaLimit ? Math.min(100, Math.round(quotaUsed * 100 / quotaLimit)) : 0;
+      const warning = quotaManaged && !user.traffic_unlimited && quotaPercent >= 80
+        ? `<small class="quota-warning ${quotaPercent >= 100 ? "quota-danger" : ""}">${quotaPercent >= 100 ? "Лимит исчерпан" : `Использовано ${quotaPercent}%`}</small>` : "";
+      const quotaText = quotaManaged ? (user.traffic_unlimited ? "Без лимита" : `${formatBytes(user.traffic_remaining_bytes)} из ${formatBytes(quotaLimit)} осталось`) : "";
+      const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑${quotaText ? `<br><small>${escapeHtml(quotaText)}</small>${warning}` : ""}`;
+      const device = user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан";
+      const title = user.label || user.password;
+      const selectable = user.role !== "admin";
+      const lastActivity = lastUserActivity(user);
+      return `<tr>
+        <td>${selectable ? `<input type="checkbox" data-select-user="${escapeHtml(user.password)}" aria-label="Выбрать ${escapeHtml(title)}" ${state.selectedUsers.has(user.password) ? "checked" : ""}>` : ""}</td>
+        <td>${user.label ? `<strong>${escapeHtml(user.label)}</strong>` : "<span class=\"muted\">—</span>"}</td>
+        <td><strong class="mono">${escapeHtml(user.password)}</strong><br><small>${escapeHtml(user.vk_hash)}</small></td>
+        <td><span class="badge ${statusClass}">${status}</span></td>
+        <td>${escapeHtml(formatDate(user.expires_at))}</td>
+        <td class="mono">${device}</td><td>${traffic}</td>
+        <td><strong>${escapeHtml(formatActivityDate(lastActivity))}</strong><br><small>${escapeHtml(lastUserActivityKind(user))}</small></td>
+        <td><button class="user-actions-trigger" data-actions-toggle="${escapeHtml(user.password)}">Действия</button></td></tr>`;
+    }).join("") || `<tr><td colspan="9" class="muted">Пользователи не найдены.</td></tr>`;
+    closeUserActions();
+    renderUserSortControls();
+    renderSelectedUsersControls();
+  }
+
+  function ensureUserActionsPopover() {
+    let popover = $("#user-actions-popover");
+    if (!popover) {
+      popover = document.createElement("div");
+      popover.id = "user-actions-popover";
+      popover.className = "user-actions-popover";
+      popover.hidden = true;
+      document.body.appendChild(popover);
+    }
+    return popover;
+  }
+
+  function closeUserActions() {
+    const popover = $("#user-actions-popover");
+    if (!popover) return;
+    popover.hidden = true;
+    popover.dataset.password = "";
+  }
+
+  function openUserActions(button, user) {
+    if (!user) return;
+    const popover = ensureUserActionsPopover();
+    popover.dataset.password = user.password;
+    popover.innerHTML = `
+      <button data-activity="${escapeHtml(user.password)}">Активность</button>
+      ${user.role === "admin" ? "" : `<button data-copy="${escapeHtml(user.password)}" title="Скопировать wdtt:// ссылку">Ссылка</button>`}
+      ${user.role === "admin" ? "" : `
+      <button data-personal="${escapeHtml(user.password)}">Личная страница</button>
+      <button data-renew="${escapeHtml(user.password)}">Продлить</button>
+      ${user.traffic_unlimited ? "" : `<button data-extra="${escapeHtml(user.password)}">Добавить трафик</button>`}
+      <button data-edit="${escapeHtml(user.password)}">Изменить</button>
+      ${user.device_id ? `<button data-unbind="${escapeHtml(user.password)}">Отвязать</button>` : ""}
+      <button data-reset="${escapeHtml(user.password)}">Сброс трафика</button>
+      <button data-delete="${escapeHtml(user.password)}">Удалить</button>`}
+    `;
+    popover.hidden = false;
+    popover.style.visibility = "hidden";
+    const rect = button.getBoundingClientRect();
+    const menu = popover.getBoundingClientRect();
+    let left = rect.left - menu.width - 8;
+    if (left < 8) left = rect.right + 8;
+    left = Math.min(Math.max(8, left), window.innerWidth - menu.width - 8);
+    const top = Math.min(Math.max(8, rect.top), window.innerHeight - menu.height - 8);
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.visibility = "";
+  }
+
+  async function handleUserActionButton(button) {
+    const find = (password) => state.users.find((item) => item.password === password);
+    if (button.dataset.activity) openUserActivity(find(button.dataset.activity));
+    if (button.dataset.edit) openUserDialog(find(button.dataset.edit));
+    if (button.dataset.renew) openQuotaDialog(find(button.dataset.renew), "renew");
+    if (button.dataset.extra) openQuotaDialog(find(button.dataset.extra), "extra");
+    if (button.dataset.unbind) userAction("users/unbind", button.dataset.unbind, "Отвязать устройство? Следующее подключение создаст новую привязку.");
+    if (button.dataset.reset) userAction("users/reset-traffic", button.dataset.reset, "Сбросить счетчики трафика пользователя?");
+    if (button.dataset.delete) userAction("users/delete", button.dataset.delete, "Удалить пользователя и его устройство без возможности отмены?");
+    if (button.dataset.copy) {
+      const user = find(button.dataset.copy);
+      await navigator.clipboard.writeText(quickLink(user));
+      toast("Ссылка wdtt:// скопирована");
+    }
+    if (button.dataset.personal) {
+      const user = find(button.dataset.personal);
+      await navigator.clipboard.writeText(user.personal_url);
+      toast("Ссылка на личную страницу скопирована");
+    }
+  }
+
+  function renderSelectedUsersControls() {
+    const selected = state.selectedUsers.size;
+    const action = $("#bulk-user-action").value;
+    $("#selected-users").textContent = `Выбрано: ${selected}`;
+    $("#bulk-user-days-control").hidden = action !== "set_expiration";
+    $("#apply-bulk-user-action").disabled = !selected || !action;
+    const query = $("#user-search").value.toLowerCase();
+    const visible = state.users.filter((user) => user.role !== "admin" && JSON.stringify(user).toLowerCase().includes(query));
+    const all = $("#select-all-users");
+    all.checked = visible.length > 0 && visible.every((user) => state.selectedUsers.has(user.password));
+    all.indeterminate = visible.some((user) => state.selectedUsers.has(user.password)) && !all.checked;
+  }
+
+  function openUserDialog(user = null) {
+    state.editing = user;
+    $("#dialog-title").textContent = user ? "Изменить пользователя" : "Новый пользователь";
+    $("#current-password").value = user?.password || "";
+    $("#edit-password").value = user?.password || "";
+    $("#edit-password").placeholder = user ? "Пароль доступа" : "Пусто = создать автоматически";
+    $("#edit-hashes").value = user?.vk_hash || "";
+    $("#edit-label").value = user?.role === "admin" ? "" : (user?.label || "");
+    $("#edit-ports").value = user?.ports || "56000,56001,9000";
+    $("#edit-unlimited").checked = Boolean(user && !user.expires_at);
+    $("#edit-unlimited").disabled = Boolean(user);
+    $("#edit-disabled").checked = Boolean(user?.is_deactivated);
+    const accessPlan = $("#edit-access-plan");
+    accessPlan.hidden = Boolean(user);
+    accessPlan.querySelectorAll("input,button").forEach((item) => { item.disabled = Boolean(user); });
+    $("#edit-traffic-unlimited").checked = false;
+    $("#edit-traffic").disabled = false;
+    setExpiryPreset("edit", 1, new Date());
+    $("#user-dialog").showModal();
+  }
+
+  function openQuotaDialog(user, mode) {
+    if (!user) return;
+    $("#quota-password").value = user.password;
+    $("#quota-mode").value = mode;
+    $("#quota-title").textContent = mode === "renew" ? `Продлить: ${user.label || user.password}` : `Добавить трафик: ${user.label || user.password}`;
+    $("#quota-renew-fields").hidden = mode !== "renew";
+    $("#quota-extra-fields").hidden = mode !== "extra";
+    $("#quota-comment").value = "";
+    $("#quota-extra").value = "10";
+    const baseStamp = user.expires_at > Date.now() / 1000 ? user.expires_at : Math.floor(Date.now() / 1000);
+    $("#quota-expires").dataset.baseStamp = String(baseStamp);
+    setExpiryPreset("quota", 1);
+    $("#quota-dialog").showModal();
+  }
+
+  async function saveQuota(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#quota-dialog").close(); return; }
+    const button = $("#save-quota");
+    const mode = $("#quota-mode").value;
+    const payload = {
+      password: $("#quota-password").value,
+      operation_id: (crypto.randomUUID ? crypto.randomUUID() : `quota-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      comment: $("#quota-comment").value,
+    };
+    if (mode === "renew") Object.assign(payload, expirationPayload("quota"), { traffic_primary_gib: Number($("#quota-primary").value) });
+    else payload.gib = Number($("#quota-extra").value);
+    setBusy(button, true);
+    try {
+      await api(mode === "renew" ? "users/renew" : "users/add-traffic", { method: "POST", body: payload });
+      $("#quota-dialog").close();
+      toast(mode === "renew" ? "Срок и основной трафик обновлены" : "Дополнительный трафик добавлен");
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function openUserActivity(user) {
+    if (!user) return;
+    const device = user.device || {};
+    const title = user.label || user.password;
+    const rows = [
+      ["Метка", user.label || "—"],
+      ["Пароль", user.password],
+      ["Статус", userStatus(user)[1]],
+      ["Устройство", device.device_id || user.device_id || "не привязано"],
+      ["IP устройства", device.ip || "—"],
+      ["Последнее подключение", formatActivityDate(user.last_handshake)],
+      ["Последняя отправка", formatActivityDate(user.last_upload_at)],
+      ["Последняя загрузка", formatActivityDate(user.last_download_at)],
+      ["Отправлено всего", formatBytes(user.up_bytes)],
+      ["Загружено всего", formatBytes(user.down_bytes)],
+    ];
+    $("#user-activity-title").textContent = `Активность: ${title}`;
+    $("#user-activity-details").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+    $("#user-activity-dialog").showModal();
+  }
+
+  async function saveUser(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#user-dialog").close(); return; }
+    const button = $("#save-user");
+    setBusy(button, true);
+    const payload = {
+      password: $("#edit-password").value,
+      label: $("#edit-label").value,
+      vk_hash: $("#edit-hashes").value,
+      ports: $("#edit-ports").value,
+      is_deactivated: $("#edit-disabled").checked,
+    };
+    if (state.editing) payload.current_password = state.editing.password;
+    else Object.assign(payload, $("#edit-unlimited").checked ? { unlimited: true } : expirationPayload("edit"), {
+      traffic_primary_gib: Number($("#edit-traffic").value),
+      traffic_unlimited: $("#edit-traffic-unlimited").checked,
+    });
+    try {
+      await api(state.editing ? "users/update" : "users/create", { method: "POST", body: payload });
+      $("#user-dialog").close();
+      toast(state.editing ? "Пользователь обновлен" : "Пользователь создан");
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function openAutoUserDialog() {
+    const remaining = Math.max(0, state.limit - state.users.filter((user) => user.role !== "admin").length);
+    if (!remaining) { toast(`Достигнут лимит ${state.limit} пользователей`, true); return; }
+    $("#auto-label").value = "";
+    $("#auto-user-dialog").showModal();
+    $("#auto-label").focus();
+  }
+
+  async function saveAutoUser(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#auto-user-dialog").close(); return; }
+    const label = $("#auto-label").value.trim();
+    if (!label) { toast("Укажите метку пользователя", true); return; }
+    const button = $("#save-auto-user");
+    setBusy(button, true);
+    try {
+      const user = await api("users/create-auto", { method: "POST", body: { label } });
+      $("#bulk-result-links").value = quickLink(user);
+      $("#auto-user-dialog").close();
+      $("#bulk-result-dialog").showModal();
+      toast("Пользователь создан автоматически");
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function openBulkUserDialog() {
+    const remaining = Math.max(0, state.limit - state.users.filter((user) => user.role !== "admin").length);
+    if (!remaining) { toast(`Достигнут лимит ${state.limit} пользователей`, true); return; }
+    $("#bulk-count").max = remaining;
+    $("#bulk-count").value = Math.min(2, remaining);
+    $("#bulk-traffic-unlimited").checked = false;
+    $("#bulk-traffic").disabled = false;
+    $("#bulk-expires").disabled = false;
+    setExpiryPreset("bulk", 1, new Date());
+    $("#bulk-user-dialog").showModal();
+  }
+
+  async function saveBulkUsers(event) {
+    event.preventDefault();
+    if (event.submitter?.value === "cancel") { $("#bulk-user-dialog").close(); return; }
+    const button = $("#save-bulk-users");
+    setBusy(button, true);
+    const payload = {
+      count: Number($("#bulk-count").value),
+      vk_hash: $("#bulk-hashes").value,
+      hash_mode: $("#bulk-hash-mode").value,
+      label_prefix: $("#bulk-label-prefix").value,
+      ports: $("#bulk-ports").value,
+      ...($("#bulk-unlimited").checked ? { unlimited: true } : expirationPayload("bulk")),
+      traffic_primary_gib: Number($("#bulk-traffic").value),
+      traffic_unlimited: $("#bulk-traffic-unlimited").checked,
+      is_deactivated: $("#bulk-disabled").checked,
+    };
+    try {
+      const result = await api("users/create-bulk", { method: "POST", body: payload });
+      const users = result.users || [];
+      $("#bulk-result-links").value = users.map(quickLink).join("\n");
+      $("#bulk-user-dialog").close();
+      $("#bulk-result-dialog").showModal();
+      toast(`Создано пользователей: ${users.length}`);
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function copyBulkLinks() {
+    try {
+      await navigator.clipboard.writeText($("#bulk-result-links").value);
+      toast("Все ссылки wdtt:// скопированы");
+    } catch (error) { toast(`Не удалось скопировать: ${error.message}`, true); }
+  }
+
+  async function userAction(route, password, confirmText) {
+    if (confirmText && !confirm(confirmText)) return;
+    try {
+      await api(route, { method: "POST", body: { password } });
+      toast("Операция выполнена");
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function applyBulkUserAction() {
+    const action = $("#bulk-user-action").value;
+    const passwords = [...state.selectedUsers];
+    if (!action || !passwords.length) return;
+    const descriptions = {
+      activate: "Активировать",
+      deactivate: "Деактивировать",
+      set_expiration: `Установить срок ${Number($("#bulk-user-days").value)} дней для`,
+      reset_traffic: "Сбросить трафик у",
+      unbind: "Отвязать устройства у",
+      delete: "Удалить",
+    };
+    const destructive = action === "delete" ? " Это действие нельзя отменить." : "";
+    if (!confirm(`${descriptions[action]} пользователей: ${passwords.length}?${destructive}`)) return;
+    const button = $("#apply-bulk-user-action");
+    setBusy(button, true);
+    try {
+      const payload = { action, passwords };
+      if (action === "set_expiration") payload.days = Number($("#bulk-user-days").value);
+      const result = await api("users/bulk-action", { method: "POST", body: payload });
+      state.selectedUsers.clear();
+      $("#bulk-user-action").value = "";
+      toast(`Выполнено: ${result.count || passwords.length}`);
+      await Promise.all([loadUsers(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function quickLink(user) {
+    const ports = (user.ports || "56000,56001,9000").split(",");
+    return `wdtt://${PUBLIC_HOST}:${ports[0]}:${ports[1]}:${ports[2]}:${user.password}:${user.vk_hash}`;
+  }
+
+  async function loadLogs() {
+    try {
+      const source = encodeURIComponent($("#log-source").value);
+      const limit = encodeURIComponent($("#log-limit").value);
+      const result = await api(`logs?source=${source}&limit=${limit}`);
+      state.logs = result.lines || [];
+      state.logsMeta = result;
+      renderLogs();
+    } catch (error) { $("#logs-output").textContent = error.message; }
+  }
+
+  function renderLogs() {
+    const filter = $("#log-filter").value;
+    const lines = filter ? state.logs.filter((line) => line.includes(filter)) : state.logs;
+    $("#logs-output").textContent = lines.join("\n") || "Нет строк для выбранного фильтра.";
+    const meta = state.logsMeta || {};
+    const states = (meta.units || []).map((item) => `${item.unit}: ${item.active ? "работает" : "не активна"}`).join(" · ");
+    $("#logs-summary").textContent = `${meta.title || "Журнал"}: загружено ${state.logs.length} строк${filter ? `, после фильтра ${lines.length}` : ""}${states ? ` · ${states}` : ""}`;
+  }
+
+  function downloadLogs() {
+    const meta = state.logsMeta || {};
+    if (!state.logs.length) { toast("Сначала загрузите журнал", true); return; }
+    const header = [`# ${meta.title || "WDTT diagnostics"}`, `# Exported: ${new Date().toISOString()}`, ""].join("\n");
+    downloadText(`wdtt-diagnostics-${meta.source || "logs"}.log`, `${header}${state.logs.join("\n")}\n`, "text/plain;charset=utf-8");
+  }
+
+  function cleanupPayload() {
+    const targets = [];
+    if ($("#cleanup-service-logs").checked) targets.push("service_logs");
+    if ($("#cleanup-journal").checked) targets.push("journal");
+    if ($("#cleanup-package-cache").checked) targets.push("package_cache");
+    if ($("#cleanup-failed-units").checked) targets.push("failed_units");
+    return { keep_days: Number($("#cleanup-keep-days").value) || 14, targets };
+  }
+
+  function renderCleanupResult(result) {
+    const items = result.items || [];
+    const rows = [
+      ["Режим", result.applied ? "Очистка выполнена" : "Предпросмотр"],
+      [result.applied ? "Освобождено" : "Можно очистить", formatBytes(result.estimated_freed_bytes || 0)],
+      ["Journal хранится", `${result.keep_days || 14} дней`],
+    ];
+    items.forEach((item) => {
+      const freedLabel = result.applied ? `освобождено ${formatBytes(item.freed_bytes || 0)}` : `можно очистить ${formatBytes(item.freed_bytes || 0)}`;
+      const remaining = result.applied && item.remaining_bytes !== undefined ? `осталось ${formatBytes(item.remaining_bytes || 0)}` : "";
+      if (item.target === "service_logs") {
+        const files = item.files || [];
+        const existing = files.filter((file) => file.exists).length;
+        const skipped = files.filter((file) => file.skipped || file.error).length;
+        const details = [freedLabel, `${existing} файлов`];
+        if (remaining) details.push(remaining);
+        if (skipped) details.push(`пропущено: ${skipped}`);
+        if (item.error) details.push(item.error);
+        rows.push(["Журналы служб", details.join(" · ")]);
+      } else if (item.target === "package_cache") {
+        rows.push(["Кэш пакетов", item.error || [freedLabel, remaining, item.command].filter(Boolean).join(" · ")]);
+      } else if (item.target === "journal") {
+        const journalDetails = [freedLabel, remaining, item.detail].filter(Boolean).join(" · ");
+        rows.push(["Systemd journal", item.error || (item.available === false ? item.detail || "недоступен" : journalDetails || "готов")]);
+      } else if (item.target === "failed_units") {
+        rows.push(["Failed-units", item.error || (item.available === false ? "недоступно" : "готово")]);
+      }
+    });
+    $("#cleanup-info").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  }
+
+  async function cleanupSystem(apply, button) {
+    const payload = cleanupPayload();
+    if (!payload.targets.length) { toast("Выберите хотя бы один раздел очистки", true); return; }
+    if (apply && !confirm("Очистить выбранные журналы и системный кэш? База WDTT, резервные копии и настройки не будут затронуты.")) return;
+    setBusy(button, true);
+    try {
+      const result = await api(apply ? "cleanup/apply" : "cleanup/preview", { method: "POST", body: payload });
+      renderCleanupResult(result);
+      toast(apply ? "Очистка завершена" : "Оценка очистки готова");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function serviceAction(action, button) {
+    if (action === "stop" && !confirm("Остановить WDTT и разорвать активные туннели?")) return;
+    setBusy(button, true);
+    try {
+      await api("service", { method: "POST", body: { service_action: action } });
+      toast(`Сервис: ${action}`);
+      setTimeout(loadOverview, 900);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function loadBackups() {
+    try {
+      const result = await api("backups");
+      $("#backups-list").innerHTML = (result.backups || []).map((item) => {
+        const type = item.type === "full" ? "Полная панель" : "Пользователи WDTT";
+        return `<div class="backup-row"><span><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(type)} · ${escapeHtml(formatDate(item.created_at))} · ${formatBytes(item.size)}</small></span><div class="row-actions"><button data-download-backup="${escapeHtml(item.name)}">Скачать</button><button data-restore="${escapeHtml(item.name)}" data-backup-type="${escapeHtml(item.type || "users")}">Восстановить</button><button data-delete-backup="${escapeHtml(item.name)}" class="danger">Удалить</button></div></div>`;
+      }).join("") || `<p class="muted">Резервные копии появятся после первого сохранения.</p>`;
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function loadBackupSchedule() {
+    try {
+      const result = await api("backups/schedule");
+      const schedule = result.settings || {};
+      $("#backup-schedule-frequency").value = schedule.frequency || "disabled";
+      $("#backup-schedule-time").value = schedule.time || "03:30";
+      $("#backup-schedule-type").value = schedule.type || "full";
+      $("#backup-schedule-keep").value = schedule.keep || 14;
+      $("#backup-schedule-status").textContent = schedule.frequency === "disabled"
+        ? "Автоматические копии выключены."
+        : `${schedule.frequency === "daily" ? "Каждый день" : "По воскресеньям"} в ${schedule.time}; хранится последних: ${schedule.keep}.`;
+    } catch (error) { $("#backup-schedule-status").textContent = error.message; }
+  }
+
+  async function saveBackupSchedule() {
+    const button = $("#save-backup-schedule");
+    setBusy(button, true);
+    try {
+      await api("backups/schedule", { method: "POST", body: {
+        frequency: $("#backup-schedule-frequency").value,
+        time: $("#backup-schedule-time").value,
+        type: $("#backup-schedule-type").value,
+        keep: Number($("#backup-schedule-keep").value),
+      }});
+      toast("Расписание резервных копий сохранено");
+      await loadBackupSchedule();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function createBackup(type) {
+    const button = type === "full" ? $("#create-full-backup") : $("#create-users-backup");
+    setBusy(button, true);
+    try {
+      const result = await api("backups/create", { method: "POST", body: { type } });
+      toast(`${type === "full" ? "Полная копия" : "Копия пользователей"} создана: ${result.name}`);
+      await loadBackups();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function loadPanelVersion() {
+    const info = $("#panel-version-info");
+    const updateButton = $("#update-panel");
+    try {
+      const result = await api("panel/version");
+      const latest = result.latest || "недоступна";
+      info.innerHTML = [
+        `<div class="detail-row"><span>Установлена</span><strong>v${escapeHtml(result.current || PANEL_VERSION)}</strong></div>`,
+        `<div class="detail-row"><span>На GitHub</span><strong>${result.latest ? `v${escapeHtml(latest)}` : escapeHtml(latest)}</strong></div>`,
+        result.error ? `<div class="detail-row"><span>Проверка</span><strong>${escapeHtml(result.error)}</strong></div>` : "",
+      ].join("");
+      updateButton.hidden = !result.update_available;
+      updateButton.textContent = result.update_available ? `Обновить до v${result.latest}` : "Обновить панель";
+      $("#panel-version-pill").textContent = result.update_available
+        ? `v${result.current} → v${result.latest}`
+        : `v${result.current || PANEL_VERSION}`;
+    } catch (error) {
+      info.innerHTML = `<p class="muted">Не удалось проверить GitHub: ${escapeHtml(error.message)}</p>`;
+      updateButton.hidden = true;
+    }
+  }
+
+  async function updatePanel() {
+    const button = $("#update-panel");
+    if (!confirm("Обновить панель до новой версии? Web-панель перезапустится, WDTT продолжит работу.")) return;
+    setBusy(button, true);
+    try {
+      await api("panel/update", { method: "POST" });
+      toast("Обновление запущено. Панель перезагрузится автоматически.");
+      setTimeout(() => location.reload(), 15000);
+    } catch (error) {
+      toast(error.message, true);
+      setBusy(button, false);
+    }
+  }
+
+  async function loadAudit() {
+    const result = await api("audit");
+    $("#audit-body").innerHTML = (result.items || []).map((item) => `<tr><td>${escapeHtml(formatDate(item[0]))}</td><td>${escapeHtml(item[1])}</td><td class="mono">${escapeHtml(item[2])}</td><td>${escapeHtml(item[3])}</td><td><span class="badge ${item[4] === "ok" ? "ok" : "bad"}">${escapeHtml(item[4])}</span></td></tr>`).join("");
+  }
+
+  async function restoreBackup(name, type) {
+    const scope = type === "full" ? "пользователи и настройки панели" : "пользователи WDTT";
+    if (!confirm(`Восстановить ${name}? Будут заменены: ${scope}. Перед этим будет создана полная резервная копия текущего состояния.`)) return;
+    try {
+      const result = await api("backups/restore", { method: "POST", body: { name } });
+      toast(result.warnings?.length ? `Копия восстановлена, но есть предупреждения: ${result.warnings[0]}` : "Резервная копия восстановлена");
+      await Promise.all([loadUsers(), loadOverview(), loadBackups()]);
+    } catch (error) { toast(error.message, true); }
+  }
+
+  function downloadText(name, content, type = "application/json") {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const link = document.createElement("a");
+    link.href = url; link.download = name; document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function downloadBackup(name) {
+    try {
+      const result = await api(`backups/export?name=${encodeURIComponent(name)}`);
+      downloadText(result.name, result.content);
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function uploadBackup(file) {
+    if (!file) return;
+    try {
+      const result = await api("backups/import", { method: "POST", body: { name: file.name, content: await file.text() } });
+      toast(`Backup загружен: ${result.name}`);
+      await loadBackups();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function renewCertificate() {
+    const button = $("#renew-certificate"); setBusy(button, true);
+    try { await api("certificate/renew", { method: "POST" }); toast("Проверка сертификата запущена"); setTimeout(loadOverview, 7000); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function downloadCertificate() {
+    try {
+      const result = await api("certificate/export");
+      downloadText(result.name, result.content, "application/x-pem-file");
+    } catch (error) { toast(error.message, true); }
+  }
+
+  const xrayInboundTemplate = (kind) => {
+    const port = 10000 + state.xray.inbounds.length;
+    const ordinal = state.xray.inbounds.filter((item) => item.protocol === kind).length + 1;
+    const base = { tag: `${kind}-in-${ordinal}`, listen: "0.0.0.0", port, protocol: kind, settings: {} };
+    if (["vless", "vmess"].includes(kind)) return { ...base, settings: { clients: [] }, streamSettings: { network: "tcp", security: "none" } };
+    if (kind === "trojan") return { ...base, settings: { clients: [] }, streamSettings: { network: "tcp", security: "none" } };
+    if (kind === "shadowsocks") return { ...base, settings: { clients: [], network: "tcp,udp" } };
+    return { ...base, settings: { auth: "noauth", udp: true } };
+  };
+
+  const xrayOutboundTemplate = (kind) => {
+    const ordinal = state.xray.outbounds.filter((item) => item.protocol === kind).length + 1;
+    const tag = `${kind}-out-${ordinal}`;
+    if (kind === "vless") return { tag, protocol: "vless", settings: { vnext: [{ address: "example.com", port: 443, users: [{ id: "00000000-0000-4000-8000-000000000000", encryption: "none" }] }] }, streamSettings: { network: "tcp", security: "tls" } };
+    if (kind === "vmess") return { tag, protocol: "vmess", settings: { vnext: [{ address: "example.com", port: 443, users: [{ id: "00000000-0000-4000-8000-000000000000", security: "auto", alterId: 0 }] }] } };
+    if (kind === "trojan") return { tag, protocol: "trojan", settings: { servers: [{ address: "example.com", port: 443, password: "change-me" }] }, streamSettings: { security: "tls" } };
+    if (kind === "shadowsocks") return { tag, protocol: "shadowsocks", settings: { servers: [{ address: "example.com", port: 443, method: "aes-128-gcm", password: "change-me" }] } };
+    if (["socks", "http"].includes(kind)) return { tag, protocol: kind, settings: { servers: [{ address: "127.0.0.1", port: 1080 }] } };
+    if (kind === "wireguard") return { tag, protocol: "wireguard", settings: { secretKey: "", address: ["10.0.0.2/32"], peers: [] } };
+    return { tag, protocol: kind, settings: {} };
+  };
+
+  function xrayItemRow(kind, item, index) {
+    return `<article class="xray-json-row"><div><strong>${escapeHtml(item.tag || `${kind} ${index + 1}`)}</strong><small>${escapeHtml(item.protocol || item.type || "JSON")}</small></div><textarea class="mono" data-xray-json="${kind}" data-xray-index="${index}" spellcheck="false">${escapeHtml(JSON.stringify(item, null, 2))}</textarea><button data-xray-remove="${kind}" data-xray-index="${index}" class="danger">Удалить</button></article>`;
+  }
+
+  async function deleteBackup(name) {
+    if (!confirm(`Удалить ${name} без возможности восстановления?`)) return;
+    try {
+      await api("backups/delete", { method: "POST", body: { name } });
+      toast("Резервная копия удалена");
+      await loadBackups();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  function renderXrayItems() {
+    $("#xray-inbounds").innerHTML = state.xray.inbounds.map((item, index) => xrayItemRow("inbounds", item, index)).join("") || `<p class="muted">Входящие не добавлены. Xray не откроет новые порты, пока вы не создадите inbound.</p>`;
+    $("#xray-outbounds").innerHTML = state.xray.outbounds.map((item, index) => xrayItemRow("outbounds", item, index)).join("") || `<p class="muted">Используются встроенные direct и block. Добавьте VLESS, Trojan, Shadowsocks, SOCKS, HTTP или WireGuard.</p>`;
+    $("#xray-rules").innerHTML = state.xray.routing_rules.map((item, index) => xrayItemRow("routing_rules", item, index)).join("") || `<p class="muted">Правил нет: Xray использует стандартную маршрутизацию.</p>`;
+  }
+
+  function xrayTargets(selected = "") {
+    const targets = [
+      { tag: "direct", label: "Напрямую — без прокси" },
+      { tag: "block", label: "Заблокировать" },
+    ];
+    const known = new Set(targets.map((item) => item.tag));
+    const add = (tag, label) => {
+      if (!tag || known.has(tag)) return;
+      known.add(tag); targets.push({ tag, label });
+    };
+    (state.xray.outbounds || []).forEach((item) => add(item.tag, item.tag === "warp" ? "Cloudflare WARP" : `${item.tag} — экспертный ${item.protocol || "маршрут"}`));
+    add("warp", "Cloudflare WARP — создайте профиль выше");
+    if (state.cascade?.settings?.enabled) add("eu-vless", "EU VLESS — каскад");
+    (state.xray.routes || []).filter((item) => item.enabled !== false).forEach((item) => add(item.tag, item.name || item.tag));
+    if (selected && !known.has(selected)) targets.push({ tag: selected, label: `${selected} — не настроен` });
+    return targets.map((item) => `<option value="${escapeHtml(item.tag)}" ${item.tag === selected ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+  }
+
+  function collectFriendlyRoutes() {
+    return JSON.parse(JSON.stringify(state.xray.routes || []));
+  }
+
+  function collectFriendlyRules() {
+    return JSON.parse(JSON.stringify(state.xray.friendly_rules || []));
+  }
+
+  function xrayTargetLabel(tag) {
+    if (tag === "direct") return "Напрямую";
+    if (tag === "block") return "Блокировка";
+    if (tag === "warp") return "Cloudflare WARP";
+    if (tag === "eu-vless") return "EU VLESS — каскад";
+    const route = (state.xray.routes || []).find((item) => item.tag === tag);
+    const outbound = (state.xray.outbounds || []).find((item) => item.tag === tag);
+    return route?.name || outbound?.tag || tag;
+  }
+
+  function ruleValues(value) {
+    if (Array.isArray(value)) return value.filter(Boolean);
+    return String(value || "").split(/[\s,;]+/).filter(Boolean);
+  }
+
+  function ruleSummary(rule) {
+    const domains = ruleValues(rule.domains).length;
+    const domainLabel = domains % 10 === 1 && domains % 100 !== 11 ? "домен" : (domains % 10 >= 2 && domains % 10 <= 4 && (domains % 100 < 10 || domains % 100 >= 20) ? "домена" : "доменов");
+    const parts = [
+      [domains, domainLabel], [ruleValues(rule.ip_cidrs).length, "IP/CIDR"],
+      [ruleValues(rule.geosite).length, "GeoSite"], [ruleValues(rule.geoip).length, "GeoIP"],
+    ].filter(([count]) => count).map(([count, label]) => `${count} ${label}`);
+    return parts.join(" · ") || "Условия не указаны";
+  }
+
+  function renderCompactFriendlyRoutes() {
+    const warpReady = (state.xray.outbounds || []).some((item) => item.tag === "warp");
+    const cascadeReady = Boolean(state.cascade?.settings?.enabled);
+    const standard = [
+      ["Напрямую", "direct", "IP этого сервера", "ok", "готов"],
+      ["Блокировка", "block", "Запретить выбранный трафик", "warn", "готов"],
+      ["Cloudflare WARP", "warp", warpReady ? "Доступен для правил" : "Создайте профиль выше", warpReady ? "ok" : "warn", warpReady ? "готов" : "не настроен"],
+    ];
+    if (cascadeReady) standard.push(["EU VLESS — каскад", "eu-vless", "Выход через EU-сервер из раздела «Каскад»", "ok", "готов"]);
+    const builtinRoutes = standard.map(([name, tag, note, stateClass, stateLabel]) => `<article class="friendly-card builtin-route"><div><strong>${name}</strong><small><code>${tag}</code> · ${note}</small></div><span class="badge ${stateClass}">${stateLabel}</span></article>`);
+    const routes = (state.xray.routes || []).map((route, index) => `<article class="friendly-card" data-friendly-route="${index}"><div><strong>${escapeHtml(route.name || route.tag || "VLESS маршрут")}</strong><small><code>${escapeHtml(route.tag || "")}</code> · VLESS</small></div><div class="inline-actions"><span class="badge ${route.enabled === false ? "warn" : "ok"}">${route.enabled === false ? "выключен" : "готов"}</span><button data-edit-friendly-route="${index}" class="secondary">Редактировать</button><button data-remove-friendly-route="${index}" class="danger">Удалить</button></div></article>`).join("");
+    $("#xray-friendly-routes").innerHTML = [...builtinRoutes, routes || `<p class="muted">Дополнительных VLESS‑маршрутов нет.</p>`].join("");
+  }
+
+  function renderCompactFriendlyRules() {
+    $("#xray-friendly-rules").innerHTML = (state.xray.friendly_rules || []).map((rule, index) => `<article class="friendly-card" data-friendly-rule="${index}"><div><strong>${escapeHtml(rule.name || `Правило ${index + 1}`)}</strong><small>${escapeHtml(ruleSummary(rule))} · через ${escapeHtml(xrayTargetLabel(rule.outbound || "direct"))}</small></div><div class="inline-actions"><span class="badge ${rule.enabled === false ? "warn" : "ok"}">${rule.enabled === false ? "выключено" : "включено"}</span><button data-edit-friendly-rule="${index}" class="secondary">Редактировать</button><button data-move-friendly-rule="up" data-friendly-rule-index="${index}" class="secondary" ${index === 0 ? "disabled" : ""}>↑</button><button data-move-friendly-rule="down" data-friendly-rule-index="${index}" class="secondary" ${index === state.xray.friendly_rules.length - 1 ? "disabled" : ""}>↓</button><button data-remove-friendly-rule="${index}" class="danger">Удалить</button></div></article>`).join("") || `<p class="muted">Правил пока нет. Добавьте правило или используйте заготовку популярных сервисов.</p>`;
+  }
+
+  const GOOGLE_AI_DOMAINS = [
+    "gemini.google.com", "assistant.google.com", "bard.google.com", "robinfrontend-pa.googleapis.com", "generativelanguage.googleapis.com", "content-gemini.googleapis.com", "aistudio.google.com", "ai.google.dev", "accounts.google.com", "oauth2.googleapis.com", "google.com", "www.google.com", "googleapis.com", "www.googleapis.com", "ogs.google.com", "gstatic.com", "www.gstatic.com", "ssl.gstatic.com", "connectivitycheck.gstatic.com", "googleusercontent.com", "lh3.googleusercontent.com", "yt3.googleusercontent.com", "alkalicore-pa.clients6.google.com", "clients6.google.com", "signaler-pa.clients6.google.com", "waa-pa.clients6.google.com", "ogads-pa.clients6.google.com", "geller-pa.googleapis.com", "searchlabspartnerservice-pa.googleapis.com", "federatedcompute-pa.googleapis.com", "prod-lt-playstoregatewayadapter-pa.googleapis.com", "suggestqueries.google.com", "nearbysharing-pa.googleapis.com", "mobilemaps-pa-gz.googleapis.com", "geomobileservices-pa.googleapis.com", "firebaseinstallations.googleapis.com", "firebaselogging.googleapis.com", "play.googleapis.com", "play-fe.googleapis.com", "play.google.com", "android.apis.google.com", "mtalk.google.com", "cloudconfig.googleapis.com", "youtubei.googleapis.com", "app-measurement.com", "region1.app-measurement.com", "encrypted-tbn0.gstatic.com", "encrypted-tbn1.gstatic.com", "encrypted-tbn2.gstatic.com", "encrypted-tbn3.gstatic.com",
+  ];
+  const GOOGLE_AI_IP_CIDRS = ["64.233.160.0/19", "66.102.0.0/20", "66.249.80.0/20", "72.14.192.0/18", "74.125.0.0/16", "108.177.0.0/17", "142.250.0.0/15", "142.251.0.0/16", "172.217.0.0/16", "172.253.0.0/16", "173.194.0.0/16", "209.85.128.0/17", "216.58.192.0/19", "216.239.32.0/19"];
+  const OPENAI_DOMAINS = ["chatgpt.com", "chat.openai.com", "desktop.chat.openai.com", "ios.chat.openai.com", "android.chat.openai.com", "mobile.chat.openai.com", "ab.chatgpt.com", "openai.com", "api.openai.com", "cdn.openai.com", "auth.openai.com", "auth0.openai.com", "setup.auth.openai.com", "oaistatic.com", "auth-cdn.oaistatic.com", "persistent.oaistatic.com", "oaiusercontent.com", "files.oaiusercontent.com", "uploads.oaiusercontent.com", "ws.chatgpt.com", "webrtc.chatgpt.com", "realtime.chatgpt.com", "videos.openai.com", "challenges.cloudflare.com", "statsig.com", "statsigapi.net", "api.statsig.com", "events.statsigapi.net", "featuregates.org", "featureassets.org", "intercom.io", "intercomcdn.com", "js.intercomcdn.com", "ct.sendgrid.net", "cdn.openaimerge.com", "cdn.workos.com", "forwarder.workos.com", "setup.workos.com"];
+  const META_DOMAINS = ["facebook.com", "fb.com", "facebook.net", "fbcdn.net", "fbsbx.com", "instagram.com", "cdninstagram.com", "threads.net"];
+  const X_LINKEDIN_DOMAINS = ["x.com", "twitter.com", "t.co", "twimg.com", "twittercdn.com", "linkedin.com", "licdn.com", "lnkd.in"];
+  const MESSENGER_DOMAINS = ["discord.com", "discordapp.com", "discordapp.net", "discord.media", "discordstatus.com", "signal.org", "signal.me", "signal.art", "viber.com", "viber.me", "vibercdn.com"];
+  const INDEPENDENT_MEDIA_DOMAINS = ["meduza.io", "bbc.com", "bbc.co.uk", "bbci.co.uk", "dw.com", "currenttime.tv", "svoboda.org", "rferl.org", "theins.ru", "importantstories.io", "zona.media", "novayagazeta.eu", "holod.media", "verstka.media"];
+
+  const ROUTE_PRESETS = {
+    ru_blocked: {
+      name: "Ресурсы из GeoSite/GeoIP ru-blocked",
+      domains: [],
+      geosite: ["ru-blocked"],
+      geoip: ["ru-blocked"],
+    },
+    google_ai: {
+      name: "Google AI — WARP",
+      domains: GOOGLE_AI_DOMAINS,
+      ip_cidrs: GOOGLE_AI_IP_CIDRS,
+    },
+    ai: {
+      name: "AI‑сервисы",
+      domains: [...GOOGLE_AI_DOMAINS, ...OPENAI_DOMAINS, "claude.ai", "anthropic.com", "perplexity.ai", "x.ai"],
+      ip_cidrs: GOOGLE_AI_IP_CIDRS,
+    },
+    meta: {
+      name: "Meta: Facebook, Instagram, Threads",
+      domains: META_DOMAINS,
+    },
+    x_linkedin: {
+      name: "X (Twitter) и LinkedIn",
+      domains: X_LINKEDIN_DOMAINS,
+    },
+    messengers: {
+      name: "Discord, Signal и Viber",
+      domains: MESSENGER_DOMAINS,
+    },
+    media: {
+      name: "Независимые медиа",
+      domains: INDEPENDENT_MEDIA_DOMAINS,
+    },
+    video: {
+      name: "Видео",
+      domains: ["youtube.com", "googlevideo.com", "ytimg.com", "youtube-nocookie.com", "twitch.tv", "ttvnw.net", "jtvnw.net", "vimeo.com"],
+    },
+    social: {
+      name: "Соцсети и сообщества",
+      domains: [...MESSENGER_DOMAINS, ...X_LINKEDIN_DOMAINS, ...META_DOMAINS, "reddit.com", "redd.it", "redditmedia.com"],
+    },
+    music: {
+      name: "Музыкальные сервисы",
+      domains: ["spotify.com", "scdn.co", "soundcloud.com", "sndcdn.com", "bandcamp.com"],
+    },
+  };
+  ROUTE_PRESETS.popular = {
+    name: "Популярные сервисы",
+    domains: [...new Set(Object.values(ROUTE_PRESETS).flatMap((preset) => preset.domains))],
+    ip_cidrs: [...new Set(Object.values(ROUTE_PRESETS).flatMap((preset) => preset.ip_cidrs || []))],
+  };
+
+  function openXrayRouteDialog(index = -1) {
+    const route = index >= 0 ? state.xray.routes[index] : { name: "", tag: "", vless_uri: "", enabled: true };
+    $("#xray-route-dialog-title").textContent = index >= 0 ? "Редактировать VLESS‑маршрут" : "Новый VLESS‑маршрут";
+    $("#xray-route-index").value = index >= 0 ? String(index) : "";
+    $("#xray-route-name").value = route.name || ""; $("#xray-route-tag").value = route.tag || "";
+    $("#xray-route-vless").value = route.vless_uri || ""; $("#xray-route-enabled").checked = route.enabled !== false;
+    $("#xray-route-dialog").showModal();
+  }
+
+  function openXrayRuleDialog(index = -1) {
+    const rule = index >= 0 ? state.xray.friendly_rules[index] : { name: "", outbound: "direct", enabled: true };
+    $("#xray-rule-dialog-title").textContent = index >= 0 ? "Редактировать правило" : "Новое правило";
+    $("#xray-rule-index").value = index >= 0 ? String(index) : "";
+    $("#xray-rule-name").value = rule.name || ""; $("#xray-rule-outbound").innerHTML = xrayTargets(rule.outbound || "direct");
+    $("#xray-rule-domains").value = ruleValues(rule.domains).join("\n"); $("#xray-rule-ip-cidrs").value = ruleValues(rule.ip_cidrs).join("\n");
+    $("#xray-rule-geosite").value = ruleValues(rule.geosite).join("\n"); $("#xray-rule-geoip").value = ruleValues(rule.geoip).join("\n");
+    $("#xray-rule-enabled").checked = rule.enabled !== false;
+    $("#xray-rule-preset").value = "";
+    $("#xray-rule-dialog").showModal();
+  }
+
+  function saveXrayRouteDialog(event) {
+    event.preventDefault();
+    const rawIndex = $("#xray-route-index").value; const index = rawIndex === "" ? -1 : Number(rawIndex);
+    const route = { name: $("#xray-route-name").value.trim(), tag: $("#xray-route-tag").value.trim(), type: "vless", vless_uri: $("#xray-route-vless").value.trim(), enabled: $("#xray-route-enabled").checked };
+    if (!route.name || !route.tag || !route.vless_uri) { toast("Укажите название, tag и полную VLESS‑ссылку", true); return; }
+    if ((state.xray.routes || []).some((item, itemIndex) => item.tag === route.tag && itemIndex !== index) || ["direct", "block", "warp", "eu-vless"].includes(route.tag)) { toast("Такой tag уже занят или зарезервирован", true); return; }
+    if (index >= 0) state.xray.routes[index] = route; else state.xray.routes.push(route);
+    $("#xray-route-dialog").close(); renderCompactFriendlyRoutes(); renderCompactFriendlyRules();
+    toast("Маршрут сохранён. Нажмите «Сохранить и применить».");
+  }
+
+  function saveXrayRuleDialog(event) {
+    event.preventDefault();
+    const rawIndex = $("#xray-rule-index").value; const index = rawIndex === "" ? -1 : Number(rawIndex);
+    const rule = { name: $("#xray-rule-name").value.trim(), outbound: $("#xray-rule-outbound").value, enabled: $("#xray-rule-enabled").checked, domains: $("#xray-rule-domains").value.trim(), ip_cidrs: $("#xray-rule-ip-cidrs").value.trim(), geosite: $("#xray-rule-geosite").value.trim(), geoip: $("#xray-rule-geoip").value.trim() };
+    if (!rule.name || (!rule.domains && !rule.ip_cidrs && !rule.geosite && !rule.geoip)) { toast("Укажите название и хотя бы один домен, IP/CIDR или Geo‑набор", true); return; }
+    if (index >= 0) state.xray.friendly_rules[index] = rule; else state.xray.friendly_rules.push(rule);
+    $("#xray-rule-dialog").close(); renderCompactFriendlyRules();
+    toast("Правило сохранено. Нажмите «Сохранить и применить».");
+  }
+
+  function renderFriendlyRoutes() {
+    const standard = [
+      `<article class="friendly-route builtin-route"><div><strong>Напрямую</strong><small>Маршрут <code>direct</code>: сайт открывается с IP этого сервера.</small></div><span class="badge ok">готов</span></article>`,
+      `<article class="friendly-route builtin-route"><div><strong>Блокировка</strong><small>Маршрут <code>block</code>: доступ к указанным сайтам запрещается.</small></div><span class="badge warn">готов</span></article>`,
+    ];
+    const warp = (state.xray.outbounds || []).some((item) => item.tag === "warp");
+    standard.push(`<article class="friendly-route builtin-route"><div><strong>Cloudflare WARP</strong><small>${warp ? "Готов к выбору в правилах." : "Сначала создайте WARP‑профиль в карточке выше."}</small></div><span class="badge ${warp ? "ok" : "warn"}">${warp ? "готов" : "не настроен"}</span></article>`);
+    const routes = (state.xray.routes || []).map((route, index) => `<article class="friendly-route" data-friendly-route="${index}"><div class="section-head"><div><strong>${escapeHtml(route.name || route.tag || "VLESS маршрут")}</strong><small>VLESS‑подключение. Его можно выбрать в правилах ниже.</small></div><label class="checkbox"><input data-route-field="enabled" type="checkbox" ${route.enabled === false ? "" : "checked"}> Включён</label></div><div class="form-grid compact-grid"><label>Название<input data-route-field="name" maxlength="80" value="${escapeHtml(route.name || "")}"></label><label>Tag<input data-route-field="tag" maxlength="64" value="${escapeHtml(route.tag || "")}"></label><label class="wide">VLESS‑ссылка<textarea data-route-field="vless_uri" class="compact-textarea mono" spellcheck="false">${escapeHtml(route.vless_uri || "")}</textarea></label></div><div class="row-actions"><button data-remove-friendly-route="${index}" class="danger">Удалить маршрут</button></div></article>`).join("");
+    $("#xray-friendly-routes").innerHTML = [...standard, routes || `<p class="muted">Дополнительных маршрутов пока нет. Для WARP достаточно создать профиль; для сервера вставьте VLESS‑ссылку выше.</p>`].join("");
+  }
+
+  function renderFriendlyRules() {
+    const select = $("#xray-rule-outbound");
+    const selected = select.value || ((state.xray.outbounds || []).some((item) => item.tag === "warp") ? "warp" : "direct");
+    select.innerHTML = xrayTargets(selected);
+    $("#xray-friendly-rules").innerHTML = (state.xray.friendly_rules || []).map((rule, index) => `<article class="friendly-rule" data-friendly-rule="${index}"><div class="section-head"><div><strong>${escapeHtml(rule.name || `Правило ${index + 1}`)}</strong><small>Проверяется раньше экспертных JSON‑правил.</small></div><label class="checkbox"><input data-rule-field="enabled" type="checkbox" ${rule.enabled === false ? "" : "checked"}> Включено</label></div><div class="form-grid compact-grid"><label>Название<input data-rule-field="name" maxlength="80" value="${escapeHtml(rule.name || "")}"></label><label>Направлять через<select data-rule-field="outbound">${xrayTargets(rule.outbound || "direct")}</select></label><label>Домены<textarea data-rule-field="domains" class="compact-textarea" spellcheck="false">${escapeHtml(Array.isArray(rule.domains) ? rule.domains.join("\n") : (rule.domains || ""))}</textarea></label><label>IP или CIDR<textarea data-rule-field="ip_cidrs" class="compact-textarea mono" spellcheck="false">${escapeHtml(Array.isArray(rule.ip_cidrs) ? rule.ip_cidrs.join("\n") : (rule.ip_cidrs || ""))}</textarea></label><label>GeoSite‑категории<textarea data-rule-field="geosite" class="compact-textarea mono" spellcheck="false">${escapeHtml(Array.isArray(rule.geosite) ? rule.geosite.join("\n") : (rule.geosite || ""))}</textarea></label><label>GeoIP‑категории<textarea data-rule-field="geoip" class="compact-textarea mono" spellcheck="false">${escapeHtml(Array.isArray(rule.geoip) ? rule.geoip.join("\n") : (rule.geoip || ""))}</textarea></label></div><div class="row-actions"><button data-move-friendly-rule="up" data-friendly-rule-index="${index}" class="secondary" ${index === 0 ? "disabled" : ""}>Выше</button><button data-move-friendly-rule="down" data-friendly-rule-index="${index}" class="secondary" ${index === state.xray.friendly_rules.length - 1 ? "disabled" : ""}>Ниже</button><button data-remove-friendly-rule="${index}" class="danger">Удалить правило</button></div></article>`).join("") || `<p class="muted">Правил пока нет. Например, выберите «Cloudflare WARP», укажите <code>youtube.com</code> и сохраните конфигурацию.</p>`;
+  }
+
+  function renderXrayGeofiles() {
+    $("#xray-geofiles").innerHTML = state.xray.geofiles.map((item) => `<div class="backup-row"><span><strong>${escapeHtml(item.tag)}</strong><br><small>${escapeHtml(item.filename)} · ${item.available ? formatBytes(item.size) : "ещё не загружен"} · ${item.updated_at ? formatDate(item.updated_at) : "ожидает обновления"}</small></span><div class="inline-actions"><label class="checkbox"><input data-xray-geo="enabled" data-xray-tag="${escapeHtml(item.tag)}" type="checkbox" ${item.enabled === false ? "" : "checked"}> Вкл.</label><label class="checkbox"><input data-xray-geo="auto_update" data-xray-tag="${escapeHtml(item.tag)}" type="checkbox" ${item.auto_update ? "checked" : ""}> Авто</label><button data-refresh-xray-geofile="${escapeHtml(item.tag)}" ${item.url ? "" : "disabled"}>Обновить</button></div></div>`).join("") || `<p class="muted">GeoFiles не настроены.</p>`;
+  }
+
+  function renderXrayMode() {
+    const raw = $("#xray-mode").value === "raw";
+    $("#xray-managed-editor").hidden = raw;
+    $("#xray-raw-editor").hidden = !raw;
+    ["#xray-gateway-enabled", "#xray-gateway-source-cidr", "#xray-gateway-inbound-port"].forEach((selector) => { $(selector).disabled = raw; });
+  }
+
+  async function loadXray() {
+    try {
+      const result = await api("xray");
+      state.xray = result.settings || { inbounds: [], outbounds: [], routing_rules: [], routes: [], friendly_rules: [], geofiles: [] };
+      state.xray.inbounds ||= []; state.xray.outbounds ||= []; state.xray.routing_rules ||= []; state.xray.routes ||= []; state.xray.friendly_rules ||= []; state.xray.geofiles = result.geofiles || state.xray.geofiles || [];
+      $("#xray-enabled").checked = Boolean(state.xray.enabled);
+      $("#xray-mode").value = state.xray.mode || "managed";
+      $("#xray-log-level").value = state.xray.log_level || "warning";
+      $("#xray-access-log").checked = Boolean(state.xray.access_log);
+      $("#xray-gateway-enabled").checked = Boolean(state.xray.gateway_enabled);
+      $("#xray-gateway-source-cidr").value = state.xray.gateway_source_cidr || "10.66.66.0/24";
+      $("#xray-gateway-inbound-port").value = state.xray.gateway_inbound_port || 12346;
+      state.xrayGateway = result.gateway || null;
+      $("#xray-raw-config").value = state.xray.raw_config || "";
+      $("#xray-status").className = `badge ${result.active ? "ok" : (state.xray.enabled ? "bad" : "warn")}`;
+      $("#xray-status").textContent = result.active ? "работает" : (state.xray.enabled ? "ошибка" : (result.installed ? "выключен" : "не установлен"));
+      $("#xray-runtime-info").textContent = result.installed ? `${result.version || "Xray установлен"} · ${result.config_exists ? "конфигурация создана" : "конфигурация ещё не создана"}` : "Нажмите «Установить Xray», затем создайте конфигурацию.";
+      $("#install-xray").textContent = result.installed ? (result.version || "Xray установлен") : "Установить Xray";
+      $("#xray-log").textContent = (result.logs || []).join("\n") || "Нет записей.";
+      const gateway = state.xrayGateway || {};
+      $("#xray-gateway-info").textContent = !state.xray.gateway_enabled ? "Шлюз выключен: правила WARP не получают трафик WDTT." : (gateway.rules_active ? `Шлюз активен: трафик ${gateway.source_cidr || state.xray.gateway_source_cidr} попадает в Xray; правила и журнал работают.` : "Шлюз включён, но правила TPROXY ещё не активны. Нажмите «Сохранить и применить».");
+      renderXrayMode(); renderCompactFriendlyRoutes(); renderCompactFriendlyRules(); renderXrayItems(); renderXrayGeofiles();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  function collectXrayItems(kind) {
+    return $$(`[data-xray-json="${kind}"]`).map((node, index) => {
+      try { return JSON.parse(node.value); }
+      catch (error) { throw new Error(`${kind} ${index + 1}: неверный JSON`); }
+    });
+  }
+
+  async function saveXray() {
+    const button = $("#save-xray"); setBusy(button, true);
+    try {
+      const mode = $("#xray-mode").value;
+      const payload = {
+        enabled: $("#xray-enabled").checked, mode, log_level: $("#xray-log-level").value, access_log: $("#xray-access-log").checked, gateway_enabled: mode !== "raw" && $("#xray-gateway-enabled").checked, gateway_source_cidr: $("#xray-gateway-source-cidr").value.trim(), gateway_inbound_port: Number($("#xray-gateway-inbound-port").value), geofiles: state.xray.geofiles,
+        routes: collectFriendlyRoutes(), friendly_rules: collectFriendlyRules(),
+      };
+      if (mode === "raw") payload.raw_config = $("#xray-raw-config").value;
+      else {
+        payload.inbounds = collectXrayItems("inbounds"); payload.outbounds = collectXrayItems("outbounds"); payload.routing_rules = collectXrayItems("routing_rules");
+      }
+      await api("xray/save", { method: "POST", body: payload });
+      toast("Конфигурация Xray сохранена и применена"); await loadXray();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function installXray() {
+    const button = $("#install-xray"); setBusy(button, true);
+    try { await api("xray/install", { method: "POST" }); toast("Установка Xray запущена в фоне"); setTimeout(loadXray, 12000); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function refreshXrayGeofile(tag) {
+    try { await api("xray/geofiles/refresh", { method: "POST", body: { tag } }); toast(`GeoFile ${tag} обновлен`); await loadXray(); }
+    catch (error) { toast(error.message, true); }
+  }
+
+  function renderWarp(result) {
+    state.warp = result;
+    const ready = Boolean(result.profile_exists), running = Boolean(result.active);
+    $("#warp-status").className = `badge ${running ? "ok" : (ready ? "warn" : "bad")}`;
+    $("#warp-status").textContent = running ? "работает" : (ready ? "профиль создан" : (result.installed ? "ожидает профиль" : "не установлен"));
+    const connection = result.endpoint ? `${result.endpoint} · ${(result.addresses || []).join(", ")}` : "";
+    $("#warp-info").textContent = result.error || (ready ? `${connection}. ${result.configured ? "Исходящий добавлен в Xray." : "Исходящий ещё не добавлен в Xray."}` : "Установите компонент, затем создайте Cloudflare WARP-профиль.");
+    $("#install-warp").textContent = result.installed ? "WARP установлен" : "Установить WARP";
+  }
+
+  async function loadWarp() {
+    try { renderWarp(await api("warp")); } catch (error) { toast(error.message, true); }
+  }
+
+  function renderCascade(result) {
+    state.cascade = result;
+    const settings = result.settings || {};
+    $("#cascade-enabled").checked = Boolean(settings.enabled);
+    $("#cascade-source-cidr").value = settings.source_cidr || "10.66.66.0/24";
+    $("#cascade-inbound-port").value = settings.inbound_port || 12345;
+    $("#cascade-geosite-category").value = settings.geosite_category || "ru-blocked";
+    $("#cascade-geoip-category").value = settings.geoip_category || "ru-blocked";
+    $("#cascade-domains").value = (settings.domains || []).join("\n");
+    $("#cascade-ip-cidrs").value = (settings.ip_cidrs || []).join("\n");
+    $("#cascade-eu-vless").value = settings.eu_vless_uri || "";
+    if (!settings.enabled) $("#cascade-info").textContent = "Каскад выключен: обычный трафик WDTT не меняется.";
+    else $("#cascade-info").textContent = `${result.rules_active ? "Правила TPROXY активны" : "Правила ещё не применены"} · EU: ${result.eu_summary || "не задан"} · Xray: ${result.xray_active ? "работает" : "не запущен"}.`;
+  }
+
+  async function loadCascadeRouting() {
+    try { renderCascade(await api("cascade")); } catch (error) { toast(error.message, true); }
+  }
+
+  async function installWarp() {
+    const button = $("#install-warp"); setBusy(button, true);
+    try { await api("warp/install", { method: "POST" }); toast("Установка Cloudflare WARP запущена"); setTimeout(loadWarp, 10000); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function createWarpProfile(recreate = false) {
+    if (recreate && !confirm("Пересоздать WARP-аккаунт и профиль? Старый профиль перестанет работать.")) return;
+    const button = recreate ? $("#recreate-warp") : $("#create-warp"); setBusy(button, true);
+    try { await api(recreate ? "warp/recreate" : "warp/create", { method: "POST", body: recreate ? { recreate: true } : {} }); toast(recreate ? "WARP-профиль пересоздан" : "WARP-профиль создан"); await Promise.all([loadWarp(), loadXray()]); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function restartWarp() {
+    const button = $("#restart-warp"); setBusy(button, true);
+    try { await api("warp/restart", { method: "POST" }); toast("WARP в Xray перезапущен"); await Promise.all([loadWarp(), loadXray()]); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function pingWarp() {
+    const button = $("#ping-warp"); setBusy(button, true);
+    try {
+      const result = await api("warp/ping", { method: "POST" });
+      if (!result.ok) throw new Error(result.error || "WARP не подтвердил соединение");
+      const location = result.colo ? `, Cloudflare ${result.colo}` : "";
+      const ip = result.ip ? `, IP ${result.ip}` : "";
+      $("#warp-info").textContent = `WARP доступен: ${result.latency_ms} мс${location}${ip}.`;
+      toast(`WARP отвечает за ${result.latency_ms} мс`);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function saveCascade() {
+    const button = $("#save-cascade"); setBusy(button, true);
+    try {
+      await api("cascade/save", { method: "POST", body: {
+        enabled: $("#cascade-enabled").checked,
+        source_cidr: $("#cascade-source-cidr").value.trim(),
+        inbound_port: Number($("#cascade-inbound-port").value),
+        geosite_category: $("#cascade-geosite-category").value.trim(),
+        geoip_category: $("#cascade-geoip-category").value.trim(),
+        domains: $("#cascade-domains").value,
+        ip_cidrs: $("#cascade-ip-cidrs").value,
+        eu_vless_uri: $("#cascade-eu-vless").value.trim(),
+      }});
+      toast("Каскад RU → EU сохранён"); await Promise.all([loadCascadeRouting(), loadXray()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function restartCascade() {
+    const button = $("#restart-cascade"); setBusy(button, true);
+    try { await api("cascade/restart", { method: "POST" }); toast("Xray-каскад перезапущен"); await Promise.all([loadCascadeRouting(), loadXray()]); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function bindEvents() {
+    $$(".nav-item").forEach((button) => button.addEventListener("click", () => activateTab(button.dataset.tab)));
+    $("#sidebar-toggle").addEventListener("click", () => {
+      document.body.classList.toggle("sidebar-collapsed");
+      try { localStorage.setItem("wdtt-sidebar-collapsed", document.body.classList.contains("sidebar-collapsed") ? "1" : "0"); }
+      catch (_) { /* Browser storage can be disabled. */ }
+      renderSidebarState();
+    });
+    $("#theme-toggle").addEventListener("click", () => {
+      document.body.classList.toggle("light-theme");
+      try { localStorage.setItem("wdtt-theme", document.body.classList.contains("light-theme") ? "light" : "dark"); }
+      catch (_) { /* Browser storage can be disabled. */ }
+      renderTheme();
+    });
+    $("#manage-vk-hashes").addEventListener("click", async () => {
+      try { await loadVkHashes(); $("#vk-hashes-dialog").showModal(); }
+      catch (error) { toast(error.message, true); }
+    });
+    $("#new-user").addEventListener("click", () => openUserDialog());
+    $("#auto-user").addEventListener("click", openAutoUserDialog);
+    $("#bulk-users").addEventListener("click", openBulkUserDialog);
+    $("#user-form").addEventListener("submit", saveUser);
+    $("#auto-user-form").addEventListener("submit", saveAutoUser);
+    $("#bulk-user-form").addEventListener("submit", saveBulkUsers);
+    $("#quota-form").addEventListener("submit", saveQuota);
+    $$('[data-expiry-preset]').forEach((button) => button.addEventListener("click", () => {
+      const [prefix, rawMonths] = button.dataset.expiryPreset.split(":");
+      setExpiryPreset(prefix, Number(rawMonths));
+    }));
+    ["edit", "bulk", "quota"].forEach((prefix) => $(`#${prefix}-expires`).addEventListener("change", () => clearExpiryPreset(prefix)));
+    $("#edit-traffic-unlimited").addEventListener("change", (event) => { $("#edit-traffic").disabled = event.target.checked; });
+    $("#bulk-traffic-unlimited").addEventListener("change", (event) => { $("#bulk-traffic").disabled = event.target.checked; });
+    $("#edit-unlimited").addEventListener("change", (event) => { $("#edit-expires").disabled = event.target.checked || Boolean(state.editing); });
+    $("#bulk-unlimited").addEventListener("change", (event) => { $("#bulk-expires").disabled = event.target.checked; });
+    $("#vk-hashes-form").addEventListener("submit", saveVkHashes);
+    $("#export-vk-hashes").addEventListener("click", exportVkHashes);
+    $("#import-vk-hashes").addEventListener("click", () => $("#vk-hashes-upload").click());
+    $("#vk-hashes-upload").addEventListener("change", (event) => importVkHashes(event.target.files[0]));
+    $("#edit-saved-hash").addEventListener("change", () => appendSavedHash("#edit-saved-hash", "#edit-hashes"));
+    $("#bulk-saved-hash").addEventListener("change", () => appendSavedHash("#bulk-saved-hash", "#bulk-hashes"));
+    $("#vk-hashes-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-delete-vk-hash]");
+      if (button) deleteVkHash(button.dataset.deleteVkHash);
+    });
+    $("#copy-bulk-links").addEventListener("click", copyBulkLinks);
+    $("#user-search").addEventListener("input", renderUsers);
+    $("#user-auto-refresh-interval").addEventListener("change", () => setUserAutoRefresh());
+    $$("[data-user-sort]").forEach((button) => button.addEventListener("click", () => {
+      const key = button.dataset.userSort;
+      if (state.userSort.key === key) state.userSort.direction = state.userSort.direction === "asc" ? "desc" : "asc";
+      else state.userSort = { key, direction: "asc" };
+      renderUsers();
+    }));
+    $("#bulk-user-action").addEventListener("change", renderSelectedUsersControls);
+    $("#apply-bulk-user-action").addEventListener("click", applyBulkUserAction);
+    $("#select-all-users").addEventListener("change", (event) => {
+      const query = $("#user-search").value.toLowerCase();
+      state.users.filter((user) => user.role !== "admin" && JSON.stringify(user).toLowerCase().includes(query)).forEach((user) => {
+        if (event.target.checked) state.selectedUsers.add(user.password);
+        else state.selectedUsers.delete(user.password);
+      });
+      renderUsers();
+    });
+    $("#users-body").addEventListener("change", (event) => {
+      const input = event.target.closest("[data-select-user]");
+      if (!input) return;
+      if (input.checked) state.selectedUsers.add(input.dataset.selectUser);
+      else state.selectedUsers.delete(input.dataset.selectUser);
+      renderSelectedUsersControls();
+    });
+    $("#users-body").addEventListener("click", async (event) => {
+      const button = event.target.closest("button"); if (!button) return;
+      if (button.dataset.actionsToggle) {
+        const user = state.users.find((item) => item.password === button.dataset.actionsToggle);
+        openUserActions(button, user);
+        return;
+      }
+      closeUserActions();
+      await handleUserActionButton(button);
+    });
+    document.addEventListener("click", async (event) => {
+      const action = event.target.closest("#user-actions-popover button");
+      if (action) {
+        closeUserActions();
+        await handleUserActionButton(action);
+        return;
+      }
+      if (!event.target.closest("[data-actions-toggle]") && !event.target.closest("#user-actions-popover")) {
+        closeUserActions();
+      }
+    });
+    window.addEventListener("resize", closeUserActions);
+    window.addEventListener("scroll", closeUserActions, true);
+    $("#load-logs").addEventListener("click", loadLogs);
+    $("#download-logs").addEventListener("click", downloadLogs);
+    $("#cleanup-preview").addEventListener("click", (event) => cleanupSystem(false, event.currentTarget));
+    $("#cleanup-apply").addEventListener("click", (event) => cleanupSystem(true, event.currentTarget));
+    $("#log-source").addEventListener("change", loadLogs);
+    $("#log-limit").addEventListener("change", loadLogs);
+    $("#log-filter").addEventListener("change", renderLogs);
+    $$('[data-service]').forEach((button) => button.addEventListener("click", () => serviceAction(button.dataset.service, button)));
+    $("#load-backups").addEventListener("click", loadBackups);
+    $("#create-full-backup").addEventListener("click", () => createBackup("full"));
+    $("#create-users-backup").addEventListener("click", () => createBackup("users"));
+    $("#save-backup-schedule").addEventListener("click", saveBackupSchedule);
+    $("#save-telegram").addEventListener("click", saveTelegramSettings);
+    $("#test-telegram").addEventListener("click", testTelegramSettings);
+    $("#update-panel").addEventListener("click", updatePanel);
+    $("#renew-certificate").addEventListener("click", renewCertificate);
+    $("#download-certificate").addEventListener("click", downloadCertificate);
+    $("#upload-backup").addEventListener("click", () => $("#backup-upload").click());
+    $("#backup-upload").addEventListener("change", (event) => uploadBackup(event.target.files[0]));
+    $("#backups-list").addEventListener("click", (event) => {
+      const restore = event.target.closest("[data-restore]"); if (restore) restoreBackup(restore.dataset.restore, restore.dataset.backupType);
+      const download = event.target.closest("[data-download-backup]"); if (download) downloadBackup(download.dataset.downloadBackup);
+      const deleted = event.target.closest("[data-delete-backup]"); if (deleted) deleteBackup(deleted.dataset.deleteBackup);
+    });
+    $("#save-xray").addEventListener("click", saveXray);
+    $("#install-xray").addEventListener("click", installXray);
+    $("#install-warp").addEventListener("click", installWarp);
+    $("#create-warp").addEventListener("click", () => createWarpProfile());
+    $("#ping-warp").addEventListener("click", pingWarp);
+    $("#restart-warp").addEventListener("click", restartWarp);
+    $("#recreate-warp").addEventListener("click", () => createWarpProfile(true));
+    $("#save-cascade").addEventListener("click", saveCascade);
+    $("#restart-cascade").addEventListener("click", restartCascade);
+    $("#xray-mode").addEventListener("change", renderXrayMode);
+    $("#add-xray-vless-route").addEventListener("click", () => {
+      openXrayRouteDialog(); return;
+      state.xray.routes = collectFriendlyRoutes();
+      const name = $("#xray-route-name").value.trim();
+      const tag = $("#xray-route-tag").value.trim();
+      const vlessUri = $("#xray-route-vless").value.trim();
+      if (!tag || !vlessUri) { toast("Укажите tag и полную VLESS‑ссылку", true); return; }
+      if (state.xray.routes.some((item) => item.tag === tag) || ["direct", "block", "warp", "eu-vless"].includes(tag)) { toast("Такой tag уже занят или зарезервирован", true); return; }
+      state.xray.routes.push({ name: name || tag, tag, type: "vless", vless_uri: vlessUri, enabled: true });
+      $("#xray-route-name").value = ""; $("#xray-route-tag").value = ""; $("#xray-route-vless").value = "";
+      renderFriendlyRoutes(); renderFriendlyRules();
+      toast("Маршрут добавлен. Нажмите «Сохранить и применить».");
+    });
+    $("#add-xray-friendly-rule").addEventListener("click", () => {
+      openXrayRuleDialog(); return;
+      state.xray.routes = collectFriendlyRoutes(); state.xray.friendly_rules = collectFriendlyRules();
+      const rule = {
+        name: $("#xray-rule-name").value.trim(), enabled: true, outbound: $("#xray-rule-outbound").value,
+        domains: $("#xray-rule-domains").value.trim(), ip_cidrs: $("#xray-rule-ip-cidrs").value.trim(),
+        geosite: $("#xray-rule-geosite").value.trim(), geoip: $("#xray-rule-geoip").value.trim(),
+      };
+      if (!rule.domains && !rule.ip_cidrs && !rule.geosite && !rule.geoip) { toast("Добавьте домен, IP/CIDR или Geo‑категорию", true); return; }
+      rule.name ||= `Правило ${state.xray.friendly_rules.length + 1}`;
+      state.xray.friendly_rules.push(rule);
+      ["#xray-rule-name", "#xray-rule-domains", "#xray-rule-ip-cidrs", "#xray-rule-geosite", "#xray-rule-geoip"].forEach((selector) => { $(selector).value = ""; });
+      renderFriendlyRules(); toast("Правило добавлено. Нажмите «Сохранить и применить».");
+    });
+    $("#xray-friendly-routes").addEventListener("change", () => {
+      return;
+      state.xray.routes = collectFriendlyRoutes(); renderFriendlyRules();
+    });
+    $("#xray-friendly-routes").addEventListener("click", (event) => {
+      return;
+      const button = event.target.closest("[data-remove-friendly-route]"); if (!button) return;
+      const index = Number(button.dataset.removeFriendlyRoute); const route = state.xray.routes[index];
+      if (!route || !confirm(`Удалить маршрут «${route.name || route.tag}»?`)) return;
+      state.xray.routes = collectFriendlyRoutes(); state.xray.friendly_rules = collectFriendlyRules();
+      const tag = state.xray.routes[index].tag; state.xray.routes.splice(index, 1);
+      let reassigned = 0;
+      state.xray.friendly_rules.forEach((rule) => { if (rule.outbound === tag) { rule.outbound = "direct"; reassigned += 1; } });
+      renderFriendlyRoutes(); renderFriendlyRules();
+      toast(reassigned ? "Маршрут удалён; связанные правила переключены на direct." : "Маршрут удалён. Нажмите «Сохранить и применить».");
+    });
+    $("#xray-friendly-rules").addEventListener("click", (event) => {
+      return;
+      const remove = event.target.closest("[data-remove-friendly-rule]");
+      const move = event.target.closest("[data-move-friendly-rule]");
+      if (!remove && !move) return;
+      state.xray.friendly_rules = collectFriendlyRules();
+      if (remove) state.xray.friendly_rules.splice(Number(remove.dataset.removeFriendlyRule), 1);
+      if (move) {
+        const index = Number(move.dataset.friendlyRuleIndex); const next = move.dataset.moveFriendlyRule === "up" ? index - 1 : index + 1;
+        if (next >= 0 && next < state.xray.friendly_rules.length) [state.xray.friendly_rules[index], state.xray.friendly_rules[next]] = [state.xray.friendly_rules[next], state.xray.friendly_rules[index]];
+      }
+      renderFriendlyRules();
+    });
+    $("#xray-route-form").addEventListener("submit", saveXrayRouteDialog);
+    $("#xray-rule-form").addEventListener("submit", saveXrayRuleDialog);
+    $("#apply-xray-rule-preset").addEventListener("click", () => {
+      const preset = ROUTE_PRESETS[$("#xray-rule-preset").value];
+      if (!preset) { toast("Выберите готовую настройку", true); return; }
+      $("#xray-rule-name").value = preset.name;
+      $("#xray-rule-domains").value = preset.domains.join("\n");
+      $("#xray-rule-ip-cidrs").value = (preset.ip_cidrs || []).join("\n"); $("#xray-rule-geosite").value = (preset.geosite || []).join("\n"); $("#xray-rule-geoip").value = (preset.geoip || []).join("\n");
+      const outbound = $("#xray-rule-outbound");
+      if ((state.xray.outbounds || []).some((item) => item.tag === "warp")) outbound.value = "warp";
+      else if (outbound.value === "direct" && outbound.querySelector('option[value="eu-vless"]')) outbound.value = "eu-vless";
+      toast("Поля правила заполнены. При необходимости отредактируйте их перед сохранением.");
+    });
+    $("#xray-friendly-routes").addEventListener("click", (event) => {
+      const edit = event.target.closest("[data-edit-friendly-route]");
+      const remove = event.target.closest("[data-remove-friendly-route]");
+      if (edit) { openXrayRouteDialog(Number(edit.dataset.editFriendlyRoute)); return; }
+      if (!remove) return;
+      const index = Number(remove.dataset.removeFriendlyRoute); const route = state.xray.routes[index];
+      if (!route || !confirm(`Удалить маршрут «${route.name || route.tag}»?`)) return;
+      state.xray.routes.splice(index, 1);
+      let reassigned = 0;
+      state.xray.friendly_rules.forEach((rule) => { if (rule.outbound === route.tag) { rule.outbound = "direct"; reassigned += 1; } });
+      renderCompactFriendlyRoutes(); renderCompactFriendlyRules();
+      toast(reassigned ? "Маршрут удалён; связанные правила переключены на direct." : "Маршрут удалён. Нажмите «Сохранить и применить».");
+    });
+    $("#xray-friendly-rules").addEventListener("click", (event) => {
+      const edit = event.target.closest("[data-edit-friendly-rule]");
+      const remove = event.target.closest("[data-remove-friendly-rule]");
+      const move = event.target.closest("[data-move-friendly-rule]");
+      if (edit) { openXrayRuleDialog(Number(edit.dataset.editFriendlyRule)); return; }
+      if (remove) state.xray.friendly_rules.splice(Number(remove.dataset.removeFriendlyRule), 1);
+      if (move) {
+        const index = Number(move.dataset.friendlyRuleIndex); const next = move.dataset.moveFriendlyRule === "up" ? index - 1 : index + 1;
+        if (next >= 0 && next < state.xray.friendly_rules.length) [state.xray.friendly_rules[index], state.xray.friendly_rules[next]] = [state.xray.friendly_rules[next], state.xray.friendly_rules[index]];
+      }
+      if (remove || move) renderCompactFriendlyRules();
+    });
+    $("#add-xray-inbound").addEventListener("click", () => { state.xray.inbounds.push(xrayInboundTemplate($("#xray-inbound-template").value)); renderXrayItems(); });
+    $("#add-xray-outbound").addEventListener("click", () => { state.xray.outbounds.push(xrayOutboundTemplate($("#xray-outbound-template").value)); renderXrayItems(); });
+    $("#add-xray-rule").addEventListener("click", () => { state.xray.routing_rules.push({ type: "field", outboundTag: "direct", domain: ["geosite:ru"] }); renderXrayItems(); });
+    $$(".xray-json-list").forEach((list) => list.addEventListener("click", (event) => {
+      const remove = event.target.closest("[data-xray-remove]"); if (!remove) return;
+      state.xray[remove.dataset.xrayRemove].splice(Number(remove.dataset.xrayIndex), 1); renderXrayItems();
+    }));
+    $("#add-xray-geofile").addEventListener("click", () => {
+      const tag = $("#xray-geofile-tag").value.trim(), filename = $("#xray-geofile-file").value.trim(), url = $("#xray-geofile-url").value.trim();
+      if (!tag || !filename || !url) { toast("Укажите tag, имя файла и HTTPS URL", true); return; }
+      state.xray.geofiles = state.xray.geofiles.filter((item) => item.tag !== tag);
+      state.xray.geofiles.push({ tag, filename, url, enabled: true, auto_update: true, update_interval: $("#xray-geofile-interval").value, updated_at: 0 });
+      $("#xray-geofile-tag").value = ""; $("#xray-geofile-file").value = ""; $("#xray-geofile-url").value = ""; renderXrayGeofiles();
+    });
+    $("#refresh-all-xray-geofiles").addEventListener("click", async () => {
+      try { const result = await api("xray/geofiles/refresh-all", { method: "POST" }); toast(`Обновлено GeoFiles: ${(result.refreshed || []).length}`); await loadXray(); }
+      catch (error) { toast(error.message, true); }
+    });
+    $("#xray-geofiles").addEventListener("click", (event) => { const button = event.target.closest("[data-refresh-xray-geofile]"); if (button) refreshXrayGeofile(button.dataset.refreshXrayGeofile); });
+    $("#xray-geofiles").addEventListener("change", (event) => {
+      const input = event.target; const tag = input.dataset.xrayTag; const key = input.dataset.xrayGeo; if (!tag || !key) return;
+      const item = state.xray.geofiles.find((entry) => entry.tag === tag); if (item) item[key] = input.checked;
+    });
+    $$("dialog button[value='cancel']").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+    $("#logout-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await fetch(`${BASE}logout`, { method: "POST", headers: { "X-CSRF-Token": CSRF } });
+      location.reload();
+    });
+    window.addEventListener("resize", () => { if (state.overview) loadHistory().catch(() => {}); });
+  }
+
+  restoreSidebarState();
+  restoreTheme();
+  restoreActiveTab();
+  bindEvents();
+  restoreUserAutoRefresh();
+  Promise.all([loadOverview(), loadUsers(), loadVkHashes(), loadPanelVersion()]).catch((error) => toast(error.message, true));
+  setInterval(() => loadOverview().catch(() => {}), 10000);
+})();

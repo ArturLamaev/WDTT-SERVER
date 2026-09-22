@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{CSRF}}">
+  <meta name="base-path" content="{{BASE}}">
+  <meta name="public-host" content="{{PUBLIC_HOST}}">
+  <meta name="https-port" content="{{HTTPS_PORT}}">
+  <meta name="panel-version" content="{{VERSION}}">
+  <title>WDTT Control</title>
+  <link rel="stylesheet" href="{{BASE}}static/app.css?v={{VERSION}}">
+</head>
+<body>
+  <div id="toast" class="toast" hidden></div>
+  <aside class="sidebar">
+    <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-expanded="true" aria-label="Свернуть боковое меню" title="Свернуть боковое меню"><span id="sidebar-toggle-icon" aria-hidden="true">‹</span></button>
+    <div class="brand"><span class="brand-mark small">W</span><div><strong>WDTT</strong><small>CONTROL</small></div></div>
+    <nav>
+      <button class="nav-item active" data-tab="dashboard">Обзор</button>
+      <button class="nav-item" data-tab="users">Пользователи</button>
+      <button class="nav-item" data-tab="xray">Xray</button>
+      <button class="nav-item" data-tab="logs">Журналы</button>
+      <button class="nav-item" data-tab="system">Система</button>
+    </nav>
+    <div class="sidebar-footer">
+      <span class="status-dot" id="sidebar-dot"></span><span id="sidebar-status">Проверка...</span>
+      <form method="post" action="{{BASE}}logout" id="logout-form"><button>Выйти, {{USER}}</button></form>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="topbar">
+      <div><p class="eyebrow">SERVER CONSOLE</p><h1 id="page-title">Обзор</h1></div>
+      <div class="top-actions"><span class="host-pill" id="panel-version-pill">v{{VERSION}}</span><span class="host-pill">{{PUBLIC_HOST}}</span><button id="theme-toggle" class="secondary theme-toggle" type="button" aria-pressed="false"><span aria-hidden="true">☀</span><span id="theme-toggle-label">Светлая тема</span></button></div>
+    </header>
+
+    <section class="tab active" id="tab-dashboard">
+      <div class="hero-grid">
+        <article class="hero-card">
+          <div><p class="eyebrow">WDTT SERVICE</p><h2 id="service-label">Загрузка</h2><p class="muted" id="service-detail">Получение состояния сервера</p></div>
+          <div class="service-orbit"><span id="service-dot" class="status-dot large"></span></div>
+        </article>
+        <article class="metric-card"><p>Активные соединения</p><strong id="active-conns">0</strong><small id="total-conns">0 всего</small></article>
+        <article class="metric-card"><p>Пользователи</p><strong id="user-count">0</strong><small id="device-count">0 устройств</small></article>
+        <article class="metric-card"><p>Трафик</p><strong id="traffic-total">0 GB</strong><small id="traffic-split">↑0 / ↓0</small></article>
+        <article class="metric-card"><p>Процессор</p><strong id="cpu-load">0%</strong><small id="system-load">load 0.00</small></article>
+        <article class="metric-card"><p>Оперативная память</p><strong id="memory-load">0%</strong><small id="memory-detail">0 / 0</small></article>
+        <article class="metric-card"><p>Диск</p><strong id="disk-load">0%</strong><small id="disk-detail">0 / 0</small></article>
+      </div>
+      <div class="two-column">
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">24 HOURS</p><h2>Активность</h2></div></div>
+          <canvas id="activity-chart" width="900" height="280"></canvas>
+        </article>
+        <article class="panel-card health-card">
+          <div class="section-head"><div><p class="eyebrow">HEALTH CHECK</p><h2>Диагностика</h2></div></div>
+          <div id="health-list" class="health-list"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-xray">
+      <div class="section-head"><div><p class="eyebrow">XRAY CORE</p><h2>Исходящие и конфигурации Xray</h2><p class="muted">Чтобы правила WARP и маршруты работали для телефона, включите ниже шлюз WDTT → Xray. Без него Xray существует отдельно и трафик WDTT в него не попадает.</p></div><div class="inline-actions"><button id="install-xray" class="secondary">Установить Xray</button><button id="save-xray" class="primary">Сохранить и применить</button></div></div>
+      <div class="system-grid">
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">RUNTIME</p><h2>Служба Xray</h2></div><span id="xray-status" class="badge warn">не установлен</span></div>
+          <div class="form-grid compact-grid"><label>Режим<select id="xray-mode"><option value="managed">Managed</option><option value="raw">Raw JSON</option></select></label><label>Уровень журнала<select id="xray-log-level"><option value="warning">warning</option><option value="info">info</option><option value="error">error</option><option value="debug">debug</option><option value="none">none</option></select></label><label class="checkbox"><input id="xray-enabled" type="checkbox"> Включить Xray</label><label class="checkbox"><input id="xray-access-log" type="checkbox"> Журнал доменов и маршрутов</label></div>
+          <div class="form-grid compact-grid"><label class="checkbox"><input id="xray-gateway-enabled" type="checkbox"> Направлять трафик WDTT в Xray</label><label>Подсеть WDTT<input id="xray-gateway-source-cidr" value="10.66.66.0/24" placeholder="10.66.66.0/24"></label><label>Локальный порт<input id="xray-gateway-inbound-port" type="number" min="1024" max="65535" value="12346"></label></div>
+          <p id="xray-gateway-info" class="muted">Шлюз выключен: правила WARP не получают трафик WDTT.</p>
+          <p id="xray-runtime-info" class="muted">Конфигурация ещё не загружена.</p>
+        </article>
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">CLOUDFLARE WARP</p><h2>Исходящий WARP</h2></div><span id="warp-status" class="badge warn">не настроен</span></div>
+          <p id="warp-info" class="muted">Создайте профиль — панель добавит защищённый WireGuard-исходящий в Xray.</p>
+          <div class="button-row"><button id="install-warp" class="secondary">Установить WARP</button><button id="create-warp" class="primary">Создать профиль</button><button id="ping-warp" class="secondary">Пинг WARP</button><button id="restart-warp" class="secondary">Перезапустить</button><button id="recreate-warp" class="danger">Пересоздать</button></div>
+        </article>
+        <details class="xray-advanced"><summary>Дополнительно: каскад RU → EU для будущего российского сервера</summary><article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">RU → EU CASCADE</p><h2>Каскад WDTT через EU‑VLESS</h2><p class="muted">Трафик пользователей WDTT из указанной подсети прозрачно попадает в Xray. Российские сайты идут напрямую через RU‑сервер, категории <code>ru-blocked</code> — через EU‑VLESS. Работает только в Managed‑режиме Xray.</p></div><div class="inline-actions"><button id="save-cascade" class="primary">Сохранить каскад</button><button id="restart-cascade" class="secondary">Перезапустить</button></div></div>
+          <div class="form-grid compact-grid"><label class="checkbox"><input id="cascade-enabled" type="checkbox"> Включить RU → EU</label><label>Подсеть WDTT<input id="cascade-source-cidr" value="10.66.66.0/24" placeholder="10.66.66.0/24"></label><label>Локальный порт<input id="cascade-inbound-port" type="number" min="1024" max="65535" value="12345"></label><label>GeoSite, через EU<input id="cascade-geosite-category" value="ru-blocked" placeholder="ru-blocked"></label><label>GeoIP, через EU<input id="cascade-geoip-category" value="ru-blocked" placeholder="ru-blocked"></label><label>Домены через EU<textarea id="cascade-domains" class="compact-textarea mono" spellcheck="false" placeholder="example.com&#10;blocked.example"></textarea></label><label>IP/CIDR через EU<textarea id="cascade-ip-cidrs" class="compact-textarea mono" spellcheck="false" placeholder="203.0.113.10&#10;198.51.100.0/24"></textarea></label><label class="wide">VLESS EU‑сервера<textarea id="cascade-eu-vless" class="compact-textarea mono" spellcheck="false" placeholder="vless://UUID@eu.example.com:443?type=tcp&security=reality&pbk=...#EU"></textarea></label></div>
+          <p id="cascade-info" class="muted">Каскад выключен.</p>
+        </article></details>
+        <article class="panel-card wide" id="xray-managed-editor">
+          <div class="section-head"><div><p class="eyebrow">ROUTES &amp; RULES</p><h2>Настройка без JSON</h2><p class="muted">Сначала добавьте путь для трафика, затем скажите, какие домены, IP или Geo‑категории должны идти через него. Правила сверху имеют больший приоритет.</p></div></div>
+          <div class="xray-guide"><span>1. Создайте маршрут</span><span>2. Добавьте правило</span><span>3. Сохраните и примените</span></div>
+          <div class="xray-easy-grid">
+            <section class="xray-workflow">
+              <div class="section-head"><div><p class="eyebrow">ROUTES</p><h3>Куда направлять трафик</h3><p class="muted">WARP создаётся в карточке выше. Для EU или другого сервера добавьте готовую VLESS‑ссылку.</p></div><button id="add-xray-vless-route" class="secondary">Добавить VLESS</button></div>
+              <div id="xray-friendly-routes" class="friendly-route-list"></div>
+            </section>
+            <section class="xray-workflow">
+              <div class="section-head"><div><p class="eyebrow">RULES</p><h3>Правила направления трафика</h3><p class="muted">Задайте домены, IP или Geo‑категории для любого маршрута. Заготовки ускоряют настройку сервисов и ресурсов с ограничениями.</p></div><button id="add-xray-friendly-rule" class="primary">Добавить правило</button></div>
+              <div id="xray-friendly-rules" class="friendly-rule-list"></div>
+            </section>
+          </div>
+          <details class="xray-advanced">
+            <summary>Экспертные настройки: входящие, нестандартные исходящие и полный JSON правил</summary>
+            <p class="muted">Используйте этот раздел только для нестандартных протоколов или параметров, которых нет в обычной форме. Обычные маршруты и правила выше менять здесь не нужно.</p>
+            <div class="section-head"><div><p class="eyebrow">INBOUNDS</p><h3>Входящие подключения</h3></div><div class="inline-actions"><select id="xray-inbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option></select><button id="add-xray-inbound" class="secondary">Добавить</button></div></div>
+            <div id="xray-inbounds" class="xray-json-list"></div>
+            <div class="section-head"><div><p class="eyebrow">OUTBOUNDS</p><h3>Нестандартные исходящие</h3></div><div class="inline-actions"><select id="xray-outbound-template"><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="shadowsocks">Shadowsocks</option><option value="socks">SOCKS</option><option value="http">HTTP</option><option value="wireguard">WireGuard</option><option value="freedom">Freedom</option><option value="blackhole">Blackhole</option></select><button id="add-xray-outbound" class="secondary">Добавить</button></div></div>
+            <div id="xray-outbounds" class="xray-json-list"></div>
+            <div class="section-head"><div><p class="eyebrow">ROUTING</p><h3>Нестандартные JSON‑правила</h3></div><button id="add-xray-rule" class="secondary">Добавить JSON‑правило</button></div>
+            <div id="xray-rules" class="xray-json-list"></div>
+          </details>
+        </article>
+        <article class="panel-card wide" id="xray-raw-editor" hidden><p class="eyebrow">RAW CONFIGURATION</p><h2>Полная конфигурация Xray</h2><p class="muted">Этот режим полностью заменяет управляемую конфигурацию. Маршруты и правила из обычного режима сохраняются в панели, но не применяются, пока снова не выбран Managed.</p><textarea id="xray-raw-config" class="compact-textarea mono" spellcheck="false" placeholder='{"inbounds": [], "outbounds": []}'></textarea></article>
+        <article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">GEOFILES</p><h2>GeoIP и GeoSite</h2><p class="muted">Стандартные GeoFiles загружаются по HTTPS и обновляются по таймеру. Добавляйте собственные .dat-источники для правил вида <code>geoip:tag</code> или <code>geosite:tag</code>.</p></div><button id="refresh-all-xray-geofiles" class="secondary">Обновить сейчас</button></div>
+          <div class="geofile-form"><input id="xray-geofile-tag" placeholder="Tag: custom"><input id="xray-geofile-file" placeholder="Файл: custom.dat"><input id="xray-geofile-url" placeholder="HTTPS URL GeoFile"><select id="xray-geofile-interval"><option value="6h">Каждые 6 часов</option><option value="12h">Каждые 12 часов</option><option value="1d" selected>Раз в сутки</option><option value="7d">Раз в неделю</option></select><button id="add-xray-geofile" class="primary">Добавить источник</button></div>
+          <div id="xray-geofiles" class="backup-list"></div>
+        </article>
+        <article class="panel-card wide"><p class="eyebrow">XRAY LOG</p><h2>Журнал Xray</h2><pre id="xray-log" class="inline-log">Нет данных.</pre></article>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-users">
+      <div class="section-head"><div><p class="eyebrow">ACCESS DATABASE</p><h2>Пользователи WDTT</h2><p class="muted">Метки синхронизируются с Telegram-ботом и выводятся отдельным столбцом. Изменения перезапускают WDTT на несколько секунд.</p></div><div class="inline-actions"><button id="manage-vk-hashes" class="secondary">Библиотека VK-хешей</button><button id="bulk-users" class="secondary">Создать несколько</button><button id="auto-user" class="secondary">Авто создать</button><button id="new-user" class="primary">Создать пользователя</button></div></div>
+      <article class="panel-card table-card">
+        <div class="table-toolbar user-toolbar"><input id="user-search" placeholder="Поиск по метке, паролю, устройству или IP"><div class="user-bulk-controls"><details class="user-refresh-menu"><summary>Автообновление</summary><div class="user-refresh-popup"><label>Интервал<select id="user-auto-refresh-interval"><option value="0">Выключено</option><option value="5">Каждые 5 сек.</option><option value="10">Каждые 10 сек.</option><option value="30">Каждые 30 сек.</option><option value="60">Каждую минуту</option></select></label><small id="user-auto-refresh-status">Выключено</small></div></details><span id="selected-users">Выбрано: 0</span><select id="bulk-user-action" aria-label="Массовое действие"><option value="">Действие над выбранными…</option><option value="activate">Активировать</option><option value="deactivate">Деактивировать</option><option value="set_expiration">Изменить срок</option><option value="reset_traffic">Сбросить трафик</option><option value="unbind">Отвязать устройства</option><option value="delete">Удалить</option></select><label id="bulk-user-days-control" hidden>Срок, дней<input id="bulk-user-days" type="number" min="1" max="3650" value="30"></label><button id="apply-bulk-user-action" class="secondary" disabled>Применить</button><span id="user-limit">0 / 10000</span></div></div>
+        <div class="table-wrap"><table><thead><tr><th><input id="select-all-users" type="checkbox" aria-label="Выбрать всех пользователей"></th><th><button class="user-sort" data-user-sort="label">Метка <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="access">Доступ <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="status">Статус <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="expires">Истекает <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="device">Устройство <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="traffic">Трафик <span class="sort-indicator">↕</span></button></th><th><button class="user-sort" data-user-sort="activity">Активность <span class="sort-indicator">↕</span></button></th><th></th></tr></thead><tbody id="users-body"></tbody></table></div>
+      </article>
+    </section>
+
+    <section class="tab" id="tab-logs">
+      <div class="section-head"><div><p class="eyebrow">FULL DIAGNOSTICS</p><h2>Полные журналы служб</h2><p class="muted">Выберите источник, загрузите до 5000 строк и при необходимости скачайте файл для диагностики. Для проверки правил включите в Xray «Журнал доменов и маршрутов»: «домены и маршруты» покажет, куда ушёл запрос, а «ошибки соединений» — почему он не открылся.</p></div><div class="inline-actions"><select id="log-source"><option value="wdtt">WDTT</option><option value="xray">Xray / WARP</option><option value="xray-access">Xray: домены и маршруты</option><option value="xray-errors">Xray: ошибки соединений</option><option value="cascade">Каскад RU → EU</option><option value="panel">Панель</option><option value="nginx">Nginx</option><option value="installer">Установщик</option><option value="all">Все службы</option></select><select id="log-limit"><option value="500">500 строк</option><option value="1000" selected>1000 строк</option><option value="2000">2000 строк</option><option value="5000">5000 строк</option></select><select id="log-filter"><option value="">Без фильтра</option><option value="[СТАТ]">Статистика</option><option value="[WG]">WireGuard</option><option value="[WRAP]">WRAP</option><option value="[DTLS]">DTLS</option><option value="[WARP]">WARP</option><option value="error">error</option><option value="failed">failed</option></select><button id="download-logs" class="secondary">Скачать</button><button id="load-logs" class="primary">Загрузить</button></div></div>
+      <p id="logs-summary" class="muted">Выберите источник журнала.</p>
+      <article class="log-view"><pre id="logs-output">Загрузка журнала...</pre></article>
+    </section>
+
+    <section class="tab" id="tab-system">
+      <div class="system-grid">
+        <article class="panel-card">
+          <p class="eyebrow">SERVICE CONTROL</p><h2>Управление WDTT</h2><p class="muted">Остановка разрывает активные туннели. Перезапуск обычно занимает несколько секунд.</p>
+          <div class="button-row"><button data-service="start" class="primary">Запустить</button><button data-service="restart" class="secondary">Перезапустить</button><button data-service="stop" class="danger">Остановить</button></div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">SAFE CLEANUP</p><h2>Очистка журналов и мусора</h2><p class="muted">Очищаются только известные журналы и безопасные системные кэши. База пользователей, резервные копии, сертификаты и настройки не затрагиваются.</p>
+          <div class="form-grid compact-grid">
+            <label>Хранить journal, дней<input id="cleanup-keep-days" type="number" min="1" max="365" value="14"></label>
+            <label class="checkbox"><input id="cleanup-service-logs" type="checkbox" checked> Журналы служб</label>
+            <label class="checkbox"><input id="cleanup-journal" type="checkbox" checked> Systemd journal</label>
+            <label class="checkbox"><input id="cleanup-package-cache" type="checkbox" checked> Кэш пакетов</label>
+            <label class="checkbox wide"><input id="cleanup-failed-units" type="checkbox"> Сбросить failed-units</label>
+          </div>
+          <div id="cleanup-info" class="detail-list"><p class="muted">Сначала нажмите «Оценить», чтобы увидеть безопасный план очистки.</p></div>
+          <div class="button-row"><button id="cleanup-preview" class="secondary">Оценить</button><button id="cleanup-apply" class="danger">Очистить</button></div>
+        </article>
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">TELEGRAM BOT</p><h2>Бот WDTT</h2></div><span id="telegram-status" class="badge warn">загрузка</span></div>
+          <div class="form-grid compact-grid">
+            <label class="checkbox wide"><input id="telegram-enabled" type="checkbox"> Включить Telegram-бота</label>
+            <label>Admin ID<input id="telegram-admin-id" inputmode="numeric" placeholder="123456789"></label>
+            <label class="wide">Bot Token<input id="telegram-bot-token" autocomplete="off" placeholder="123456:ABC..."></label>
+          </div>
+          <p id="telegram-info" class="muted">Настройки ещё не загружены.</p>
+          <div class="button-row"><button id="save-telegram" class="primary">Сохранить Telegram</button><button id="test-telegram" class="secondary">Отправить тест</button></div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div><div class="button-row"><button id="renew-certificate" class="secondary">Проверить/обновить</button><button id="download-certificate" class="secondary">Скачать сертификат</button></div>
+        </article>
+        <article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">PANEL UPDATE</p><h2>Версия панели</h2></div><button id="update-panel" class="primary" hidden>Обновить панель</button></div>
+          <div id="panel-version-info" class="detail-list"><p class="muted">Проверка версии GitHub...</p></div>
+        </article>
+        <article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">RECOVERY</p><h2>Резервные копии WDTT</h2><p class="muted">Полная копия сохраняет пользователей, метки, настройки Xray, WARP и каскада. Пользователей можно сохранить отдельно.</p></div><div class="inline-actions"><input id="backup-upload" type="file" accept=".json" hidden><button id="upload-backup" class="secondary">Загрузить с компьютера</button><button id="create-users-backup" class="secondary">Только пользователи</button><button id="create-full-backup" class="primary">Полная копия</button><button id="load-backups" class="secondary">Обновить список</button></div></div>
+          <div class="backup-schedule"><div><strong>Автоматические копии</strong><small id="backup-schedule-status">Загрузка расписания…</small></div><div class="backup-schedule-controls"><label>Период<select id="backup-schedule-frequency"><option value="disabled">Выключено</option><option value="daily">Каждый день</option><option value="weekly">Каждое воскресенье</option></select></label><label>Время<input id="backup-schedule-time" type="time" value="03:30"></label><label>Состав<select id="backup-schedule-type"><option value="full">Полная копия</option><option value="users">Только пользователи</option></select></label><label>Хранить<input id="backup-schedule-keep" type="number" min="1" max="100" value="14"></label><button id="save-backup-schedule" class="secondary">Сохранить расписание</button></div></div>
+          <div id="backups-list" class="backup-list"></div>
+        </article>
+        <article class="panel-card wide">
+          <p class="eyebrow">AUDIT TRAIL</p><h2>Действия в панели</h2><div class="table-wrap"><table><thead><tr><th>Время</th><th>Администратор</th><th>IP</th><th>Действие</th><th>Результат</th></tr></thead><tbody id="audit-body"></tbody></table></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="auto-user-dialog">
+    <form method="dialog" id="auto-user-form">
+      <div class="dialog-head"><div><p class="eyebrow">AUTO ACCESS</p><h2>Авто создание пользователя</h2></div><button value="cancel" formnovalidate class="icon-button">×</button></div>
+      <div class="form-grid">
+        <label class="wide">Метка пользователя<input id="auto-label" maxlength="64" placeholder="Например: Иван — Pixel 8" required></label>
+      </div>
+      <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">Отмена</button><button id="save-auto-user" value="default" class="primary">Создать</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="user-dialog">
+    <form method="dialog" id="user-form">
+      <div class="dialog-head"><div><p class="eyebrow">WDTT ACCESS</p><h2 id="dialog-title">Новый пользователь</h2></div><button value="cancel" formnovalidate class="icon-button">×</button></div>
+      <input type="hidden" id="current-password">
+      <div class="form-grid">
+        <label class="wide">Пароль<input id="edit-password" pattern="[A-Za-z0-9._~-]{8,64}" placeholder="Оставьте пустым для автогенерации"></label>
+        <label class="wide">Метка пользователя<input id="edit-label" maxlength="64" placeholder="Например: Иван — Pixel 8"></label>
+        <label class="wide">VK-хеши<input id="edit-hashes" required placeholder="До 4 хешей через запятую"></label>
+        <label class="wide">Добавить сохранённый VK-хеш<select id="edit-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
+        <div id="edit-access-plan" class="wide access-plan">
+          <label>Дата окончания<input id="edit-expires" type="date" required></label>
+          <div class="preset-row" aria-label="Быстрый выбор срока"><button type="button" data-expiry-preset="edit:1">1 месяц</button><button type="button" data-expiry-preset="edit:2">2 месяца</button><button type="button" data-expiry-preset="edit:3">3 месяца</button><button type="button" data-expiry-preset="edit:6">6 месяцев</button><button type="button" data-expiry-preset="edit:12">12 месяцев</button></div>
+          <label>Основной трафик, ГиБ<input id="edit-traffic" type="number" min="0" max="10240" value="35" required></label>
+          <label class="checkbox"><input id="edit-traffic-unlimited" type="checkbox"> Без ограничения трафика</label>
+        </div>
+        <label>Порты<input id="edit-ports" value="56000,56001,9000" required></label>
+        <label class="checkbox wide"><input id="edit-unlimited" type="checkbox"> Бессрочный доступ</label>
+        <label class="checkbox wide"><input id="edit-disabled" type="checkbox"> Деактивировать</label>
+      </div>
+      <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">Отмена</button><button id="save-user" value="default" class="primary">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="bulk-user-dialog">
+    <form method="dialog" id="bulk-user-form">
+      <div class="dialog-head"><div><p class="eyebrow">BULK ACCESS</p><h2>Создать несколько пользователей</h2></div><button value="cancel" formnovalidate class="icon-button">×</button></div>
+      <div class="form-grid">
+        <label>Количество<input id="bulk-count" type="number" min="1" max="10000" value="2" required></label>
+        <label>Назначение хешей<select id="bulk-hash-mode"><option value="shared">Все хеши каждому</option><option value="rotate">По одному по кругу</option></select></label>
+        <label class="wide">VK-хеши<input id="bulk-hashes" required placeholder="Один или до 4 хешей через запятую"></label>
+        <label class="wide">Добавить сохранённый VK-хеш<select id="bulk-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
+        <label class="wide">Префикс меток<input id="bulk-label-prefix" maxlength="61" placeholder="Например: Семья — будут «Семья 1», «Семья 2»"></label>
+        <div class="wide access-plan">
+          <label>Дата окончания<input id="bulk-expires" type="date" required></label>
+          <div class="preset-row" aria-label="Быстрый выбор срока"><button type="button" data-expiry-preset="bulk:1">1 месяц</button><button type="button" data-expiry-preset="bulk:2">2 месяца</button><button type="button" data-expiry-preset="bulk:3">3 месяца</button><button type="button" data-expiry-preset="bulk:6">6 месяцев</button><button type="button" data-expiry-preset="bulk:12">12 месяцев</button></div>
+          <label>Основной трафик каждому, ГиБ<input id="bulk-traffic" type="number" min="0" max="10240" value="35" required></label>
+          <label class="checkbox"><input id="bulk-traffic-unlimited" type="checkbox"> Без ограничения трафика</label>
+        </div>
+        <label>Порты<input id="bulk-ports" value="56000,56001,9000" required></label>
+        <label class="checkbox wide"><input id="bulk-unlimited" type="checkbox"> Бессрочный доступ</label>
+        <label class="checkbox wide"><input id="bulk-disabled" type="checkbox"> Создать деактивированными</label>
+      </div>
+      <p class="muted">Пароли генерируются автоматически. Все пользователи создаются одной операцией и одним перезапуском WDTT.</p>
+      <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">Отмена</button><button id="save-bulk-users" value="default" class="primary">Создать</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="quota-dialog">
+    <form method="dialog" id="quota-form">
+      <div class="dialog-head"><div><p class="eyebrow">ACCESS PLAN</p><h2 id="quota-title">Продлить пользователя</h2></div><button value="cancel" formnovalidate class="icon-button">×</button></div>
+      <input id="quota-password" type="hidden">
+      <input id="quota-mode" type="hidden">
+      <div id="quota-renew-fields" class="form-grid">
+        <label class="wide">Дата окончания<input id="quota-expires" type="date"></label>
+        <div class="preset-row wide" aria-label="Быстрый выбор срока"><button type="button" data-expiry-preset="quota:1">1 месяц</button><button type="button" data-expiry-preset="quota:2">2 месяца</button><button type="button" data-expiry-preset="quota:3">3 месяца</button><button type="button" data-expiry-preset="quota:6">6 месяцев</button><button type="button" data-expiry-preset="quota:12">12 месяцев</button></div>
+        <label class="wide">Новый основной трафик, ГиБ<input id="quota-primary" type="number" min="0" max="10240" value="35"></label>
+      </div>
+      <div id="quota-extra-fields" class="form-grid" hidden>
+        <label class="wide">Дополнительный трафик, ГиБ<input id="quota-extra" type="number" min="1" max="10240" value="10"></label>
+      </div>
+      <label>Комментарий<input id="quota-comment" maxlength="200" placeholder="Например: оплата за август"></label>
+      <p class="muted">При активном продлении остаток основного пакета сохраняется. После истечения старый основной остаток сгорает, дополнительный сохраняется.</p>
+      <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary">Отмена</button><button id="save-quota" value="default" class="primary">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="user-activity-dialog">
+    <form method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">USER ACTIVITY</p><h2 id="user-activity-title">Активность пользователя</h2></div><button value="cancel" class="icon-button">×</button></div>
+      <div id="user-activity-details" class="detail-list"></div>
+      <p class="muted">Время отправки и загрузки фиксируется автоматически после обновления WDTT. Для доменов и маршрутов используйте журнал Xray.</p>
+      <div class="dialog-actions"><button value="cancel" class="primary">Закрыть</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="xray-route-dialog">
+    <form id="xray-route-form">
+      <div class="dialog-head"><div><p class="eyebrow">XRAY ROUTE</p><h2 id="xray-route-dialog-title">Новый VLESS‑маршрут</h2></div><button type="button" value="cancel" class="icon-button">×</button></div>
+      <input id="xray-route-index" type="hidden">
+      <div class="form-grid">
+        <label>Название маршрута<input id="xray-route-name" maxlength="80" placeholder="EU сервер" required></label>
+        <label>Короткий tag<input id="xray-route-tag" maxlength="64" pattern="[A-Za-z0-9_.-]+" placeholder="eu-vless-1" required></label>
+        <label class="wide">VLESS‑ссылка<textarea id="xray-route-vless" class="compact-textarea mono" spellcheck="false" placeholder="vless://UUID@eu.example.com:443?type=tcp&amp;security=reality&amp;pbk=...#EU" required></textarea></label>
+        <label class="checkbox wide"><input id="xray-route-enabled" type="checkbox" checked> Включить маршрут</label>
+      </div>
+      <div class="dialog-actions"><button type="button" value="cancel" class="secondary">Отмена</button><button type="submit" class="primary">Сохранить маршрут</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="xray-rule-dialog">
+    <form id="xray-rule-form">
+      <div class="dialog-head"><div><p class="eyebrow">XRAY RULE</p><h2 id="xray-rule-dialog-title">Новое правило</h2></div><button type="button" value="cancel" class="icon-button">×</button></div>
+      <input id="xray-rule-index" type="hidden">
+      <div class="form-grid">
+        <label>Название правила<input id="xray-rule-name" maxlength="80" placeholder="Google AI через WARP" required></label>
+        <label>Направлять через<select id="xray-rule-outbound"></select></label>
+        <label class="wide">Домены<textarea id="xray-rule-domains" class="compact-textarea" spellcheck="false" placeholder="youtube.com&#10;googlevideo.com"></textarea></label>
+        <label>IP или CIDR<textarea id="xray-rule-ip-cidrs" class="compact-textarea mono" spellcheck="false" placeholder="203.0.113.10&#10;198.51.100.0/24"></textarea></label>
+        <label>GeoSite‑категории<textarea id="xray-rule-geosite" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
+        <label>GeoIP‑категории<textarea id="xray-rule-geoip" class="compact-textarea mono" spellcheck="false" placeholder="ru-blocked"></textarea></label>
+        <label class="checkbox wide"><input id="xray-rule-enabled" type="checkbox" checked> Включить правило</label>
+      </div>
+      <div class="dialog-actions"><select id="xray-rule-preset"><option value="">Готовая настройка…</option><option value="ru_blocked">Все ресурсы из GeoSite/GeoIP ru-blocked</option><option value="google_ai">Google AI</option><option value="ai">Все популярные AI‑сервисы</option><option value="meta">Meta: Facebook, Instagram, Threads</option><option value="x_linkedin">X (Twitter) и LinkedIn</option><option value="messengers">Discord, Signal и Viber</option><option value="media">Независимые медиа</option><option value="video">Видео: YouTube, Twitch</option><option value="social">Соцсети и сообщества</option><option value="music">Музыка: Spotify, SoundCloud</option><option value="popular">Все популярные сервисы</option></select><button id="apply-xray-rule-preset" type="button" class="secondary">Заполнить</button><button type="button" value="cancel" class="secondary">Отмена</button><button type="submit" class="primary">Сохранить правило</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="vk-hashes-dialog">
+    <form method="dialog" id="vk-hashes-form">
+      <div class="dialog-head"><div><p class="eyebrow">VK HASH LIBRARY</p><h2>Библиотека VK-хешей</h2></div><button value="cancel" class="icon-button">&#215;</button></div>
+      <p class="muted">Вставьте один или несколько VK-хешей или ссылок на вход. Выбирать их можно будет в формах создания; ручной ввод там также останется.</p>
+      <label>Новые VK-хеши<input id="new-vk-hashes" placeholder="Хеши или ссылки через запятую, пробел или с новой строки"></label>
+      <input id="vk-hashes-upload" type="file" accept=".json,.txt" hidden>
+      <div id="vk-hashes-list" class="hash-library-list"></div>
+      <div class="dialog-actions"><button value="cancel" class="secondary">Закрыть</button><button type="button" id="import-vk-hashes" class="secondary">Импорт</button><button type="button" id="export-vk-hashes" class="secondary">Экспорт</button><button id="save-vk-hashes" value="default" class="primary">Добавить в библиотеку</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="bulk-result-dialog">
+    <form method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">READY</p><h2>Пользователи созданы</h2></div><button value="cancel" class="icon-button">×</button></div>
+      <p class="muted">Готовые ссылки можно передать пользователям.</p>
+      <textarea id="bulk-result-links" class="mono" readonly></textarea>
+      <div class="dialog-actions"><button value="cancel" class="secondary">Закрыть</button><button type="button" id="copy-bulk-links" class="primary">Скопировать все</button></div>
+    </form>
+  </dialog>
+
+  <script src="{{BASE}}static/app.js?v={{VERSION}}" defer></script>
+</body>
+</html>

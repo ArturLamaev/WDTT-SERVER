@@ -1,0 +1,98 @@
+warning: in the working copy of 'C:\Users\Admin\AppData\Local\Temp\opencode\spaceneurox\src\proxy-turn-vk-android-1.4.3\server\database_bot.go', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\My_Data\Scripts\Telegram\WDTT\src\proxy-turn-vk-android-1.4.3\server\database_bot.go', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\spaceneurox\\src\\proxy-turn-vk-android-1.4.3\\server\\database_bot.go" "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\src\\proxy-turn-vk-android-1.4.3\\server\\database_bot.go"
+index cf10a70..f103614 100644
+--- "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\spaceneurox\\src\\proxy-turn-vk-android-1.4.3\\server\\database_bot.go"
++++ "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\src\\proxy-turn-vk-android-1.4.3\\server\\database_bot.go"
+@@ -45,7 +45,7 @@ type PasswordEntry struct {
+ 	Label         string   `json:"label,omitempty"` // ╨┐╨╛╨╜╤П╤В╨╜╨╛╨╡ ╨╕╨╝╤П ╨▓ ╨▒╨╛╤В╨╡
+ 	DeviceID      string   `json:"device_id"`       // ╨Ф╨╗╤П ╨╛╨▒╤А╨░╤В╨╜╨╛╨╣ ╤Б╨╛╨▓╨╝╨╡╤Б╤В╨╕╨╝╨╛╤Б╤В╨╕, ╨╡╤Б╨╗╨╕ ╨╜╤Г╨╢╨╜╨╛
+ 	DeviceIDs     []string `json:"device_ids"`      // ╨б╨┐╨╕╤Б╨╛╨║ ╨┐╤А╨╕╨▓╤П╨╖╨░╨╜╨╜╤Л╤Е deviceID
+-	MaxDevices    int      `json:"max_devices"`     // ╨Ь╨░╨║╤Б╨╕╨╝╨░╨╗╤М╨╜╨╛╨╡ ╨║╨╛╨╗-╨▓╨╛ ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓ (0 ╨╕╨╗╨╕ 1 = 1 ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓╨╛)
++	MaxDevices    int      `json:"max_devices"`     // ╨Ы╨╕╨╝╨╕╤В ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓; 0 ╨╕ ╨╝╨╡╨╜╤М╤И╨╡ = ╨▒╨╡╨╖ ╨╛╨│╤А╨░╨╜╨╕╤З╨╡╨╜╨╕╤П (WDTT-SERVER)
+ 	ExpiresAt     int64    `json:"expires_at"`      // unix timestamp
+ 	DownBytes     int64    `json:"down_bytes"`      // ╤Б╨║╨░╤З╨░╨╜╨╛ ╨║╨╗╨╕╨╡╨╜╤В╨╛╨╝
+ 	UpBytes       int64    `json:"up_bytes"`        // ╨╛╤В╨┤╨░╨╜╨╛ ╨║╨╗╨╕╨╡╨╜╤В╨╛╨╝
+@@ -230,8 +230,10 @@ func reconcileDeviceOwnershipLocked() {
+ }
+ 
+ func (entry *PasswordEntry) canConnectAndBind(deviceID string) bool {
++	// WDTT-SERVER: max_devices <= 0 ╨╛╨╖╨╜╨░╤З╨░╨╡╤В ╨╛╤В╤Б╤Г╤В╤Б╤В╨▓╨╕╨╡ ╨╛╨│╤А╨░╨╜╨╕╤З╨╡╨╜╨╕╤П ╨╜╨░ ╤З╨╕╤Б╨╗╨╛ ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓.
++	unlimited := entry.MaxDevices <= 0
+ 	limit := entry.MaxDevices
+-	if limit <= 0 {
++	if limit < 1 {
+ 		limit = 1
+ 	}
+ 
+@@ -248,14 +250,14 @@ func (entry *PasswordEntry) canConnectAndBind(deviceID string) bool {
+ 			entry.DeviceIDs = []string{deviceID}
+ 			return true
+ 		}
+-		if limit == 1 {
++		if limit == 1 && !unlimited {
+ 			return false
+ 		}
+ 		entry.DeviceIDs = append(entry.DeviceIDs, entry.DeviceID)
+ 	}
+ 
+-	// ╨Х╤Б╨╗╨╕ ╨╡╤Б╤В╤М ╤Б╨▓╨╛╨▒╨╛╨┤╨╜╨╛╨╡ ╨╝╨╡╤Б╤В╨╛ ╨┐╨╛╨┤ ╨╜╨╛╨▓╨╛╨╡ ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓╨╛
+-	if len(entry.DeviceIDs) < limit {
++	// ╨Х╤Б╨╗╨╕ ╨╡╤Б╤В╤М ╤Б╨▓╨╛╨▒╨╛╨┤╨╜╨╛╨╡ ╨╝╨╡╤Б╤В╨╛ ╨┐╨╛╨┤ ╨╜╨╛╨▓╨╛╨╡ ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓╨╛ (╨╕╨╗╨╕ ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓╨░ ╨╜╨╡ ╨╛╨│╤А╨░╨╜╨╕╤З╨╡╨╜╤Л)
++	if unlimited || len(entry.DeviceIDs) < limit {
+ 		entry.DeviceIDs = append(entry.DeviceIDs, deviceID)
+ 		if len(entry.DeviceIDs) == 1 {
+ 			entry.DeviceID = deviceID
+@@ -300,7 +302,7 @@ var serverWrapKeys = newWrapKeyStore()
+ const (
+ 	passChars             = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+ 	generatedPasswordLen  = 16
+-	maxGeneratedPasswords = 10
++	maxGeneratedPasswords = 10000 // WDTT-SERVER: ╨╗╨╕╨╝╨╕╤В ╨║╨╗╤О╤З╨╡╨╣ ╨┐╨╛╨┤╨╜╤П╤В ╤Б 10 ╨┤╨╛ 10000
+ )
+ 
+ func generatePassword() (string, error) {
+@@ -804,15 +806,21 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
+ 					txt += fmt.Sprintf("\nЁЯУК *╨в╤А╨░╤Д╨╕╨║:*\nтАв ╨б╨║╨░╤З╨░╨╜╨╛: %.2f MB\nтАв ╨Ю╤В╨┤╨░╨╜╨╛: %.2f MB\n", float64(entry.DownBytes)/(1024*1024), float64(entry.UpBytes)/(1024*1024))
+ 
+ 					limit := entry.MaxDevices
+-					if limit <= 0 {
++					if limit < 1 {
+ 						limit = 1
+ 					}
++					unlimitedDevices := entry.MaxDevices <= 0
+ 					boundCount := len(entry.DeviceIDs)
+ 					if boundCount == 0 && entry.DeviceID != "" {
+ 						boundCount = 1
+ 					}
+ 
+-					txt += fmt.Sprintf("\nЁЯУ▒ *╨Я╤А╨╕╨▓╤П╨╖╨░╨╜╨╜╤Л╨╡ ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓╨░* (%d/%d):\n", boundCount, limit)
++					limitLabel := strconv.Itoa(limit)
++					if unlimitedDevices {
++						limitLabel = "тИЮ"
++					}
++
++					txt += fmt.Sprintf("\nЁЯУ▒ *╨Я╤А╨╕╨▓╤П╨╖╨░╨╜╨╜╤Л╨╡ ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓╨░* (%d/%s):\n", boundCount, limitLabel)
+ 					hasDevices := false
+ 
+ 					// Legacy
+@@ -1073,7 +1081,7 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
+ 					continue
+ 				}
+ 
+-				maxDevs := 1
++				maxDevs := 10000 // WDTT-SERVER: ╨╗╨╕╨╝╨╕╤В ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓ ╨┐╨╛ ╤Г╨╝╨╛╨╗╤З╨░╨╜╨╕╤О ╨┐╨╛╨┤╨╜╤П╤В ╤Б 1 ╨┤╨╛ 10000
+ 				if len(parts) > 1 {
+ 					if devs, err := strconv.Atoi(parts[1]); err == nil && devs >= 1 {
+ 						maxDevs = devs
+@@ -1239,8 +1247,8 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
+ 				if len(args) >= 1 {
+ 					days, parseErr := strconv.Atoi(args[0])
+ 					if parseErr == nil && days >= 1 && days <= 365 {
+-						maxDevs := 1
+-						if len(args) >= 2 {
++maxDevs := 10000 // WDTT-SERVER: ╨╗╨╕╨╝╨╕╤В ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓ ╨┐╨╛ ╤Г╨╝╨╛╨╗╤З╨░╨╜╨╕╤О ╨┐╨╛╨┤╨╜╤П╤В ╤Б 1 ╨┤╨╛ 10000
++					if len(args) >= 2 {
+ 							if devs, err := strconv.Atoi(args[1]); err == nil && devs >= 1 {
+ 								maxDevs = devs
+ 							}

@@ -1,0 +1,45 @@
+diff --git "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\wdtt-control-panel\\wdtt_panel\\static\\app.js" "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\panel\\wdtt_panel\\static\\app.js"
+index ef23fbd..865d0c4 100644
+--- "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\wdtt-control-panel\\wdtt_panel\\static\\app.js"
++++ "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\panel\\wdtt_panel\\static\\app.js"
+@@ -6,7 +6,7 @@
+   const CSRF = meta("csrf-token");
+   const PUBLIC_HOST = meta("public-host");
+   const PANEL_VERSION = meta("panel-version");
+-  const state = { overview: null, users: [], selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
++  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
+ 
+   const $ = (selector) => document.querySelector(selector);
+   const $$ = (selector) => [...document.querySelectorAll(selector)];
+@@ -382,7 +382,8 @@
+     state.users = [...(result.admins || []), ...(result.users || [])];
+     const available = new Set((result.users || []).map((user) => user.password));
+     state.selectedUsers.forEach((password) => { if (!available.has(password)) state.selectedUsers.delete(password); });
+-    $("#user-limit").textContent = `${(result.users || []).length} / ${result.limit || 10}`;
++    state.limit = result.limit || 10000;
++    $("#user-limit").textContent = `${(result.users || []).length} / ${state.limit}`;
+     renderUsers();
+   }
+ 
+@@ -670,8 +671,8 @@
+   }
+ 
+   function openAutoUserDialog() {
+-    const remaining = Math.max(0, 10 - state.users.filter((user) => user.role !== "admin").length);
+-    if (!remaining) { toast("╨Ф╨╛╤Б╤В╨╕╨│╨╜╤Г╤В ╨╗╨╕╨╝╨╕╤В 10 ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╡╨╣", true); return; }
++    const remaining = Math.max(0, state.limit - state.users.filter((user) => user.role !== "admin").length);
++    if (!remaining) { toast(`╨Ф╨╛╤Б╤В╨╕╨│╨╜╤Г╤В ╨╗╨╕╨╝╨╕╤В ${state.limit} ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╡╨╣`, true); return; }
+     $("#auto-label").value = "";
+     $("#auto-user-dialog").showModal();
+     $("#auto-label").focus();
+@@ -696,8 +697,8 @@
+   }
+ 
+   function openBulkUserDialog() {
+-    const remaining = Math.max(0, 10 - state.users.filter((user) => user.role !== "admin").length);
+-    if (!remaining) { toast("╨Ф╨╛╤Б╤В╨╕╨│╨╜╤Г╤В ╨╗╨╕╨╝╨╕╤В 10 ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╡╨╣", true); return; }
++    const remaining = Math.max(0, state.limit - state.users.filter((user) => user.role !== "admin").length);
++    if (!remaining) { toast(`╨Ф╨╛╤Б╤В╨╕╨│╨╜╤Г╤В ╨╗╨╕╨╝╨╕╤В ${state.limit} ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╨╡╨╣`, true); return; }
+     $("#bulk-count").max = remaining;
+     $("#bulk-count").value = Math.min(2, remaining);
+     $("#bulk-traffic-unlimited").checked = false;

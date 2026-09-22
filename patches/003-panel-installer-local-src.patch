@@ -1,0 +1,106 @@
+diff --git "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\wdtt-control-panel\\install.sh" "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\panel\\install.sh"
+index c9a4ca3..7cb662f 100644
+--- "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\wdtt-control-panel\\install.sh"
++++ "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\panel\\install.sh"
+@@ -46,6 +46,9 @@ WDTT_TELEGRAM_BOT_TOKEN="${WDTT_TELEGRAM_BOT_TOKEN:-}"
+ WDTT_TELEGRAM_ADMIN_ID="${WDTT_TELEGRAM_ADMIN_ID:-}"
+ WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"
+ WDTT_REF="${WDTT_REF:-v1.4.3}"
++# WDTT-SERVER: ╨╡╤Б╨╗╨╕ ╤Г╨║╨░╨╖╨░╨╜ ╨║╨░╤В╨░╨╗╨╛╨│ ╨╗╨╛╨║╨░╨╗╤М╨╜╨╛╨│╨╛ ╤Д╨╛╤А╨║╨░ ╤П╨┤╤А╨░ тАФ ╤Б╨▒╨╛╤А╨║╨░ ╨╕╨┤╤С╤В ╤В╨╛╨╗╤М╨║╨╛ ╨╕╨╖ ╨╜╨╡╨│╨╛,
++# ╨▒╨╡╨╖ ╨╖╨░╨│╤А╤Г╨╖╨║╨╕ ╨╕╤Б╤Е╨╛╨┤╨╜╨╕╨║╨╛╨▓ ╤Б GitHub. ╨Я╨╛ ╤Г╨╝╨╛╨╗╤З╨░╨╜╨╕╤О: src/ ╤А╤П╨┤╨╛╨╝ ╤Б ╨┐╨░╨╜╨╡╨╗╤М╤О ($SCRIPT_DIR/../src).
++WDTT_SOURCE_DIR="${WDTT_SOURCE_DIR:-}"
+ GO_VERSION="${GO_VERSION:-1.25.0}"
+ WDTT_SERVICE="wdtt.service"
+ WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
+@@ -239,6 +242,41 @@ download_wdtt_archive() {
+   die "╨Э╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М ╤Б╨║╨░╤З╨░╤В╤М WDTT source ╨┤╨╗╤П WDTT_REF=$WDTT_REF"
+ }
+ 
++# WDTT-SERVER: ╨╗╨╛╨║╨░╨╗╤М╨╜╤Л╨╣ ╤Д╨╛╤А╨║ ╤П╨┤╤А╨░. ╨Т╨╛╨╖╨▓╤А╨░╤Й╨░╨╡╤В ╨║╨░╤В╨░╨╗╨╛╨│, ╨╡╤Б╨╗╨╕ ╨╛╨╜ ╤Б╤Г╤Й╨╡╤Б╤В╨▓╤Г╨╡╤В ╨╕ ╨┐╨╛╤Е╨╛╨╢
++# ╨╜╨░ ╨╕╤Б╤Е╨╛╨┤╨╜╨╕╨║ qWDTT (╨╡╤Б╤В╤М ╨╝╨╛╨┤╤Г╨╗╤М╨╜╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А). ╨Ш╨╜╨░╤З╨╡ тАФ ╨┐╤Г╤Б╤В╨╛.
++local_wdtt_source_dir() {
++  local candidates c
++  if [ -n "$WDTT_SOURCE_DIR" ]; then
++    candidates="$WDTT_SOURCE_DIR"
++  else
++    candidates="$SCRIPT_DIR/../src/proxy-turn-vk-android-1.4.3 $SCRIPT_DIR/src/proxy-turn-vk-android-1.4.3 $SCRIPT_DIR/../src $SCRIPT_DIR/src"
++  fi
++  for c in $candidates; do
++    if [ -d "$c" ] && [ -f "$c/server/main.go" ]; then
++      printf '%s' "$c"
++      return 0
++    fi
++  done
++  return 1
++}
++
++# WDTT-SERVER: ╤А╨░╨╖╨▓╨╛╤А╨░╤З╨╕╨▓╨░╨╡╤В ╨╕╤Б╤Е╨╛╨┤╨╜╨╕╨║ ╤П╨┤╤А╨░ ╨▓ ╤А╨░╨▒╨╛╤З╨╕╨╣ ╨║╨░╤В╨░╨╗╨╛╨│ ╤Б╨▒╨╛╤А╨║╨╕.
++# ╨Я╤А╨╕ ╨╜╨░╨╗╨╕╤З╨╕╨╕ ╨╗╨╛╨║╨░╨╗╤М╨╜╨╛╨│╨╛ ╤Д╨╛╤А╨║╨░ ╨║╨╛╨┐╨╕╤А╤Г╨╡╤В ╨╡╨│╨╛, ╨╕╨╜╨░╤З╨╡ ╤Б╨║╨░╤З╨╕╨▓╨░╨╡╤В ╨░╤А╤Е╨╕╨▓ ╤Б GitHub.
++resolve_wdtt_source() {
++  local work_dir="$1" local_dir
++  if local_dir="$(local_wdtt_source_dir)" && [ -n "$local_dir" ]; then
++    rm -rf "$work_dir/source"
++    mkdir -p "$work_dir/source/local"
++    cp -a "$local_dir/." "$work_dir/source/local/"
++    log "WDTT source: ╨╗╨╛╨║╨░╨╗╤М╨╜╤Л╨╣ ╤Д╨╛╤А╨║ ($local_dir)"
++    WDTT_SOURCE_RESOLVED="$work_dir/source/local"
++    return 0
++  fi
++  download_wdtt_archive "$work_dir/wdtt.zip"
++  unzip -q "$work_dir/wdtt.zip" -d "$work_dir/source"
++  WDTT_SOURCE_RESOLVED="$(find "$work_dir/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
++}
++
+ wdtt_extensions_binary_is_current() {
+   [ -x /usr/local/bin/wdtt-server ] || return 1
+   LC_ALL=C grep -aFq "$WDTT_EXTENSION_MARKER" /usr/local/bin/wdtt-server
+@@ -430,7 +468,7 @@ install_clean_wdtt() {
+     *) die "INSTALL_WDTT ╨┤╨╛╨╗╨╢╨╡╨╜ ╨▒╤Л╤В╤М auto, yes ╨╕╨╗╨╕ no" ;;
+   esac
+ 
+-  log "╨з╨╕╤Б╤В╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А: ╤Б╨▒╨╛╤А╨║╨░ ╨╜╨╡╨╕╨╖╨╝╨╡╨╜╨╡╨╜╨╜╨╛╨│╨╛ WDTT ╨╕╨╖ ╨╛╤Д╨╕╤Ж╨╕╨░╨╗╤М╨╜╨╛╨│╨╛ ╤А╨╡╨┐╨╛╨╖╨╕╤В╨╛╤А╨╕╤П"
++  log "╨з╨╕╤Б╤В╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А: ╤Б╨▒╨╛╤А╨║╨░ ╤П╨┤╤А╨░ ╨╕╨╖ ╨╗╨╛╨║╨░╨╗╤М╨╜╤Л╤Е ╨╕╤Б╤Е╨╛╨┤╨╜╨╕╨║╨╛╨▓ (╤Д╨╛╤А╨║ qWDTT $WDTT_REF)"
+   [ -n "$WDTT_MAIN_PASSWORD" ] || WDTT_MAIN_PASSWORD="$(random_password)"
+   validate_wdtt_main_password
+   BUILD_DIR="$(mktemp -d)"
+@@ -451,10 +489,9 @@ install_clean_wdtt() {
+   tar -xzf "$BUILD_DIR/$GO_TARBALL" -C "$BUILD_DIR"
+   install -d "$BUILD_DIR/gopath/pkg/mod" "$BUILD_DIR/go-cache"
+ 
+-  download_wdtt_archive "$BUILD_DIR/wdtt.zip"
+-  unzip -q "$BUILD_DIR/wdtt.zip" -d "$BUILD_DIR/source"
+-  WDTT_SOURCE="$(find "$BUILD_DIR/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
+-  [ -f "$WDTT_SOURCE/server/main.go" ] || die "╨Т ╨░╤А╤Е╨╕╨▓╨╡ qWDTT $WDTT_REF ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜ ╨╝╨╛╨┤╤Г╨╗╤М╨╜╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А"
++  resolve_wdtt_source "$BUILD_DIR"
++  WDTT_SOURCE="$WDTT_SOURCE_RESOLVED"
++  [ -f "$WDTT_SOURCE/server/main.go" ] || die "╨Т qWDTT $WDTT_REF ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜ ╨╝╨╛╨┤╤Г╨╗╤М╨╜╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А"
+   (
+     cd "$WDTT_SOURCE"
+     PATH="$BUILD_DIR/go/bin:$PATH" GOPATH="$BUILD_DIR/gopath" GOMODCACHE="$BUILD_DIR/gopath/pkg/mod" GOCACHE="$BUILD_DIR/go-cache" CGO_ENABLED=0 "$BUILD_DIR/go/bin/go" build -mod=mod -trimpath -ldflags='-s -w' -o /tmp/wdtt-server ./server
+@@ -503,10 +540,9 @@ install_wdtt_extensions() {
+   printf '%s  %s\n' "$go_checksum" "$work/$go_tarball" | sha256sum -c - >>"$LOG_FILE"
+   tar -xzf "$work/$go_tarball" -C "$work"
+   install -d "$work/gopath/pkg/mod" "$work/go-cache"
+-  download_wdtt_archive "$work/wdtt.zip"
+-  unzip -q "$work/wdtt.zip" -d "$work/source"
+-  source="$(find "$work/source" -mindepth 1 -maxdepth 1 -type d | head -1)"
+-  [ -f "$source/server/main.go" ] || die "╨Т ╨░╤А╤Е╨╕╨▓╨╡ qWDTT $WDTT_REF ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜ ╨╝╨╛╨┤╤Г╨╗╤М╨╜╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А"
++  resolve_wdtt_source "$work"
++  source="$WDTT_SOURCE_RESOLVED"
++  [ -f "$source/server/main.go" ] || die "╨Т qWDTT $WDTT_REF ╨╜╨╡ ╨╜╨░╨╣╨┤╨╡╨╜ ╨╝╨╛╨┤╤Г╨╗╤М╨╜╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А"
+ 
+   if [ "$WDTT_REPOSITORY" = "SpaceNeuroX/proxy-turn-vk-android" ]; then
+     python3 "$SCRIPT_DIR/wdtt_panel/wdtt_server_patch.py" "$source" || die "╨Э╨╡ ╤Г╨┤╨░╨╗╨╛╤Б╤М ╨░╨┤╨░╨┐╤В╨╕╤А╨╛╨▓╨░╤В╤М qWDTT $WDTT_REF ╨┤╨╗╤П ╨┐╨░╨╜╨╡╨╗╨╕"
+@@ -801,6 +837,12 @@ install_panel_files() {
+     install -m 0755 "$SCRIPT_DIR/bootstrap.sh" "$INSTALL_DIR/bootstrap.sh"
+     install -m 0755 "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/update.sh"
+     install -m 0755 "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
++    # WDTT-SERVER: ╨╖╨░╨╝╨╛╤А╨░╨╢╨╕╨▓╨░╨╡╨╝ ╨╗╨╛╨║╨░╨╗╤М╨╜╤Л╨╣ ╤Д╨╛╤А╨║ ╤П╨┤╤А╨░ ╨▓ /opt, ╤З╤В╨╛╨▒╤Л ╨╛╨▒╨╜╨╛╨▓╨╗╨╡╨╜╨╕╤П
++    # ╨┐╨░╨╜╨╡╨╗╨╕ ╨╕╨╖ /opt/wdtt-panel ╨╜╨╡ ╨╛╨▒╤А╨░╤Й╨░╨╗╨╕╤Б╤М ╨╜╨░ GitHub.
++    if [ -d "$SCRIPT_DIR/../src" ] && { [ -f "$SCRIPT_DIR/../src/server/main.go" ] || [ -f "$SCRIPT_DIR/../src/proxy-turn-vk-android-1.4.3/server/main.go" ]; }; then
++      rm -rf "$INSTALL_DIR/src"
++      cp -a "$SCRIPT_DIR/../src" "$INSTALL_DIR/src"
++    fi
+   fi
+   chown -R root:root "$INSTALL_DIR/wdtt_panel"
+   find "$INSTALL_DIR/wdtt_panel" -type d -exec chmod 0755 {} +

@@ -1,0 +1,17 @@
+warning: in the working copy of 'C:\Users\Admin\AppData\Local\Temp\opencode\spaceneurox\src\proxy-turn-vk-android-1.4.3\server\profile_api.go', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\My_Data\Scripts\Telegram\WDTT\src\proxy-turn-vk-android-1.4.3\server\profile_api.go', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\spaceneurox\\src\\proxy-turn-vk-android-1.4.3\\server\\profile_api.go" "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\src\\proxy-turn-vk-android-1.4.3\\server\\profile_api.go"
+index 1ee9a78..ea9647a 100644
+--- "a/C:\\Users\\Admin\\AppData\\Local\\Temp\\opencode\\spaceneurox\\src\\proxy-turn-vk-android-1.4.3\\server\\profile_api.go"
++++ "b/C:\\My_Data\\Scripts\\Telegram\\WDTT\\src\\proxy-turn-vk-android-1.4.3\\server\\profile_api.go"
+@@ -181,8 +181,8 @@ func handleAPIProfileStatus(w http.ResponseWriter, r *http.Request) {
+ 	}
+ 
+ 	maxDevs := entry.MaxDevices
+-	if maxDevs <= 0 {
+-		maxDevs = 1
++	if maxDevs < 0 {
++		maxDevs = 0 // WDTT-SERVER: 0 = ╤Г╤Б╤В╤А╨╛╨╣╤Б╤В╨▓╨░ ╨╜╨╡ ╨╛╨│╤А╨░╨╜╨╕╤З╨╡╨╜╤Л
+ 	}
+ 
+ 	boundDevices := len(entry.DeviceIDs)
