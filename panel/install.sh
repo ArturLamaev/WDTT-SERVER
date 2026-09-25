@@ -61,6 +61,42 @@ command_exists() { command -v "$1" >/dev/null 2>&1; }
 random_token() { python3 -c "import secrets; print(secrets.token_urlsafe(${1:-24}))"; }
 random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+string.digits+"._~-"; print("".join(secrets.choice(a) for _ in range(24)))'; }
 
+TMPFS_ORIG_MB=""
+BUILD_TEMPDIRS=()
+
+# Расширяет /tmp (tmpfs) до 4GiB перед сборками, если его размер меньше 1GiB.
+grow_tmp_for_build() {
+  local fstype size_bytes size_mb
+  fstype="$(findmnt -n -o FSTYPE /tmp 2>/dev/null || true)"
+  [ "$fstype" = "tmpfs" ] || { log "/tmp не tmpfs ($fstype) — расширение не требуется"; return 0; }
+  size_bytes="$(findmnt -n -o SIZE -b /tmp 2>/dev/null || echo 0)"
+  size_mb=$(( size_bytes / 1024 / 1024 ))
+  log "/tmp (tmpfs): ${size_mb} MiB"
+  [ "$size_mb" -ge 1024 ] && { log "/tmp >= 1GiB — расширение не требуется"; return 0; }
+  TMPFS_ORIG_MB="$size_mb"
+  log "/tmp меньше 1GiB — расширяю до 4GiB"
+  mount -o remount,size=4G /tmp || die "Не удалось расширить /tmp до 4GiB"
+  log "OK: /tmp (tmpfs) расширен до 4GiB"
+}
+
+# Убирает наши временные артефакты и возвращает /tmp к прежнему размеру.
+restore_tmp_state() {
+  local d
+  for d in "${BUILD_TEMPDIRS[@]}"; do
+    [ -n "$d" ] && rm -rf -- "$d" 2>/dev/null || true
+  done
+  rm -f /tmp/wdtt-server /tmp/wdtt-main.password /tmp/wdtt-admin.token /tmp/wdtt-bot.token
+  [ -n "$TMPFS_ORIG_MB" ] || return 0
+  log "Возвращаю /tmp к прежнему размеру (${TMPFS_ORIG_MB} MiB)"
+  if mount -o remount,size="${TMPFS_ORIG_MB}M" /tmp 2>/dev/null; then
+    log "OK: /tmp возвращён к ${TMPFS_ORIG_MB} MiB"
+  else
+    log "WARN: не удалось вернуть /tmp к ${TMPFS_ORIG_MB} MiB"
+  fi
+  TMPFS_ORIG_MB=""
+}
+trap restore_tmp_state EXIT
+
 normalize_wdtt_main_password() {
   if [[ "${WDTT_MAIN_PASSWORD:-}" =~ ^[[:space:]]*$ ]]; then
     WDTT_MAIN_PASSWORD=""
@@ -471,7 +507,9 @@ install_clean_wdtt() {
   log "Чистый сервер: сборка ядра из локальных исходников (форк qWDTT $WDTT_REF)"
   [ -n "$WDTT_MAIN_PASSWORD" ] || WDTT_MAIN_PASSWORD="$(random_password)"
   validate_wdtt_main_password
+  grow_tmp_for_build
   BUILD_DIR="$(mktemp -d)"
+  BUILD_TEMPDIRS+=("$BUILD_DIR")
   trap 'rm -rf "${BUILD_DIR:-}"' RETURN
 
   case "$(uname -m)" in
@@ -520,8 +558,10 @@ install_wdtt_extensions() {
   wdtt_installed || die "WDTT не найден: сначала установите или разверните WDTT"
   [ -x /usr/local/bin/wdtt-server ] || die "Не найден /usr/local/bin/wdtt-server"
 
+  grow_tmp_for_build
   local work source go_arch go_tarball go_checksum backup database_backup target was_active=0
   work="$(mktemp -d)"
+  BUILD_TEMPDIRS+=("$work")
   trap 'rm -rf "${work:-}"' RETURN
   target="/usr/local/bin/wdtt-server"
 
