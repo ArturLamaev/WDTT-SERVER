@@ -354,6 +354,16 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("$panel_admin_env", panel_service)
         self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", panel_service)
 
+    def test_installer_seeds_vk_hash_library_from_userdata(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('USERDATA_DIR="${WDTT_USERDATA_DIR:-$SCRIPT_DIR/../userdata}"', script)
+        self.assertIn('SEED_HASHES_FILE="$CONFIG_DIR/vk-hash.txt"', script)
+        panel_files = script[script.index("install_panel_files() {"):script.index("write_maintenance_scripts() {")]
+        self.assertIn("install_vk_hash_seed", panel_files)
+        seed = ROOT.parent / "userdata" / "vk-hash.txt"
+        self.assertTrue(seed.is_file())
+        self.assertTrue(all(line.strip() for line in seed.read_text(encoding="utf-8").splitlines()))
+
     def test_installer_removes_obsolete_fleet_agent(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("remove_obsolete_fleet_agent()", script)

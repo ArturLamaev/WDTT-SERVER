@@ -276,6 +276,21 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(created["vk_hash"], "manual_two")
         self.assertEqual(created["password"], "AutoDemoUser123")
 
+    def test_vk_hash_library_is_seeded_from_userdata_file(self):
+        seed = Path(self.temp.name) / "vk-hash.txt"
+        seed.write_text(
+            "seed_one\nhttps://vk.com/call/join/seed_two\nseed_one\n# comment\nbad!hash\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(app, "SEED_HASHES_FILE", seed):
+            app.Panel.seed_vk_hashes()
+        self.assertEqual(app.Panel.list_vk_hashes()["hashes"], ["seed_one", "seed_two"])
+
+        app.Panel.delete_vk_hash({"hash": "seed_one"})
+        with mock.patch.object(app, "SEED_HASHES_FILE", seed):
+            app.Panel.seed_vk_hashes()
+        self.assertEqual(app.Panel.list_vk_hashes()["hashes"], ["seed_two"])
+
     def test_telegram_settings_routes_call_root_helper(self):
         form = b"username=admin&password=Panel-password-12345"
         headers, _ = self.request("/private-panel-path/login", "POST", form)

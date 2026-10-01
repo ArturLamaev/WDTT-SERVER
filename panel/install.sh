@@ -32,6 +32,8 @@ XRAY_CASCADE_SERVICE="wdtt-xray-cascade.service"
 XRAY_GATEWAY_SERVICE="wdtt-xray-gateway.service"
 WARP_DIR="$PRIVATE_STATE_DIR/warp"
 LOG_FILE="/var/log/wdtt-panel-install.log"
+USERDATA_DIR="${WDTT_USERDATA_DIR:-$SCRIPT_DIR/../userdata}"
+SEED_HASHES_FILE="$CONFIG_DIR/vk-hash.txt"
 
 PANEL_USER="${PANEL_USER:-admin}"
 PANEL_PASSWORD="${PANEL_PASSWORD:-}"
@@ -868,6 +870,16 @@ schedule_wdtt_extensions() {
   log "Автоматическое обновление WDTT запущено; при временной ошибке оно повторится автоматически"
 }
 
+install_vk_hash_seed() {
+  local source="$USERDATA_DIR/vk-hash.txt"
+  if [ -f "$source" ]; then
+    install -m 0600 "$source" "$SEED_HASHES_FILE"
+    log "VK-хеши из userdata/vk-hash.txt установлены в $SEED_HASHES_FILE (импорт в библиотеку при первом старте панели)"
+  else
+    log "userdata/vk-hash.txt не найден — библиотека VK-хешей останется пустой до ручного добавления"
+  fi
+}
+
 install_panel_files() {
   [ -d "$SCRIPT_DIR/wdtt_panel" ] || die "Каталог wdtt_panel не найден рядом с install.sh"
   id -u wdtt-panel >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --create-home --shell /usr/sbin/nologin wdtt-panel
@@ -910,6 +922,7 @@ EOF
     chmod 0440 "$SUDOERS_FILE"
     visudo -cf "$SUDOERS_FILE" >>"$LOG_FILE"
   fi
+  install_vk_hash_seed
 }
 
 write_maintenance_scripts() {

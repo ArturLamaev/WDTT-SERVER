@@ -25,6 +25,7 @@ from .security import create_session, read_session, verify_csrf, verify_password
 PACKAGE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = Path(os.environ.get("WDTT_PANEL_CONFIG", "/etc/wdtt-panel/config.json"))
 STATE_DB = Path(os.environ.get("WDTT_PANEL_STATE", "/var/lib/wdtt-panel/panel.db"))
+SEED_HASHES_FILE = Path(os.environ.get("WDTT_PANEL_SEED_HASHES", "/etc/wdtt-panel/vk-hash.txt"))
 ADMIN_COMMAND = os.environ.get("WDTT_PANEL_ADMIN", "/usr/bin/sudo -n /usr/local/sbin/wdtt-panel-admin").split()
 MAX_BODY = 90 * 1024 * 1024
 
@@ -113,6 +114,37 @@ class Panel:
                     updated_at INTEGER NOT NULL
                 );
                 """
+            )
+            db.commit()
+        self.seed_vk_hashes()
+
+    @staticmethod
+    def seed_vk_hashes() -> None:
+        try:
+            if not SEED_HASHES_FILE.is_file():
+                return
+        except OSError:
+            return
+        values: list[str] = []
+        for line in SEED_HASHES_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            for part in line.replace(",", " ").split():
+                try:
+                    values.append(normalize_hash(part))
+                except ValidationError:
+                    continue
+        values = list(dict.fromkeys(values))[:500]
+        if not values:
+            return
+        with closing(sqlite3.connect(STATE_DB)) as db:
+            if db.execute("SELECT COUNT(*) FROM vk_hash_library").fetchone()[0]:
+                return
+            now = int(time.time())
+            db.executemany(
+                "INSERT OR IGNORE INTO vk_hash_library(value, created_at) VALUES(?, ?)",
+                [(value, now) for value in values],
             )
             db.commit()
 
