@@ -464,7 +464,9 @@
         ? `<small class="quota-warning ${quotaPercent >= 100 ? "quota-danger" : ""}">${quotaPercent >= 100 ? "Лимит исчерпан" : `Использовано ${quotaPercent}%`}</small>` : "";
       const quotaText = quotaManaged ? (user.traffic_unlimited ? "Без лимита" : `${formatBytes(user.traffic_remaining_bytes)} из ${formatBytes(quotaLimit)} осталось`) : "";
       const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑${quotaText ? `<br><small>${escapeHtml(quotaText)}</small>${warning}` : ""}`;
-      const device = user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан";
+      const device = (user.devices && user.devices.length > 1)
+        ? user.devices.map((item) => `${escapeHtml(item.device_id)}<br><small>${escapeHtml(item.ip || "")}${item.connected ? " · онлайн" : ""}</small>`).join("<br>")
+        : (user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан");
       const title = user.label || user.password;
       const selectable = user.role !== "admin";
       const lastActivity = lastUserActivity(user);
@@ -625,20 +627,28 @@
 
   function openUserActivity(user) {
     if (!user) return;
-    const device = user.device || {};
     const title = user.label || user.password;
     const rows = [
       ["Метка", user.label || "—"],
       ["Пароль", user.password],
       ["Статус", userStatus(user)[1]],
-      ["Устройство", device.device_id || user.device_id || "не привязано"],
-      ["IP устройства", device.ip || "—"],
-      ["Последнее подключение", formatActivityDate(user.last_handshake)],
-      ["Последняя отправка", formatActivityDate(user.last_upload_at)],
-      ["Последняя загрузка", formatActivityDate(user.last_download_at)],
-      ["Отправлено всего", formatBytes(user.up_bytes)],
-      ["Загружено всего", formatBytes(user.down_bytes)],
     ];
+    const devices = (user.devices && user.devices.length) ? user.devices : [];
+    if (devices.length <= 1) {
+      const device = user.device || {};
+      rows.push(["Устройство", device.device_id || user.device_id || "не привязано"]);
+      rows.push(["IP устройства", device.ip || "—"]);
+    } else {
+      rows.push(["Устройств", String(devices.length)]);
+      devices.forEach((item) => {
+        rows.push([`${item.device_id}${item.connected ? " · онлайн" : ""}`, `${item.ip || "—"}`]);
+      });
+    }
+    rows.push(["Последнее подключение", formatActivityDate(user.last_handshake)]);
+    rows.push(["Последняя отправка", formatActivityDate(user.last_upload_at)]);
+    rows.push(["Последняя загрузка", formatActivityDate(user.last_download_at)]);
+    rows.push(["Отправлено всего", formatBytes(user.up_bytes)]);
+    rows.push(["Загружено всего", formatBytes(user.down_bytes)]);
     $("#user-activity-title").textContent = `Активность: ${title}`;
     $("#user-activity-details").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
     $("#user-activity-dialog").showModal();

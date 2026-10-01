@@ -597,6 +597,36 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(result["online_devices"], 0)
         self.assertEqual(result["online_admin_devices"], 0)
 
+    def test_multiple_main_password_devices_are_merged_into_one_administrator(self):
+        data = admin.load_database()
+        data["main_password"] = "admin"
+        data["devices"]["phone-a"] = {"device_id": "phone-a", "ip": "10.66.0.2", "pub_key": "pub-a"}
+        data["devices"]["phone-b"] = {"device_id": "phone-b", "ip": "10.66.0.3", "pub_key": "pub-b"}
+        admin.save_database(data)
+        with mock.patch.object(admin, "wireguard_handshakes", return_value={"pub-a": int(time.time())}):
+            result = admin.list_users()
+        admins = result["admins"]
+        self.assertEqual(len(admins), 1)
+        self.assertEqual(admins[0]["device_id"], "multi")
+        self.assertIsNone(admins[0]["device"])
+        self.assertEqual([device["device_id"] for device in admins[0]["devices"]], ["phone-a", "phone-b"])
+        self.assertTrue(admins[0]["devices"][0]["connected"])
+        self.assertFalse(admins[0]["devices"][1]["connected"])
+        self.assertTrue(admins[0]["connected"])
+
+    def test_overview_counts_online_admin_devices_from_merged_administrator(self):
+        data = admin.load_database()
+        data["main_password"] = "admin"
+        data["devices"]["phone-a"] = {"device_id": "phone-a", "ip": "10.66.0.2", "pub_key": "pub-a"}
+        data["devices"]["phone-b"] = {"device_id": "phone-b", "ip": "10.66.0.3", "pub_key": "pub-b"}
+        admin.save_database(data)
+        disk = mock.Mock(total=100, used=10, free=90)
+        with mock.patch.object(admin, "read_stats", return_value={}), mock.patch.object(admin.shutil, "disk_usage", return_value=disk), mock.patch.object(admin, "cpu_usage", return_value=0), mock.patch.object(admin, "memory_usage", return_value={}), mock.patch.object(admin.os, "getloadavg", return_value=(0, 0, 0), create=True), mock.patch.object(admin, "wireguard_handshakes", return_value={"pub-a": int(time.time())}):
+            result = admin.overview({})
+        self.assertEqual(result["admin_devices"], 2)
+        self.assertEqual(result["online_admin_devices"], 1)
+        self.assertEqual(result["online_devices"], 1)
+
     def test_userspace_wireguard_handshakes_are_used_when_wg_tools_are_missing(self):
         with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin.shutil, "which", return_value=None), mock.patch.object(admin, "userspace_wireguard_handshakes", return_value={"public-key": 123}):
             self.assertEqual(admin.wireguard_handshakes(), {"public-key": 123})

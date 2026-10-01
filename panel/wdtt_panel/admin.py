@@ -605,6 +605,31 @@ def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str
     return entry
 
 
+def _admin_device_records(data: dict[str, Any], handshakes: dict[str, int]) -> list[dict[str, Any]]:
+    user_device_ids = {
+        str(entry.get("device_id") or "")
+        for entry in data.get("passwords", {}).values()
+        if isinstance(entry, dict) and entry.get("device_id")
+    }
+    records: list[dict[str, Any]] = []
+    for device_id, device in data.get("devices", {}).items():
+        if device_id in user_device_ids or not isinstance(device, dict):
+            continue
+        public_key = str(device.get("pub_key") or device.get("PubKey") or "")
+        last_handshake = int(handshakes.get(public_key) or 0)
+        records.append(
+            {
+                "device": device,
+                "device_id": device_id,
+                "ip": str(device.get("ip") or ""),
+                "last_handshake": last_handshake,
+                "connected": handshake_is_active(last_handshake),
+            }
+        )
+    records.sort(key=lambda record: record["device_id"])
+    return records
+
+
 def list_users() -> dict[str, Any]:
     data = load_database()
     panel_labels = {} if wdtt_extensions_are_verified() else load_panel_labels()
@@ -621,43 +646,41 @@ def list_users() -> dict[str, Any]:
         for password, entry in data["passwords"].items()
     ]
     users.sort(key=lambda item: (item["expired"], item["is_deactivated"], item["password"]))
-    user_devices = {
-        str(entry.get("device_id") or "")
-        for entry in data["passwords"].values()
-        if isinstance(entry, dict) and entry.get("device_id")
-    }
-    admins = []
+    records = _admin_device_records(data, handshakes)
     main_traffic_supported = "main_down_bytes" in data or "main_up_bytes" in data
-
-    def main_admin_view(device_id: str = "", device: dict[str, Any] | None = None, last_handshake: int = 0) -> dict[str, Any]:
-        return {
-            "password": "Главный пароль",
-            "role": "admin",
-            "device_id": device_id,
-            "device": device,
-            "connected": handshake_is_active(last_handshake),
-            "last_handshake": last_handshake,
-            "down_bytes": int(data.get("main_down_bytes") or 0),
-            "up_bytes": int(data.get("main_up_bytes") or 0),
-            "last_upload_at": int(data.get("main_last_upload_at") or 0),
-            "last_download_at": int(data.get("main_last_download_at") or 0),
-            "traffic_supported": main_traffic_supported,
-            "expires_at": 0,
-            "label": "Администратор WDTT",
-            "vk_hash": "Администратор WDTT",
-            "ports": "",
-            "is_deactivated": False,
-            "expired": False,
-        }
-
-    for device_id, device in data["devices"].items():
-        if device_id in user_devices or not isinstance(device, dict):
-            continue
-        public_key = str(device.get("pub_key") or device.get("PubKey") or "")
-        last_handshake = int(handshakes.get(public_key) or 0)
-        admins.append(main_admin_view(device_id, device, last_handshake))
-    if data.get("main_password") and not admins:
-        admins.append(main_admin_view())
+    admins: list[dict[str, Any]] = []
+    if data.get("main_password") or records:
+        devices = [
+            {
+                "device_id": record["device_id"],
+                "ip": record["ip"],
+                "connected": record["connected"],
+                "last_handshake": record["last_handshake"],
+            }
+            for record in records
+        ]
+        admins.append(
+            {
+                "password": "Главный пароль",
+                "role": "admin",
+                "device_id": "multi" if len(devices) > 1 else (devices[0]["device_id"] if devices else ""),
+                "device": records[0]["device"] if len(records) == 1 else None,
+                "devices": devices,
+                "connected": any(record["connected"] for record in records),
+                "last_handshake": max((record["last_handshake"] for record in records), default=0),
+                "down_bytes": int(data.get("main_down_bytes") or 0),
+                "up_bytes": int(data.get("main_up_bytes") or 0),
+                "last_upload_at": int(data.get("main_last_upload_at") or 0),
+                "last_download_at": int(data.get("main_last_download_at") or 0),
+                "traffic_supported": main_traffic_supported,
+                "expires_at": 0,
+                "label": "Администратор WDTT",
+                "vk_hash": "Администратор WDTT",
+                "ports": "",
+                "is_deactivated": False,
+                "expired": False,
+            }
+        )
     return {
         "users": users,
         "admins": admins,
@@ -3768,7 +3791,12 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
     )
     connection_state = list_users()
     online_user_devices = sum(1 for user in connection_state["users"] if user.get("connected") and user.get("device_id"))
-    online_admin_devices = sum(1 for admin in connection_state["admins"] if admin.get("connected") and admin.get("device_id"))
+    online_admin_devices = sum(
+        1
+        for admin in connection_state["admins"]
+        for device in (admin.get("devices") or [])
+        if device.get("connected")
+    )
     stats = read_stats()
     ip_forward = "unknown"
     if not SKIP_SYSTEMD:
