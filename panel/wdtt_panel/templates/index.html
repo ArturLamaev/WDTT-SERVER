@@ -147,6 +147,18 @@
           <div class="button-row"><button id="cleanup-preview" class="secondary">Оценить</button><button id="cleanup-apply" class="danger">Очистить</button></div>
         </article>
         <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">AUTO CLEANUP</p><h2>Авто-очистка диска</h2></div><span id="autoclean-status" class="muted">загрузка</span></div>
+          <p class="muted">Когда диск заполнен выше порога, панель автоматически обрезает журналы, очищает кэш пакетов и удаляет старые резервные копии. Проверка выполняется каждые 30 минут.</p>
+          <div class="form-grid compact-grid">
+            <label class="checkbox wide"><input id="autoclean-enabled" type="checkbox" checked> Включить авто-очистку</label>
+            <label>Порог диска, %<input id="autoclean-disk-percent" type="number" min="50" max="99" value="90"></label>
+            <label>Хранить копий панели<input id="autoclean-keep-panel" type="number" min="1" max="100" value="20"></label>
+            <label>Хранить копий пользователей<input id="autoclean-keep-users" type="number" min="1" max="100" value="20"></label>
+            <label>Хранить journal, дней<input id="autoclean-keep-days" type="number" min="1" max="365" value="14"></label>
+          </div>
+          <div class="button-row"><button id="save-autoclean" class="secondary">Сохранить настройки</button><button id="run-autoclean" class="danger">Проверить и очистить</button></div>
+        </article>
+        <article class="panel-card">
           <div class="section-head"><div><p class="eyebrow">TELEGRAM BOT</p><h2>Бот WDTT</h2></div><span id="telegram-status" class="badge warn">загрузка</span></div>
           <div class="form-grid compact-grid">
             <label class="checkbox wide"><input id="telegram-enabled" type="checkbox"> Включить Telegram-бота</label>

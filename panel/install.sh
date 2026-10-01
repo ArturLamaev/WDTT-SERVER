@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.0.0"
+PANEL_VERSION="1.1.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +19,9 @@ UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
 STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
 GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
 BACKUP_RUNNER="/usr/local/sbin/wdtt-panel-backup"
+AUTOCLEAN_RUNNER="/usr/local/sbin/wdtt-panel-autoclean"
+AUTOCLEAN_SERVICE="wdtt-panel-autoclean.service"
+AUTOCLEAN_TIMER="wdtt-panel-autoclean.timer"
 CASCADE_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-cascade-rules"
 GATEWAY_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-xray-gateway"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
@@ -949,6 +952,11 @@ case "\${1:-full}" in
 esac
 EOF
   chmod 0755 "$BACKUP_RUNNER"
+  cat > "$AUTOCLEAN_RUNNER" <<EOF
+#!/bin/sh
+printf '%s\n' '{"action":"autoclean.run","payload":{}}' | $ADMIN_WRAPPER
+EOF
+  chmod 0755 "$AUTOCLEAN_RUNNER"
   cat > "$CASCADE_RULES_WRAPPER" <<EOF
 #!/bin/sh
 case "\${1:-apply}" in
@@ -1496,6 +1504,35 @@ EOF
   systemctl enable --now wdtt-panel-cert-renew.timer >>"$LOG_FILE" 2>&1
 }
 
+write_autoclean_timer() {
+  cat > "/etc/systemd/system/$AUTOCLEAN_SERVICE" <<EOF
+[Unit]
+Description=Clean up WDTT Panel logs and stale backups when disk is low
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$AUTOCLEAN_RUNNER
+EOF
+  cat > "/etc/systemd/system/$AUTOCLEAN_TIMER" <<EOF
+[Unit]
+Description=Periodic WDTT Panel disk cleanup check
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=true
+Unit=$AUTOCLEAN_SERVICE
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "$AUTOCLEAN_TIMER" >>"$LOG_FILE" 2>&1
+}
+
 renew_certificates() {
   local renewal_file nginx_was_active=0 renewal_ok=0
   require_root
@@ -1698,11 +1735,11 @@ uninstall_panel() {
     panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
-  systemctl disable --now "$PANEL_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer "$STATE_DIR/fleet-agent.json"
+  systemctl disable --now "$PANEL_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port"
   systemctl daemon-reload
@@ -1723,6 +1760,7 @@ update_panel() {
   write_final_nginx
   write_renew_timer
   write_wdtt_extensions_timer
+  write_autoclean_timer
   write_xray_services
   remove_obsolete_openwrt_podkop
   schedule_wdtt_extensions
@@ -1761,6 +1799,7 @@ install_panel() {
   write_final_nginx
   write_renew_timer
   write_wdtt_extensions_timer
+  write_autoclean_timer
   write_xray_services
   open_firewall
   systemctl restart "$PANEL_SERVICE"

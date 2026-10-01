@@ -49,7 +49,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
-    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAudit(); loadPanelVersion(); loadTelegramSettings(); }
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadPanelVersion(); loadTelegramSettings(); }
   }
 
   function restoreActiveTab() {
@@ -927,6 +927,55 @@
     finally { setBusy(button, false); }
   }
 
+  async function loadAutoclean() {
+    try {
+      const result = await api("autoclean");
+      const settings = result.settings || {};
+      $("#autoclean-enabled").checked = settings.enabled !== false;
+      $("#autoclean-disk-percent").value = settings.disk_percent || 90;
+      $("#autoclean-keep-panel").value = settings.keep_panel || 20;
+      $("#autoclean-keep-users").value = settings.keep_users || 20;
+      $("#autoclean-keep-days").value = settings.keep_days || 14;
+      const disk = result.disk_percent === undefined ? "" : ` Диск занят: ${result.disk_percent}%.`;
+      $("#autoclean-status").textContent = (result.active ? "Таймер авто-очистки активен." : "Таймер авто-очистки выключен.") + disk;
+    } catch (error) { $("#autoclean-status").textContent = error.message; }
+  }
+
+  async function saveAutoclean() {
+    const button = $("#save-autoclean");
+    setBusy(button, true);
+    try {
+      await api("autoclean/settings", { method: "POST", body: {
+        enabled: $("#autoclean-enabled").checked,
+        disk_percent: Number($("#autoclean-disk-percent").value),
+        keep_panel: Number($("#autoclean-keep-panel").value),
+        keep_users: Number($("#autoclean-keep-users").value),
+        keep_days: Number($("#autoclean-keep-days").value),
+      }});
+      toast("Настройки авто-очистки сохранены");
+      await loadAutoclean();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function runAutoclean() {
+    const button = $("#run-autoclean");
+    if (!confirm("Запустить проверку диска и очистку прямо сейчас?")) return;
+    setBusy(button, true);
+    try {
+      const result = await api("autoclean/run", { method: "POST", body: {} });
+      if (result.ran) {
+        toast(`Очистка выполнена: освобождено ${formatBytes(result.freed_bytes || 0)}, удалено копий: ${result.backups_removed || 0}`);
+      } else if (result.reason === "below_threshold") {
+        toast(`Диск занят ${result.disk_percent}% (порог ${result.threshold}%) — очистка не требуется`);
+      } else {
+        toast("Авто-очистка выключена");
+      }
+      await loadAutoclean();
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
   async function createBackup(type) {
     const button = type === "full" ? $("#create-full-backup") : $("#create-users-backup");
     setBusy(button, true);
@@ -1529,6 +1578,8 @@
     $("#create-full-backup").addEventListener("click", () => createBackup("full"));
     $("#create-users-backup").addEventListener("click", () => createBackup("users"));
     $("#save-backup-schedule").addEventListener("click", saveBackupSchedule);
+    $("#save-autoclean").addEventListener("click", saveAutoclean);
+    $("#run-autoclean").addEventListener("click", runAutoclean);
     $("#save-telegram").addEventListener("click", saveTelegramSettings);
     $("#test-telegram").addEventListener("click", testTelegramSettings);
     $("#update-panel").addEventListener("click", updatePanel);

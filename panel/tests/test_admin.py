@@ -537,6 +537,44 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertTrue(items["service_logs"]["files"][0]["cleared"])
         self.assertEqual(self.install_log.read_text(encoding="utf-8"), "")
 
+    def test_autoclean_skips_when_disk_is_below_threshold(self):
+        with mock.patch.object(admin, "load_autoclean_settings", return_value=admin.default_autoclean_settings()), \
+             mock.patch.object(admin, "disk_usage_percent", return_value=42.0), \
+             mock.patch.object(admin, "cleanup_system") as cleanup:
+            result = admin.run_autoclean()
+        self.assertFalse(result["ran"])
+        self.assertEqual(result["reason"], "below_threshold")
+        cleanup.assert_not_called()
+
+    def test_autoclean_runs_cleanup_and_prunes_backups_above_threshold(self):
+        settings = admin.default_autoclean_settings()
+        with mock.patch.object(admin, "load_autoclean_settings", return_value=settings), \
+             mock.patch.object(admin, "disk_usage_percent", return_value=95.0), \
+             mock.patch.object(admin, "cleanup_system", return_value={"estimated_freed_bytes": 2048, "items": []}) as cleanup, \
+             mock.patch.object(admin, "prune_backups_to", return_value=3) as prune:
+            result = admin.run_autoclean()
+        self.assertTrue(result["ran"])
+        self.assertEqual(result["reason"], "cleaned")
+        self.assertEqual(result["freed_bytes"], 2048)
+        self.assertEqual(result["backups_removed"], 3)
+        cleanup.assert_called_once()
+        prune.assert_called_once_with(settings["keep_panel"], settings["keep_users"])
+
+    def test_prune_backups_to_keeps_requested_panel_and_user_counts(self):
+        self.backups.mkdir(parents=True, exist_ok=True)
+        for index in range(3):
+            (self.backups / f"panel-2026061{index}-000000-manual.json").write_text(
+                json.dumps({"format": admin.BACKUP_FORMAT, "type": "full"}), encoding="utf-8"
+            )
+            (self.backups / f"passwords-2026061{index}-000000-manual.json").write_text(
+                json.dumps({"passwords": {}}), encoding="utf-8"
+            )
+        removed = admin.prune_backups_to(2, 1)
+        self.assertEqual(removed, 3)
+        remaining = admin.list_backups()["backups"]
+        self.assertEqual(sum(1 for item in remaining if item["type"] == "full"), 2)
+        self.assertEqual(sum(1 for item in remaining if item["type"] == "users"), 1)
+
     def test_version_comparison_normalizes_short_versions(self):
         self.assertEqual(admin.version_parts("1.2"), admin.version_parts("1.2.0"))
         self.assertGreater(admin.version_parts("1.2.1"), admin.version_parts("1.2"))

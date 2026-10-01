@@ -266,6 +266,7 @@ class Panel:
                 "service",
                 "logs",
                 "cleanup",
+                "autoclean",
                 "backups",
                 "panel.version",
                 "telegram",
@@ -395,6 +396,9 @@ class Panel:
             "logs": "logs",
             "cleanup/preview": "cleanup.preview",
             "cleanup/apply": "cleanup.apply",
+            "autoclean": "autoclean.status",
+            "autoclean/settings": "autoclean.settings",
+            "autoclean/run": "autoclean.run",
             "backups": "backups.list",
             "backups/create": "backups.create",
             "backups/delete": "backups.delete",
@@ -431,7 +435,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})

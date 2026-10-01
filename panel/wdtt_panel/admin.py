@@ -58,6 +58,12 @@ BACKUP_SERVICE_NAME = "wdtt-panel-backup.service"
 BACKUP_TIMER_FILE = Path(os.environ.get("WDTT_BACKUP_TIMER_FILE", f"/etc/systemd/system/{BACKUP_TIMER_NAME}"))
 BACKUP_SERVICE_FILE = Path(os.environ.get("WDTT_BACKUP_SERVICE_FILE", f"/etc/systemd/system/{BACKUP_SERVICE_NAME}"))
 BACKUP_RUNNER = Path(os.environ.get("WDTT_BACKUP_RUNNER", "/usr/local/sbin/wdtt-panel-backup"))
+AUTOCLEAN_SETTINGS_FILE = Path(os.environ.get("WDTT_AUTOCLEAN_SETTINGS_FILE", "/var/lib/wdtt-panel-private/auto-clean.json"))
+AUTOCLEAN_TIMER_NAME = "wdtt-panel-autoclean.timer"
+AUTOCLEAN_SERVICE_NAME = "wdtt-panel-autoclean.service"
+AUTOCLEAN_TIMER_FILE = Path(os.environ.get("WDTT_AUTOCLEAN_TIMER_FILE", f"/etc/systemd/system/{AUTOCLEAN_TIMER_NAME}"))
+AUTOCLEAN_SERVICE_FILE = Path(os.environ.get("WDTT_AUTOCLEAN_SERVICE_FILE", f"/etc/systemd/system/{AUTOCLEAN_SERVICE_NAME}"))
+AUTOCLEAN_RUNNER = Path(os.environ.get("WDTT_AUTOCLEAN_RUNNER", "/usr/local/sbin/wdtt-panel-autoclean"))
 WDTT_UNIT_FILE = Path(os.environ.get("WDTT_UNIT_FILE", "/etc/systemd/system/wdtt.service"))
 WDTT_BOT_TOKEN_FILE = Path(os.environ.get("WDTT_BOT_TOKEN_FILE", "/etc/wdtt/bot.token"))
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
@@ -2050,6 +2056,107 @@ def cleanup_system(payload: dict[str, Any], apply: bool) -> dict[str, Any]:
     }
 
 
+def default_autoclean_settings() -> dict[str, Any]:
+    return {"enabled": True, "disk_percent": 90, "keep_panel": 20, "keep_users": 20, "keep_days": 14}
+
+
+def normalize_autoclean_settings(payload: Any) -> dict[str, Any]:
+    settings = default_autoclean_settings()
+    if not isinstance(payload, dict):
+        raise ValidationError("Некорректные настройки авто-очистки")
+    settings["enabled"] = bool(payload.get("enabled", settings["enabled"]))
+    try:
+        threshold = int(payload.get("disk_percent", settings["disk_percent"]))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Укажите порог диска в процентах") from exc
+    if not 50 <= threshold <= 99:
+        raise ValidationError("Порог диска должен быть от 50 до 99%")
+    settings["disk_percent"] = threshold
+    for key in ("keep_panel", "keep_users", "keep_days"):
+        try:
+            value = int(payload.get(key, settings[key]))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("Некорректный лимит хранения") from exc
+        if not 1 <= value <= 100:
+            raise ValidationError("Хранить можно от 1 до 100 копий/дней")
+        settings[key] = value
+    return settings
+
+
+def load_autoclean_settings() -> dict[str, Any]:
+    saved = read_private_json(AUTOCLEAN_SETTINGS_FILE)
+    if not saved:
+        return default_autoclean_settings()
+    try:
+        return normalize_autoclean_settings(saved)
+    except ValidationError:
+        return default_autoclean_settings()
+
+
+def disk_usage_percent() -> float:
+    usage = shutil.disk_usage("/")
+    return round(usage.used * 100 / usage.total, 1) if usage.total else 0.0
+
+
+def prune_backups_to(keep_panel: int, keep_users: int) -> int:
+    if not BACKUP_DIR.exists():
+        return 0
+    limits = {"full": max(0, keep_panel), "users": max(0, keep_users)}
+    counters = {"full": 0, "users": 0}
+    removed = 0
+    for item in list_backups()["backups"]:
+        kind = item.get("type") if item.get("type") in limits else "users"
+        counters[kind] += 1
+        if counters[kind] > limits[kind]:
+            (BACKUP_DIR / str(item["name"])).unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def autoclean_status() -> dict[str, Any]:
+    settings = load_autoclean_settings()
+    active = False
+    if not SKIP_SYSTEMD:
+        active = run(["systemctl", "is-enabled", "--quiet", AUTOCLEAN_TIMER_NAME], timeout=20).returncode == 0
+    return {"settings": settings, "active": active, "disk_percent": disk_usage_percent()}
+
+
+def run_autoclean(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = load_autoclean_settings()
+    percent = disk_usage_percent()
+    if not settings["enabled"]:
+        return {"ran": False, "reason": "disabled", "disk_percent": percent, "settings": settings}
+    if percent < settings["disk_percent"]:
+        return {
+            "ran": False,
+            "reason": "below_threshold",
+            "disk_percent": percent,
+            "threshold": settings["disk_percent"],
+            "settings": settings,
+        }
+    cleanup = cleanup_system(
+        {"targets": ["service_logs", "journal", "package_cache", "failed_units"], "keep_days": settings["keep_days"]},
+        True,
+    )
+    removed = prune_backups_to(settings["keep_panel"], settings["keep_users"])
+    return {
+        "ran": True,
+        "reason": "cleaned",
+        "disk_percent": percent,
+        "threshold": settings["disk_percent"],
+        "cleanup": cleanup,
+        "backups_removed": removed,
+        "freed_bytes": int(cleanup.get("estimated_freed_bytes") or 0),
+        "settings": settings,
+    }
+
+
+def save_autoclean_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = normalize_autoclean_settings(payload)
+    save_private_json(AUTOCLEAN_SETTINGS_FILE, settings)
+    return {"settings": settings, "active": autoclean_status().get("active", False)}
+
+
 def certificate_info(path: str) -> dict[str, Any]:
     if not path:
         return {}
@@ -3872,6 +3979,9 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "logs": journal_logs,
     "cleanup.preview": lambda payload: cleanup_system(payload, False),
     "cleanup.apply": lambda payload: cleanup_system(payload, True),
+    "autoclean.status": lambda payload: autoclean_status(),
+    "autoclean.settings": save_autoclean_settings,
+    "autoclean.run": run_autoclean,
     "backups.list": lambda payload: list_backups(),
     "backups.create": create_manual_backup,
     "backups.delete": delete_backup,

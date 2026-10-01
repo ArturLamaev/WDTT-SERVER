@@ -139,6 +139,29 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["estimated_freed_bytes"], 1024)
 
+    def test_autoclean_routes_report_and_save_settings(self):
+        payload = json.dumps({"password": "Panel-password-12345"}).encode()
+        _, body = self.request("/private-panel-path/api/v1/auth/login", "POST", payload)
+        token = json.loads(body)["result"]["token"]
+        auth = f"Bearer {token}"
+
+        headers, body = self.request("/private-panel-path/api/v1/autoclean", auth=auth)
+        self.assertTrue(headers["status"].startswith("200"))
+        status = json.loads(body)["result"]
+        self.assertEqual(status["settings"]["keep_panel"], 20)
+        self.assertEqual(status["disk_percent"], 25.0)
+
+        payload = json.dumps({"enabled": True, "disk_percent": 85, "keep_panel": 10, "keep_users": 12, "keep_days": 7}).encode()
+        headers, body = self.request("/private-panel-path/api/v1/autoclean/settings", "POST", payload, auth=auth)
+        self.assertTrue(headers["status"].startswith("200"))
+        saved = json.loads(body)["result"]["settings"]
+        self.assertEqual(saved["disk_percent"], 85)
+        self.assertEqual(saved["keep_users"], 12)
+
+        headers, body = self.request("/private-panel-path/api/v1/autoclean/run", "POST", b"{}", auth=auth)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["reason"], "below_threshold")
+
     def test_personal_page_and_subscription_do_not_expose_admin_path(self):
         token = self.panel.personal_token("DemoUserA123")
         headers, body = self.request(f"/client/{token}/")

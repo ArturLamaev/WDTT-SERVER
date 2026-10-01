@@ -126,6 +126,12 @@ elif action == "backups.delete":
 elif action == "backups.schedule":
     schedule = request.get("payload", {}) or {"frequency": "daily", "time": "03:30", "type": "full", "keep": 14}
     result = {"settings": schedule, "active": schedule.get("frequency") != "disabled"}
+elif action == "autoclean.status":
+    result = {"settings": {"enabled": True, "disk_percent": 90, "keep_panel": 20, "keep_users": 20, "keep_days": 14}, "active": True, "disk_percent": 25.0}
+elif action == "autoclean.settings":
+    result = {"settings": request.get("payload") or {}, "active": True}
+elif action == "autoclean.run":
+    result = {"ran": False, "reason": "below_threshold", "disk_percent": 25.0, "threshold": 90, "settings": {"enabled": True, "disk_percent": 90, "keep_panel": 20, "keep_users": 20, "keep_days": 14}}
 elif action == "panel.version":
     result = {"current": "0.5.0", "latest": "0.5.0", "update_available": False}
 elif action == "panel.update":
