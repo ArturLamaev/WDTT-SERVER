@@ -215,6 +215,8 @@ class UserView:
     is_deactivated: bool
     expired: bool
     device: dict[str, Any] | None
+    device_ids: list[str]
+    devices: list[dict[str, Any]]
     traffic_managed: bool
     traffic_unlimited: bool
     traffic_baseline_bytes: int
@@ -232,8 +234,43 @@ class UserView:
         return self.__dict__.copy()
 
 
+def entry_device_ids(entry: dict[str, Any]) -> list[str]:
+    """Все device_id, привязанные к записи ключа.
+
+    Сервер хранит и список ``device_ids`` (актуальное поле), и легаси
+    ``device_id`` (равен "multi", когда устройств несколько). Панель должна
+    учитывать оба, иначе устройства мультидевайсного ключа теряются.
+    """
+    ids: list[str] = []
+    raw_ids = entry.get("device_ids")
+    if isinstance(raw_ids, list):
+        for raw in raw_ids:
+            value = str(raw or "")
+            if value and value not in ids:
+                ids.append(value)
+    if not ids:
+        legacy = str(entry.get("device_id") or "")
+        if legacy and legacy != "multi":
+            ids.append(legacy)
+    return ids
+
+
 def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> UserView:
-    device_id = str(entry.get("device_id") or "")
+    device_ids = entry_device_ids(entry)
+    device_id = "multi" if len(device_ids) > 1 else (device_ids[0] if device_ids else "")
+    device_list: list[dict[str, Any]] = []
+    for item in device_ids:
+        device = devices.get(item)
+        if isinstance(device, dict):
+            device_list.append(
+                {
+                    "device_id": item,
+                    "ip": str(device.get("ip") or ""),
+                    "pub_key": str(device.get("pub_key") or device.get("PubKey") or ""),
+                    "connected": False,
+                    "last_handshake": 0,
+                }
+            )
     quota = traffic_quota(entry)
     return UserView(
         password=password,
@@ -248,7 +285,9 @@ def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> 
         ports=str(entry.get("ports") or "56000,56001,9000"),
         is_deactivated=bool(entry.get("is_deactivated", False)),
         expired=is_expired(entry),
-        device=devices.get(device_id) if device_id else None,
+        device=devices.get(device_ids[0]) if len(device_ids) == 1 else None,
+        device_ids=device_ids,
+        devices=device_list,
         **quota,
         traffic_operations=[item for item in entry.get("traffic_operations", []) if isinstance(item, dict)][-50:],
     )

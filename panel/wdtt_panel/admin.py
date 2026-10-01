@@ -30,6 +30,7 @@ from .core import (
     MAX_USERS,
     ValidationError,
     add_calendar_months,
+    entry_device_ids,
     generate_password,
     is_expired,
     normalize_hashes,
@@ -607,9 +608,10 @@ def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str
 
 def _admin_device_records(data: dict[str, Any], handshakes: dict[str, int]) -> list[dict[str, Any]]:
     user_device_ids = {
-        str(entry.get("device_id") or "")
+        device_id
         for entry in data.get("passwords", {}).values()
-        if isinstance(entry, dict) and entry.get("device_id")
+        if isinstance(entry, dict)
+        for device_id in entry_device_ids(entry)
     }
     records: list[dict[str, Any]] = []
     for device_id, device in data.get("devices", {}).items():
@@ -772,11 +774,26 @@ def handshake_is_active(stamp: int, window: int = 75) -> bool:
 
 
 def connected_user_view(user: dict[str, Any], handshakes: dict[str, int]) -> dict[str, Any]:
-    device = user.get("device") or {}
-    public_key = str(device.get("pub_key") or device.get("PubKey") or "")
-    last_handshake = int(handshakes.get(public_key) or 0)
-    user["connected"] = handshake_is_active(last_handshake)
-    user["last_handshake"] = last_handshake
+    devices = user.get("devices") or []
+    if not devices:
+        device = user.get("device") or {}
+        devices = [
+            {
+                "device_id": str(user.get("device_id") or ""),
+                "ip": str(device.get("ip") or ""),
+                "pub_key": str(device.get("pub_key") or device.get("PubKey") or ""),
+            }
+        ]
+    max_handshake = 0
+    for item in devices:
+        public_key = str(item.get("pub_key") or "")
+        last_handshake = int(handshakes.get(public_key) or 0)
+        item["connected"] = handshake_is_active(last_handshake)
+        item["last_handshake"] = last_handshake
+        max_handshake = max(max_handshake, last_handshake)
+    user["devices"] = devices
+    user["connected"] = any(item.get("connected") for item in devices)
+    user["last_handshake"] = max_handshake
     user["role"] = "user"
     return user
 
@@ -932,8 +949,7 @@ def delete_user(payload: dict[str, Any]) -> dict[str, Any]:
         entry = data["passwords"].pop(password, None)
         if not isinstance(entry, dict):
             raise ValidationError("Пользователь не найден")
-        device_id = str(entry.get("device_id") or "")
-        if device_id:
+        for device_id in entry_device_ids(entry):
             data["devices"].pop(device_id, None)
         return {"deleted": password}
 
@@ -949,10 +965,10 @@ def unbind_user(payload: dict[str, Any]) -> dict[str, Any]:
         entry = data["passwords"].get(password)
         if not isinstance(entry, dict):
             raise ValidationError("Пользователь не найден")
-        device_id = str(entry.get("device_id") or "")
-        if device_id:
+        for device_id in entry_device_ids(entry):
             data["devices"].pop(device_id, None)
         entry["device_id"] = ""
+        entry["device_ids"] = []
         return user_view(password, entry, data["devices"]).as_dict()
 
     return mutate_database("unbind", apply)
@@ -1213,13 +1229,12 @@ def bulk_user_action(payload: dict[str, Any]) -> dict[str, Any]:
                     entry["traffic_primary_bytes"] = int(quota["traffic_primary_remaining_bytes"])
                     entry["traffic_extra_bytes"] = int(quota["traffic_extra_remaining_bytes"])
             elif action == "unbind":
-                device_id = str(entry.get("device_id") or "")
-                if device_id:
+                for device_id in entry_device_ids(entry):
                     data["devices"].pop(device_id, None)
                 entry["device_id"] = ""
+                entry["device_ids"] = []
             elif action == "delete":
-                device_id = str(entry.get("device_id") or "")
-                if device_id:
+                for device_id in entry_device_ids(entry):
                     data["devices"].pop(device_id, None)
                 del data["passwords"][password]
         return {"action": action, "count": len(passwords)}
@@ -3780,9 +3795,10 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
     data = load_database()
     passwords = data.get("passwords", {})
     user_device_ids = {
-        str(entry.get("device_id") or "")
+        device_id
         for entry in passwords.values()
-        if isinstance(entry, dict) and entry.get("device_id")
+        if isinstance(entry, dict)
+        for device_id in entry_device_ids(entry)
     }
     admin_devices = sum(
         1

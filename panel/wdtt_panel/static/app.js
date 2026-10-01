@@ -464,8 +464,9 @@
         ? `<small class="quota-warning ${quotaPercent >= 100 ? "quota-danger" : ""}">${quotaPercent >= 100 ? "Лимит исчерпан" : `Использовано ${quotaPercent}%`}</small>` : "";
       const quotaText = quotaManaged ? (user.traffic_unlimited ? "Без лимита" : `${formatBytes(user.traffic_remaining_bytes)} из ${formatBytes(quotaLimit)} осталось`) : "";
       const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑${quotaText ? `<br><small>${escapeHtml(quotaText)}</small>${warning}` : ""}`;
-      const device = (user.devices && user.devices.length > 1)
-        ? user.devices.map((item) => `${escapeHtml(item.device_id)}<br><small>${escapeHtml(item.ip || "")}${item.connected ? " · онлайн" : ""}</small>`).join("<br>")
+      const deviceItems = (user.devices && user.devices.length) ? user.devices : [];
+      const device = deviceItems.length
+        ? deviceItems.map((item) => `${escapeHtml(item.device_id)}<br><small>${escapeHtml(item.ip || "")}${item.connected ? " · онлайн" : ""}</small>`).join("<br>")
         : (user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан");
       const title = user.label || user.password;
       const selectable = user.role !== "admin";

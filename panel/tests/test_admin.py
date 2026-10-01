@@ -627,6 +627,68 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(result["online_admin_devices"], 1)
         self.assertEqual(result["online_devices"], 1)
 
+    def test_multiple_devices_of_a_user_key_stay_on_the_user(self):
+        data = admin.load_database()
+        data["main_password"] = "admin"
+        data["passwords"]["MultiUser123"] = {
+            "label": "test",
+            "device_id": "multi",
+            "device_ids": ["phone-a", "phone-b"],
+            "expires_at": 0,
+        }
+        data["devices"]["phone-a"] = {"device_id": "phone-a", "ip": "10.66.0.2", "pub_key": "pub-a"}
+        data["devices"]["phone-b"] = {"device_id": "phone-b", "ip": "10.66.0.3", "pub_key": "pub-b"}
+        admin.save_database(data)
+        with mock.patch.object(admin, "wireguard_handshakes", return_value={"pub-a": int(time.time())}):
+            result = admin.list_users()
+        self.assertEqual(len(result["users"]), 1)
+        user = result["users"][0]
+        self.assertEqual(user["password"], "MultiUser123")
+        self.assertEqual(user["device_id"], "multi")
+        self.assertEqual([device["device_id"] for device in user["devices"]], ["phone-a", "phone-b"])
+        self.assertTrue(user["devices"][0]["connected"])
+        self.assertFalse(user["devices"][1]["connected"])
+        self.assertTrue(user["connected"])
+        self.assertEqual(result["admins"][0]["devices"], [])
+
+    def test_overview_does_not_count_user_bound_devices_as_admin(self):
+        data = admin.load_database()
+        data["main_password"] = "admin"
+        data["passwords"]["MultiUser123"] = {
+            "device_id": "multi",
+            "device_ids": ["phone-a", "phone-b"],
+            "expires_at": 0,
+        }
+        data["devices"]["phone-a"] = {"device_id": "phone-a", "ip": "10.66.0.2", "pub_key": "pub-a"}
+        data["devices"]["phone-b"] = {"device_id": "phone-b", "ip": "10.66.0.3", "pub_key": "pub-b"}
+        admin.save_database(data)
+        disk = mock.Mock(total=100, used=10, free=90)
+        with mock.patch.object(admin, "read_stats", return_value={}), mock.patch.object(admin.shutil, "disk_usage", return_value=disk), mock.patch.object(admin, "cpu_usage", return_value=0), mock.patch.object(admin, "memory_usage", return_value={}), mock.patch.object(admin.os, "getloadavg", return_value=(0, 0, 0), create=True), mock.patch.object(admin, "wireguard_handshakes", return_value={"pub-a": int(time.time())}):
+            result = admin.overview({})
+        self.assertEqual(result["users"], 2)
+        self.assertEqual(result["devices"], 2)
+        self.assertEqual(result["admin_devices"], 0)
+        self.assertEqual(result["online_admin_devices"], 0)
+        self.assertEqual(result["online_devices"], 1)
+
+    def test_unbind_clears_all_user_device_bindings(self):
+        data = admin.load_database()
+        data["passwords"]["MultiUser123"] = {
+            "device_id": "multi",
+            "device_ids": ["phone-a", "phone-b"],
+            "expires_at": 0,
+        }
+        data["devices"]["phone-a"] = {"device_id": "phone-a", "ip": "10.66.0.2"}
+        data["devices"]["phone-b"] = {"device_id": "phone-b", "ip": "10.66.0.3"}
+        admin.save_database(data)
+        result = admin.unbind_user({"password": "MultiUser123"})
+        stored = admin.load_database()
+        self.assertEqual(result["device_id"], "")
+        self.assertEqual(stored["passwords"]["MultiUser123"]["device_id"], "")
+        self.assertEqual(stored["passwords"]["MultiUser123"]["device_ids"], [])
+        self.assertNotIn("phone-a", stored["devices"])
+        self.assertNotIn("phone-b", stored["devices"])
+
     def test_userspace_wireguard_handshakes_are_used_when_wg_tools_are_missing(self):
         with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin.shutil, "which", return_value=None), mock.patch.object(admin, "userspace_wireguard_handshakes", return_value={"public-key": 123}):
             self.assertEqual(admin.wireguard_handshakes(), {"public-key": 123})
