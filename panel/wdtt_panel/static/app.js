@@ -360,7 +360,7 @@
     const values = points.map((item) => Number(item[1] || 0));
     const max = Math.max(4, ...values);
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "rgba(89,225,194,.3)"); gradient.addColorStop(1, "rgba(89,225,194,0)");
+    gradient.addColorStop(0, "rgba(244,63,94,.3)"); gradient.addColorStop(1, "rgba(244,63,94,0)");
     ctx.beginPath();
     points.forEach((item, index) => {
       const x = points.length === 1 ? width / 2 : index * (width / (points.length - 1));
@@ -374,7 +374,7 @@
       const y = height - 28 - (Number(item[1] || 0) / max) * (height - 52);
       index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
     });
-    ctx.strokeStyle = "#59e1c2"; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = "#f43f5e"; ctx.lineWidth = 2; ctx.stroke();
   }
 
   async function loadUsers() {
