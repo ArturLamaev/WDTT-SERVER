@@ -129,7 +129,7 @@ confirm_wipe() {
 validate_installation() {
   local broken=0 f
   info "Проверяем установку панели..."
-  for f in /opt/wdtt-panel /usr/local/sbin/wdtt-panel-admin /etc/sudoers.d/wdtt-panel; do
+  for f in /opt/wdtt-panel /usr/local/sbin/wdtt-panel-admin; do
     if [ -e "$f" ]; then
       info "OK: найден $f"
     else
@@ -144,6 +144,11 @@ validate_installation() {
       info "ERROR: sudoers панели невалиден!"
       broken=1
     fi
+  elif grep -q '^Environment=WDTT_PANEL_ADMIN=' /etc/systemd/system/wdtt-panel.service 2>/dev/null; then
+    info "OK: панель работает от root через WDTT_PANEL_ADMIN (sudo не нужен)"
+  else
+    info "ERROR: нет ни /etc/sudoers.d/wdtt-panel, ни Environment=WDTT_PANEL_ADMIN в юните панели!"
+    broken=1
   fi
   if id -u wdtt-panel >/dev/null 2>&1; then
     info "OK: пользователь wdtt-panel существует"
