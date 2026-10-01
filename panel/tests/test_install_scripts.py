@@ -340,6 +340,22 @@ class InstallScriptTests(unittest.TestCase):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", script)
 
+    def test_installer_handles_no_new_privileges_containers(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("detect_no_new_privileges()", script)
+        self.assertIn("NoNewPrivs:", script)
+        self.assertIn("PANEL_RUN_AS_ROOT=1", script)
+        self.assertIn('if [ "$PANEL_RUN_AS_ROOT" = "1" ]; then', script)
+
+        panel_files = script[script.index("install_panel_files() {"):script.index("write_maintenance_scripts() {")]
+        self.assertIn("detect_no_new_privileges", panel_files)
+        self.assertIn('rm -f "$SUDOERS_FILE"', panel_files)
+
+        panel_service = script[script.index("write_panel_service() {"):script.index("remove_obsolete_fleet_agent() {")]
+        self.assertIn("User=root", panel_service)
+        self.assertIn("Environment=WDTT_PANEL_ADMIN=$ADMIN_WRAPPER", panel_service)
+        self.assertIn("$panel_admin_env", panel_service)
+
     def test_installer_removes_obsolete_fleet_agent(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("remove_obsolete_fleet_agent()", script)

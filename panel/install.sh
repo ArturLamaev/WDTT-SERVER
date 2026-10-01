@@ -54,10 +54,22 @@ WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
 WDTT_EXTENSION_MARKER="wdtt-panel-extension-v9"
+# 1 — панель запускается от root и вызывает root-хелпер напрямую (без sudo).
+# Обязательно в контейнерах с no_new_privs, где sudo не может повысить права.
+PANEL_RUN_AS_ROOT=0
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+detect_no_new_privileges() {
+  # В контейнерах (Docker и т.п.) часто включён no_new_privs: sudo не может
+  # повысить права, поэтому root-хелпер панели недоступен. Определяем флаг по
+  # текущему процессу и переключаем панель на работу от root без sudo.
+  if grep -q '^NoNewPrivs:[[:space:]]*1' /proc/self/status 2>/dev/null; then
+    PANEL_RUN_AS_ROOT=1
+    log "Обнаружен no_new_privs (контейнер): sudo недоступен, панель будет работать от root без sudo"
+  fi
+}
 random_token() { python3 -c "import secrets; print(secrets.token_urlsafe(${1:-24}))"; }
 random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+string.digits+"._~-"; print("".join(secrets.choice(a) for _ in range(24)))'; }
 
@@ -864,6 +876,7 @@ schedule_wdtt_extensions() {
 }
 
 install_panel_files() {
+  detect_no_new_privileges
   [ -d "$SCRIPT_DIR/wdtt_panel" ] || die "Каталог wdtt_panel не найден рядом с install.sh"
   id -u wdtt-panel >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --create-home --shell /usr/sbin/nologin wdtt-panel
   install -d -m 0755 "$INSTALL_DIR" "$CONFIG_DIR"
@@ -896,10 +909,15 @@ EOF
   chown root:root "$ADMIN_WRAPPER"
   chmod 0755 "$ADMIN_WRAPPER"
 
-  printf 'wdtt-panel ALL=(root) NOPASSWD: %s\n' "$ADMIN_WRAPPER" > "$SUDOERS_FILE"
-  chown root:root "$SUDOERS_FILE"
-  chmod 0440 "$SUDOERS_FILE"
-  visudo -cf "$SUDOERS_FILE" >>"$LOG_FILE"
+  if [ "$PANEL_RUN_AS_ROOT" = "1" ]; then
+    rm -f "$SUDOERS_FILE"
+    log "sudo-правило не создаётся: панель работает от root (режим контейнера, no_new_privs)"
+  else
+    printf 'wdtt-panel ALL=(root) NOPASSWD: %s\n' "$ADMIN_WRAPPER" > "$SUDOERS_FILE"
+    chown root:root "$SUDOERS_FILE"
+    chmod 0440 "$SUDOERS_FILE"
+    visudo -cf "$SUDOERS_FILE" >>"$LOG_FILE"
+  fi
 }
 
 write_maintenance_scripts() {
@@ -1171,6 +1189,14 @@ PY
 }
 
 write_panel_service() {
+  local panel_user_lines="User=wdtt-panel
+Group=wdtt-panel"
+  local panel_admin_env=""
+  if [ "$PANEL_RUN_AS_ROOT" = "1" ]; then
+    panel_user_lines="User=root
+Group=root"
+    panel_admin_env="Environment=WDTT_PANEL_ADMIN=$ADMIN_WRAPPER"
+  fi
   cat > "/etc/systemd/system/$PANEL_SERVICE" <<EOF
 [Unit]
 Description=WDTT Web Control Panel
@@ -1179,8 +1205,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=wdtt-panel
-Group=wdtt-panel
+$panel_user_lines
+$panel_admin_env
 WorkingDirectory=$INSTALL_DIR
 ExecStart=/usr/bin/python3 -m wdtt_panel.app
 Restart=on-failure
