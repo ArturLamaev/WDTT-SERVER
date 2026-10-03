@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.3.0"', installer)
-        self.assertIn('__version__ = "1.3.0"', package)
-        self.assertIn("Текущая версия: 1.3.0", readme)
+        self.assertIn('PANEL_VERSION="1.4.0"', installer)
+        self.assertIn('__version__ = "1.4.0"', package)
+        self.assertIn("Текущая версия: 1.4.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")

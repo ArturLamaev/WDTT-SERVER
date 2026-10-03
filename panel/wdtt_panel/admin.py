@@ -11,6 +11,7 @@ import re
 import shlex
 import shutil
 import socket
+import sqlite3
 import ssl
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from .core import (
     entry_device_ids,
     generate_password,
     is_expired,
+    normalize_hash,
     normalize_hashes,
     normalize_user_label,
     parse_expiration,
@@ -45,6 +47,8 @@ from .core import (
 
 
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
+PANEL_STATE_DB = Path(os.environ.get("WDTT_PANEL_STATE", "/var/lib/wdtt-panel/panel.db"))
+VK_HASH_LIMIT = 4
 PANEL_LABELS_FILE = Path(os.environ.get("WDTT_PANEL_LABELS_FILE", "/var/lib/wdtt-panel-private/user-labels.json"))
 WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdtt-panel-private/wdtt-extensions.json"))
 WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v9"
@@ -805,13 +809,95 @@ def connected_user_view(user: dict[str, Any], handshakes: dict[str, int]) -> dic
     return user
 
 
+def split_vk_hashes(value: str) -> list[str]:
+    return [item for item in re.split(r"[,\s]+", (value or "").strip()) if item]
+
+
+def read_vk_hash_library() -> list[str]:
+    try:
+        if not PANEL_STATE_DB.is_file():
+            return []
+    except OSError:
+        return []
+    try:
+        connection = sqlite3.connect(PANEL_STATE_DB)
+    except sqlite3.Error:
+        return []
+    try:
+        rows = connection.execute(
+            "SELECT value FROM vk_hash_library ORDER BY created_at, rowid"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        connection.close()
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+def _missing_library_hashes(current: list[str], library: list[str]) -> list[str]:
+    missing: list[str] = []
+    for candidate in library:
+        if len(current) + len(missing) >= VK_HASH_LIMIT:
+            break
+        try:
+            candidate = normalize_hash(str(candidate))
+        except ValidationError:
+            continue
+        if candidate and candidate not in current and candidate not in missing:
+            missing.append(candidate)
+    return missing
+
+
+def ensure_four_hashes(entry: dict[str, Any], library: list[str]) -> bool:
+    current = split_vk_hashes(str(entry.get("vk_hash") or ""))
+    if len(current) >= VK_HASH_LIMIT:
+        return False
+    missing = _missing_library_hashes(current, library)
+    if not missing:
+        return False
+    entry["vk_hash"] = ",".join((current + missing)[:VK_HASH_LIMIT])
+    return True
+
+
+def entry_needs_hash_fill(entry: dict[str, Any], library: list[str]) -> bool:
+    current = split_vk_hashes(str(entry.get("vk_hash") or ""))
+    if len(current) >= VK_HASH_LIMIT:
+        return False
+    return bool(_missing_library_hashes(current, library))
+
+
+def fill_missing_hashes(payload: dict[str, Any]) -> dict[str, Any]:
+    library = read_vk_hash_library()
+    summary = {"updated": 0, "scanned": 0, "library": len(library)}
+    if not library:
+        return summary
+    data = load_database()
+    entries = [entry for entry in data["passwords"].values() if isinstance(entry, dict)]
+    summary["scanned"] = len(entries)
+    if not any(entry_needs_hash_fill(entry, library) for entry in entries):
+        return summary
+
+    def apply(state: dict[str, Any]) -> dict[str, Any]:
+        updated = 0
+        for entry in state["passwords"].values():
+            if isinstance(entry, dict) and ensure_four_hashes(entry, library):
+                updated += 1
+        return {"updated": updated, "scanned": summary["scanned"], "library": len(library)}
+
+    return mutate_database("fill-vk-hashes", apply)
+
+
 def create_user(payload: dict[str, Any]) -> dict[str, Any]:
     requested = str(payload.get("password") or "").strip()
     password = validate_password(requested or generate_password())
     expires_at = parse_expiration(payload)
-    vk_hash = normalize_hashes(str(payload.get("vk_hash") or ""))
+    raw_vk_hash = str(payload.get("vk_hash") or "").strip()
+    vk_hash = normalize_hashes(raw_vk_hash) if raw_vk_hash else ""
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
     label = normalize_user_label(str(payload.get("label") or ""))
+    library = read_vk_hash_library()
+    if not vk_hash and not library:
+        raise ValidationError("Укажите хотя бы один VK-хеш")
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
@@ -831,6 +917,7 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
             "is_deactivated": bool(payload.get("is_deactivated", False)),
             **initial_traffic_fields(payload),
         }
+        ensure_four_hashes(entry, library)
         data["passwords"][password] = entry
         return user_view(password, entry, data["devices"]).as_dict()
 
@@ -851,6 +938,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
     hash_mode = str(payload.get("hash_mode") or "shared")
     if hash_mode not in {"shared", "rotate"}:
         raise ValidationError("Некорректный режим назначения VK-хешей")
+    library = read_vk_hash_library()
     expires_at = parse_expiration(payload)
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
     is_deactivated = bool(payload.get("is_deactivated", False))
@@ -887,6 +975,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
                 "is_deactivated": is_deactivated,
                 **initial_traffic_fields(payload),
             }
+            ensure_four_hashes(entry, library)
             data["passwords"][password] = entry
             created.append(user_view(password, entry, data["devices"]).as_dict())
         return {"users": created, "count": len(created)}
@@ -901,6 +990,7 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
     current = validate_password(str(payload.get("current_password") or ""))
     replacement_raw = str(payload.get("password") or current).strip()
     replacement = validate_password(replacement_raw)
+    library = read_vk_hash_library()
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         entry = data["passwords"].get(current)
@@ -913,6 +1003,7 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
             data["passwords"][replacement] = entry
         if "vk_hash" in payload:
             entry["vk_hash"] = normalize_hashes(str(payload["vk_hash"]))
+            ensure_four_hashes(entry, library)
         if "ports" in payload:
             entry["ports"] = validate_ports(str(payload["ports"]))
         if "label" in payload:
@@ -3997,6 +4088,7 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "users.add_traffic": add_user_traffic,
     "users.adjust_plan": adjust_user_plan,
     "users.bulk_action": bulk_user_action,
+    "users.fill_hashes": fill_missing_hashes,
     "service.action": lambda payload: service_action(str(payload.get("service_action") or "")),
     "logs": journal_logs,
     "cleanup.preview": lambda payload: cleanup_system(payload, False),

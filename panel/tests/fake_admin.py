@@ -93,6 +93,8 @@ elif action == "users.create":
         "expired": False,
         "device": None,
     }
+elif action == "users.fill_hashes":
+    result = {"updated": 0, "scanned": 0, "library": 0}
 elif action == "users.bulk_action":
     result = {"action": (request.get("payload") or {}).get("action"), "count": len((request.get("payload") or {}).get("passwords") or [])}
 elif action == "logs":
@@ -133,7 +135,7 @@ elif action == "autoclean.settings":
 elif action == "autoclean.run":
     result = {"ran": False, "reason": "below_threshold", "disk_percent": 25.0, "threshold": 90, "settings": {"enabled": True, "disk_percent": 90, "keep_panel": 20, "keep_users": 20, "keep_days": 14}}
 elif action == "panel.version":
-    result = {"current": "1.3.0", "latest": "1.3.0", "update_available": False, "state": "ok", "message": "", "checked_at": 0}
+    result = {"current": "1.4.0", "latest": "1.4.0", "update_available": False, "state": "ok", "message": "", "checked_at": 0}
 elif action in {"panel.check", "panel.update"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "telegram.status":

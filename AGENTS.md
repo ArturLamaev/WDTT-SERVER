@@ -15,7 +15,7 @@
 
 - Машина Windows, bash/bats отсутствуют. Юнит-тесты панели:
   `$env:PYTHONPATH="C:\My_Data\Scripts\Telegram\WDTT\panel"; python -m pytest panel/tests -q`
-- Ожидание: 101 passed, 1 skipped.
+- Ожидание: 107 passed, 1 skipped.
 
 ## Версионирование
 
@@ -28,4 +28,4 @@
 Версия хранится синхронно в `panel/install.sh` (`PANEL_VERSION`),
 `panel/wdtt_panel/__init__.py` (`__version__`) и `panel/README.md`
 («Текущая версия»); согласованность проверяет `test_version_is_consistent`.
-Историю вести в `VERSIONS.md`. Текущая версия — `1.3.0`.
+Историю вести в `VERSIONS.md`. Текущая версия — `1.4.0`.

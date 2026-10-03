@@ -1,6 +1,7 @@
 import json
 import base64
 import errno
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -345,6 +346,82 @@ class AdminDatabaseTests(unittest.TestCase):
             }
         )
         self.assertEqual([item["label"] for item in result["users"]], ["Семья 1", "Семья 2"])
+
+    def write_hash_library(self, *values: str) -> Path:
+        path = Path(self.temp.name) / "panel.db"
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS vk_hash_library (value TEXT PRIMARY KEY, created_at INTEGER NOT NULL)"
+            )
+            for index, value in enumerate(values):
+                connection.execute(
+                    "INSERT OR REPLACE INTO vk_hash_library(value, created_at) VALUES(?, ?)",
+                    (value, index),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+        return path
+
+    def test_create_user_tops_up_hashes_from_the_library(self):
+        library = self.write_hash_library("hash_bbb", "hash_ccc", "hash_ddd")
+        with mock.patch.object(admin, "PANEL_STATE_DB", library):
+            created = admin.create_user(
+                {"password": "TopUpUser123", "days": 30, "vk_hash": "hash_aaa"}
+            )
+        self.assertEqual(created["vk_hash"], "hash_aaa,hash_bbb,hash_ccc,hash_ddd")
+
+    def test_create_user_derives_hashes_from_the_library_when_none_given(self):
+        library = self.write_hash_library("hash_aaa", "hash_bbb", "hash_ccc", "hash_dddd")
+        with mock.patch.object(admin, "PANEL_STATE_DB", library):
+            created = admin.create_user({"password": "DerivedUser123", "days": 30})
+        self.assertEqual(created["vk_hash"], "hash_aaa,hash_bbb,hash_ccc,hash_dddd")
+
+    def test_create_user_without_hashes_or_library_is_rejected(self):
+        with mock.patch.object(admin, "PANEL_STATE_DB", Path(self.temp.name) / "missing.db"):
+            with self.assertRaises(admin.ValidationError):
+                admin.create_user({"password": "NoHashUser123", "days": 30})
+
+    def test_fill_missing_hashes_backfills_existing_users(self):
+        library = self.write_hash_library("hash_bbb", "hash_ccc", "hash_ddd")
+        with mock.patch.object(admin, "PANEL_STATE_DB", Path(self.temp.name) / "missing.db"):
+            admin.create_user({"password": "FirstFill123", "days": 30, "vk_hash": "hash_aaa"})
+            admin.create_user({"password": "SecondFill12", "days": 30, "vk_hash": "hash_bbb,hash_ccc"})
+        with mock.patch.object(admin, "PANEL_STATE_DB", library):
+            result = admin.fill_missing_hashes({})
+        self.assertEqual(result["updated"], 2)
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["library"], 3)
+        data = admin.load_database()
+        self.assertEqual(
+            data["passwords"]["FirstFill123"]["vk_hash"], "hash_aaa,hash_bbb,hash_ccc,hash_ddd"
+        )
+        self.assertEqual(
+            data["passwords"]["SecondFill12"]["vk_hash"], "hash_bbb,hash_ccc,hash_ddd"
+        )
+
+    def test_fill_missing_hashes_is_a_noop_when_nothing_to_add(self):
+        library = self.write_hash_library("hash_aaa", "hash_bbb")
+        with mock.patch.object(admin, "PANEL_STATE_DB", library):
+            admin.create_user({"password": "FullUser1234", "days": 30})
+            result = admin.fill_missing_hashes({})
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["library"], 2)
+
+    def test_update_user_tops_up_hashes_from_the_library(self):
+        library = self.write_hash_library("hash_bbb", "hash_ccc", "hash_ddd", "hash_eeee")
+        with mock.patch.object(admin, "PANEL_STATE_DB", Path(self.temp.name) / "missing.db"):
+            admin.create_user({"password": "UpdateFill12", "days": 30, "vk_hash": "hash_aaa"})
+        with mock.patch.object(admin, "PANEL_STATE_DB", library):
+            updated = admin.update_user(
+                {
+                    "current_password": "UpdateFill12",
+                    "password": "UpdateFill12",
+                    "vk_hash": "hash_ddd",
+                }
+            )
+        self.assertEqual(updated["vk_hash"], "hash_ddd,hash_bbb,hash_ccc,hash_eeee")
 
     def test_legacy_telegram_label_is_shown_in_the_panel(self):
         data = admin.load_database()

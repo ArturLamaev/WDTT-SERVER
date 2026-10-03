@@ -61,6 +61,13 @@ class Panel:
         self.base = "/" + str(self.config["base_path"]).strip("/") + "/"
         self.rate_limiter = RateLimiter()
         self.init_state()
+        self.fill_user_vk_hashes()
+
+    def fill_user_vk_hashes(self) -> None:
+        try:
+            self.admin("users.fill_hashes", {})
+        except Exception:
+            return
 
     @staticmethod
     def load_config() -> dict[str, Any]:
