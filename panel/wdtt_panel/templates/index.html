@@ -214,6 +214,7 @@
           <label class="checkbox"><input id="edit-traffic-unlimited" type="checkbox"> Без ограничения трафика</label>
         </div>
         <label>Порты<input id="edit-ports" value="56000,56001,9000" required></label>
+        <label>Количество устройств<input id="edit-max-devices" type="number" min="1" max="10000" step="1" value="10000" title="Сколько устройств может подключиться к ключу: 1–10000, где 10000 — без ограничения"></label>
         <label class="checkbox wide"><input id="edit-unlimited" type="checkbox"> Бессрочный доступ</label>
         <label class="checkbox wide"><input id="edit-disabled" type="checkbox"> Деактивировать</label>
       </div>
@@ -237,6 +238,7 @@
           <label class="checkbox"><input id="bulk-traffic-unlimited" type="checkbox"> Без ограничения трафика</label>
         </div>
         <label>Порты<input id="bulk-ports" value="56000,56001,9000" required></label>
+        <label>Количество устройств каждому<input id="bulk-max-devices" type="number" min="1" max="10000" step="1" value="10000" title="Сколько устройств может подключиться к каждому ключу: 1–10000, где 10000 — без ограничения"></label>
         <label class="checkbox wide"><input id="bulk-unlimited" type="checkbox"> Бессрочный доступ</label>
         <label class="checkbox wide"><input id="bulk-disabled" type="checkbox"> Создать деактивированными</label>
       </div>

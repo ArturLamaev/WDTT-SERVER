@@ -11,7 +11,7 @@ from typing import Any
 
 
 MAX_USERS = 10000  # WDTT-SERVER: лимит пользователей/ключей поднят с 10 до 10000
-DEFAULT_MAX_DEVICES = 10000  # WDTT-SERVER: лимит устройств на новый ключ (0 = без ограничения)
+DEFAULT_MAX_DEVICES = 10000  # WDTT-SERVER: лимит устройств на новый ключ; 10000 = практический безлимит
 PASSWORD_RE = re.compile(r"^[A-Za-z0-9._~-]{8,64}$")
 HASH_RE = re.compile(r"^[A-Za-z0-9_-]{3,256}$")
 MAX_USER_LABEL_LENGTH = 64
@@ -103,6 +103,40 @@ def validate_ports(value: str) -> str:
             raise ValidationError("Порт должен быть в диапазоне 1-65535")
         ports.append(str(port))
     return ",".join(ports)
+
+
+MAX_DEVICES = DEFAULT_MAX_DEVICES  # верхняя граница лимита устройств на ключ (10000 = без ограничения)
+MIN_DEVICES = 1  # WDTT не понимает бесконечность: 0 ядро трактует как одно устройство
+
+
+def normalize_max_devices(value: Any, default: int = DEFAULT_MAX_DEVICES) -> int:
+    """Лимит устройств на ключ.
+
+    WDTT не понимает бесконечность: значение 0 ядро трактует как одно
+    устройство, поэтому 0 приводится к 1, а практический безлимит — это
+    ``MAX_DEVICES`` (10000).
+    """
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Количество устройств должно быть числом") from exc
+    if number < 0:
+        raise ValidationError("Количество устройств не может быть отрицательным")
+    if number > MAX_DEVICES:
+        raise ValidationError(f"Можно указать не более {MAX_DEVICES} устройств (10000 = без ограничения)")
+    return max(MIN_DEVICES, number)
+
+
+def entry_max_devices(entry: dict[str, Any]) -> int:
+    value = entry.get("max_devices")
+    if value in (None, ""):
+        return DEFAULT_MAX_DEVICES
+    try:
+        return max(MIN_DEVICES, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_DEVICES
 
 
 def add_calendar_months(timestamp: int, months: int) -> int:
@@ -212,6 +246,7 @@ class UserView:
     last_download_at: int
     vk_hash: str
     ports: str
+    max_devices: int
     is_deactivated: bool
     expired: bool
     device: dict[str, Any] | None
@@ -283,6 +318,7 @@ def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> 
         last_download_at=int(entry.get("last_download_at") or 0),
         vk_hash=str(entry.get("vk_hash") or ""),
         ports=str(entry.get("ports") or "56000,56001,9000"),
+        max_devices=entry_max_devices(entry),
         is_deactivated=bool(entry.get("is_deactivated", False)),
         expired=is_expired(entry),
         device=devices.get(device_ids[0]) if len(device_ids) == 1 else None,

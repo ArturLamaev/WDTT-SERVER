@@ -36,6 +36,7 @@ from .core import (
     is_expired,
     normalize_hash,
     normalize_hashes,
+    normalize_max_devices,
     normalize_user_label,
     parse_expiration,
     traffic_quota,
@@ -894,6 +895,7 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
     raw_vk_hash = str(payload.get("vk_hash") or "").strip()
     vk_hash = normalize_hashes(raw_vk_hash) if raw_vk_hash else ""
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
+    max_devices = normalize_max_devices(payload.get("max_devices"))
     label = normalize_user_label(str(payload.get("label") or ""))
     library = read_vk_hash_library()
     if not vk_hash and not library:
@@ -907,7 +909,7 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError(f"Лимит WDTT: не более {MAX_USERS} пользователей")
         entry = {
             "device_id": "",
-            "max_devices": DEFAULT_MAX_DEVICES,
+            "max_devices": max_devices,
             "expires_at": expires_at,
             "down_bytes": 0,
             "up_bytes": 0,
@@ -941,6 +943,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
     library = read_vk_hash_library()
     expires_at = parse_expiration(payload)
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
+    max_devices = normalize_max_devices(payload.get("max_devices"))
     is_deactivated = bool(payload.get("is_deactivated", False))
     label_prefix = normalize_user_label(str(payload.get("label_prefix") or ""))
 
@@ -965,7 +968,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
                 label = normalize_user_label(f"{label_prefix}{suffix}")
             entry = {
                 "device_id": "",
-                "max_devices": DEFAULT_MAX_DEVICES,
+                "max_devices": max_devices,
                 "expires_at": expires_at,
                 "down_bytes": 0,
                 "up_bytes": 0,
@@ -1006,6 +1009,8 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
             ensure_four_hashes(entry, library)
         if "ports" in payload:
             entry["ports"] = validate_ports(str(payload["ports"]))
+        if "max_devices" in payload:
+            entry["max_devices"] = normalize_max_devices(payload["max_devices"])
         if "label" in payload:
             entry["label"] = normalize_user_label(str(payload["label"] or ""))
         if any(key in payload for key in ("days", "expires_at", "unlimited")):

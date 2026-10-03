@@ -579,6 +579,7 @@
     $("#edit-hashes").value = user?.vk_hash || "";
     $("#edit-label").value = user?.role === "admin" ? "" : (user?.label || "");
     $("#edit-ports").value = user?.ports || "56000,56001,9000";
+    $("#edit-max-devices").value = String(user?.max_devices ?? 10000);
     $("#edit-unlimited").checked = Boolean(user && !user.expires_at);
     $("#edit-unlimited").disabled = Boolean(user);
     $("#edit-disabled").checked = Boolean(user?.is_deactivated);
@@ -667,6 +668,7 @@
       label: $("#edit-label").value,
       vk_hash: $("#edit-hashes").value,
       ports: $("#edit-ports").value,
+      max_devices: Number($("#edit-max-devices").value),
       is_deactivated: $("#edit-disabled").checked,
     };
     if (state.editing) payload.current_password = state.editing.password;
@@ -716,6 +718,7 @@
     $("#bulk-count").value = Math.min(2, remaining);
     $("#bulk-traffic-unlimited").checked = false;
     $("#bulk-traffic").disabled = false;
+    $("#bulk-max-devices").value = 10000;
     $("#bulk-expires").disabled = false;
     setExpiryPreset("bulk", 1, new Date());
     $("#bulk-user-dialog").showModal();
@@ -732,6 +735,7 @@
       hash_mode: $("#bulk-hash-mode").value,
       label_prefix: $("#bulk-label-prefix").value,
       ports: $("#bulk-ports").value,
+      max_devices: Number($("#bulk-max-devices").value),
       ...($("#bulk-unlimited").checked ? { unlimited: true } : expirationPayload("bulk")),
       traffic_primary_gib: Number($("#bulk-traffic").value),
       traffic_unlimited: $("#bulk-traffic-unlimited").checked,

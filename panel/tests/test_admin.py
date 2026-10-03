@@ -347,6 +347,41 @@ class AdminDatabaseTests(unittest.TestCase):
         )
         self.assertEqual([item["label"] for item in result["users"]], ["Семья 1", "Семья 2"])
 
+    def test_max_devices_can_be_set_on_create_update_and_bulk(self):
+        created = admin.create_user(
+            {"password": "DeviceUser123", "days": 30, "vk_hash": "hash_123", "max_devices": 3}
+        )
+        self.assertEqual(created["max_devices"], 3)
+        self.assertEqual(admin.load_database()["passwords"]["DeviceUser123"]["max_devices"], 3)
+
+        zero = admin.create_user(
+            {"password": "DeviceZero123", "days": 30, "vk_hash": "hash_123", "max_devices": 0}
+        )
+        self.assertEqual(zero["max_devices"], 1)
+
+        defaulted = admin.create_user(
+            {"password": "DeviceDef123", "days": 30, "vk_hash": "hash_123"}
+        )
+        self.assertEqual(defaulted["max_devices"], admin.DEFAULT_MAX_DEVICES)
+
+        updated = admin.update_user(
+            {"current_password": "DeviceUser123", "password": "DeviceUser123", "max_devices": 5}
+        )
+        self.assertEqual(updated["max_devices"], 5)
+        self.assertEqual(admin.load_database()["passwords"]["DeviceUser123"]["max_devices"], 5)
+
+        bulk = admin.create_users_bulk(
+            {"count": 2, "vk_hash": "hash_123", "days": 30, "max_devices": 2}
+        )
+        self.assertTrue(all(user["max_devices"] == 2 for user in bulk["users"]))
+
+    def test_max_devices_rejects_invalid_values(self):
+        for bad in (-1, 10001, "abc"):
+            with self.assertRaises(admin.ValidationError):
+                admin.create_user(
+                    {"password": "BadDevice123", "days": 30, "vk_hash": "hash_123", "max_devices": bad}
+                )
+
     def write_hash_library(self, *values: str) -> Path:
         path = Path(self.temp.name) / "panel.db"
         connection = sqlite3.connect(path)
