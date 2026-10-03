@@ -39,6 +39,35 @@
     renderTheme();
   }
 
+  const ACCENTS = ["red", "orange", "yellow", "green", "blue", "purple"];
+
+  function renderAccent() {
+    const current = document.body.dataset.accent || "red";
+    $$('#accent-picker [data-accent-option]').forEach((button) => {
+      const active = button.dataset.accentOption === current;
+      button.classList.toggle("active", active);
+      if (active) button.setAttribute("aria-pressed", "true");
+      else button.removeAttribute("aria-pressed");
+    });
+  }
+
+  function applyAccent(name, persist = true) {
+    const accent = ACCENTS.includes(name) ? name : "red";
+    document.body.dataset.accent = accent;
+    if (persist) {
+      try { localStorage.setItem("wdtt-accent", accent); }
+      catch (_) { /* Browser storage can be disabled. */ }
+    }
+    renderAccent();
+  }
+
+  function restoreAccent() {
+    let saved = "red";
+    try { saved = localStorage.getItem("wdtt-accent") || saved; }
+    catch (_) { /* Browser storage can be disabled. */ }
+    applyAccent(saved, false);
+  }
+
   function activateTab(tabName, persist = true) {
     const button = $$(".nav-item").find((item) => item.dataset.tab === tabName) || $(".nav-item");
     const name = button.dataset.tab;
@@ -1562,6 +1591,11 @@
       catch (_) { /* Browser storage can be disabled. */ }
       renderTheme();
     });
+    const accentPicker = $("#accent-picker");
+    if (accentPicker) accentPicker.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-accent-option]");
+      if (button) applyAccent(button.dataset.accentOption);
+    });
     $("#manage-vk-hashes").addEventListener("click", async () => {
       try { await loadVkHashes(); $("#vk-hashes-dialog").showModal(); }
       catch (error) { toast(error.message, true); }
@@ -1806,6 +1840,7 @@
 
   restoreSidebarState();
   restoreTheme();
+  restoreAccent();
   restoreActiveTab();
   bindEvents();
   restoreUserAutoRefresh();

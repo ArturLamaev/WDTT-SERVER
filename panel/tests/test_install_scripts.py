@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.6.0"', installer)
-        self.assertIn('__version__ = "1.6.0"', package)
-        self.assertIn("Текущая версия: 1.6.0", readme)
+        self.assertIn('PANEL_VERSION="1.7.0"', installer)
+        self.assertIn('__version__ = "1.7.0"', package)
+        self.assertIn("Текущая версия: 1.7.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -303,6 +303,18 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('static/app.js?v={{VERSION}}', html)
         self.assertNotIn('id="repair-wdtt"', html)
         self.assertNotIn('api("service/repair"', script)
+
+    def test_accent_scheme_picker_is_exposed(self):
+        html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "wdtt_panel" / "static" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "wdtt_panel" / "static" / "app.css").read_text(encoding="utf-8")
+        self.assertIn('id="accent-picker"', html)
+        for accent in ("red", "orange", "yellow", "green", "blue", "purple"):
+            self.assertIn(f'data-accent-option="{accent}"', html)
+            self.assertIn(f'data-accent="{accent}"', css)
+        self.assertIn("wdtt-accent", script)
+        self.assertIn("restoreAccent()", script)
+        self.assertIn("applyAccent", script)
 
     def test_user_labels_and_bulk_actions_are_exposed(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
