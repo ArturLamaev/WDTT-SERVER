@@ -132,10 +132,6 @@ elif action == "autoclean.settings":
     result = {"settings": request.get("payload") or {}, "active": True}
 elif action == "autoclean.run":
     result = {"ran": False, "reason": "below_threshold", "disk_percent": 25.0, "threshold": 90, "settings": {"enabled": True, "disk_percent": 90, "keep_panel": 20, "keep_users": 20, "keep_days": 14}}
-elif action == "panel.version":
-    result = {"current": "0.5.0", "latest": "0.5.0", "update_available": False}
-elif action == "panel.update":
-    result = {"scheduled": True, "state": "test"}
 elif action == "telegram.status":
     result = {"enabled": True, "admin_id": "123456789", "bot_token_set": True, "bot_token_hint": "123456...test", "service_active": True}
 elif action == "telegram.save":

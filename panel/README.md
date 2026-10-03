@@ -1,6 +1,6 @@
 # WDTT-SERVER Control Panel (fork)
 
-**Текущая версия: 1.1.0** (форк WDTT-SERVER от lebrit/wdtt-control-panel)
+**Текущая версия: 1.1.1** (форк WDTT-SERVER от lebrit/wdtt-control-panel)
 
 > Отличия форка: лимит пользователей/ключей поднят с **10 до 10000** (`MAX_USERS` в `wdtt_panel/core.py`), новым ключам выдаётся `max_devices=10000` (`DEFAULT_MAX_DEVICES`), в ядре лимит ключей и лимит устройств подняты так же (`maxGeneratedPasswords`, `canConnectAndBind`). Установка всегда выполняется из локального `src/` форка, а не с GitHub.
 
@@ -97,19 +97,17 @@ curl -fsSL https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/boot
 ```bash
 sudo wdtt-panel
 sudo wdtt-panel-status
-sudo wdtt-panel-update
 sudo wdtt-panel-uninstall
 sudo bash /opt/wdtt-panel/install.sh renew-cert
 sudo wdtt-panel change-password
 sudo wdtt-panel rollback --version v0.10.3
 ```
 
-Те же операции доступны через главное интерактивное меню. Обновление скачивает свежую версию с GitHub и сохраняет адрес, логин, пароль, случайный путь, сертификаты, аудит и резервные копии.
+Те же операции доступны через главное интерактивное меню. Обновление выполняется вручную из локального форка: `sudo ./install.sh update` (из корня репозитория) или `sudo bash /opt/wdtt-panel/install.sh update`; адрес, логин, пароль, случайный путь, сертификаты, аудит и резервные копии сохраняются.
 
 Одноразовые команды без установленного локального wrapper:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/update.sh | sudo bash
 curl -fsSL https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/uninstall.sh | sudo bash
 ```
 
@@ -147,7 +145,7 @@ Let's Encrypt объявил публичную доступность IP-сер
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q wdtt_panel
-bash -n bootstrap.sh install.sh update.sh uninstall.sh
+bash -n bootstrap.sh install.sh uninstall.sh
 ```
 
 ## Ограничения исходного WDTT

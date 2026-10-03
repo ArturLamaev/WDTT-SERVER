@@ -49,7 +49,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
-    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadPanelVersion(); loadTelegramSettings(); }
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); }
   }
 
   function restoreActiveTab() {
@@ -987,42 +987,6 @@
     finally { setBusy(button, false); }
   }
 
-  async function loadPanelVersion() {
-    const info = $("#panel-version-info");
-    const updateButton = $("#update-panel");
-    try {
-      const result = await api("panel/version");
-      const latest = result.latest || "недоступна";
-      info.innerHTML = [
-        `<div class="detail-row"><span>Установлена</span><strong>v${escapeHtml(result.current || PANEL_VERSION)}</strong></div>`,
-        `<div class="detail-row"><span>На GitHub</span><strong>${result.latest ? `v${escapeHtml(latest)}` : escapeHtml(latest)}</strong></div>`,
-        result.error ? `<div class="detail-row"><span>Проверка</span><strong>${escapeHtml(result.error)}</strong></div>` : "",
-      ].join("");
-      updateButton.hidden = !result.update_available;
-      updateButton.textContent = result.update_available ? `Обновить до v${result.latest}` : "Обновить панель";
-      $("#panel-version-pill").textContent = result.update_available
-        ? `v${result.current} → v${result.latest}`
-        : `v${result.current || PANEL_VERSION}`;
-    } catch (error) {
-      info.innerHTML = `<p class="muted">Не удалось проверить GitHub: ${escapeHtml(error.message)}</p>`;
-      updateButton.hidden = true;
-    }
-  }
-
-  async function updatePanel() {
-    const button = $("#update-panel");
-    if (!confirm("Обновить панель до новой версии? Web-панель перезапустится, WDTT продолжит работу.")) return;
-    setBusy(button, true);
-    try {
-      await api("panel/update", { method: "POST" });
-      toast("Обновление запущено. Панель перезагрузится автоматически.");
-      setTimeout(() => location.reload(), 15000);
-    } catch (error) {
-      toast(error.message, true);
-      setBusy(button, false);
-    }
-  }
-
   async function loadAudit() {
     const result = await api("audit");
     $("#audit-body").innerHTML = (result.items || []).map((item) => `<tr><td>${escapeHtml(formatDate(item[0]))}</td><td>${escapeHtml(item[1])}</td><td class="mono">${escapeHtml(item[2])}</td><td>${escapeHtml(item[3])}</td><td><span class="badge ${item[4] === "ok" ? "ok" : "bad"}">${escapeHtml(item[4])}</span></td></tr>`).join("");
@@ -1582,7 +1546,6 @@
     $("#run-autoclean").addEventListener("click", runAutoclean);
     $("#save-telegram").addEventListener("click", saveTelegramSettings);
     $("#test-telegram").addEventListener("click", testTelegramSettings);
-    $("#update-panel").addEventListener("click", updatePanel);
     $("#renew-certificate").addEventListener("click", renewCertificate);
     $("#download-certificate").addEventListener("click", downloadCertificate);
     $("#upload-backup").addEventListener("click", () => $("#backup-upload").click());
@@ -1733,6 +1696,6 @@
   restoreActiveTab();
   bindEvents();
   restoreUserAutoRefresh();
-  Promise.all([loadOverview(), loadUsers(), loadVkHashes(), loadPanelVersion()]).catch((error) => toast(error.message, true));
+  Promise.all([loadOverview(), loadUsers(), loadVkHashes()]).catch((error) => toast(error.message, true));
   setInterval(() => loadOverview().catch(() => {}), 10000);
 })();

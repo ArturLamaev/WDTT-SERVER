@@ -268,7 +268,6 @@ class Panel:
                 "cleanup",
                 "autoclean",
                 "backups",
-                "panel.version",
                 "telegram",
                 "telegram.save",
                 "telegram.test",
@@ -406,8 +405,6 @@ class Panel:
             "backups/export": "backups.export",
             "backups/import": "backups.import",
             "backups/schedule": "backups.schedule",
-            "panel/version": "panel.version",
-            "panel/update": "panel.update",
             "certificate/export": "certificate.export",
             "certificate/renew": "certificate.renew",
             "telegram": "telegram.status",
@@ -435,7 +432,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
@@ -448,8 +445,6 @@ class Panel:
             query = parse_qs(str(environ.get("QUERY_STRING") or ""))
             payload["limit"] = query.get("limit", [300])[0]
             payload["source"] = query.get("source", ["wdtt"])[0]
-        if action == "panel.version":
-            payload["current_version"] = str(self.config.get("version") or "0.0.0")
         if action == "backups.export":
             query = parse_qs(str(environ.get("QUERY_STRING") or ""))
             payload["name"] = query.get("name", [""])[0]
@@ -496,7 +491,6 @@ class Panel:
             self.audit(environ, "api.v1.logout", "ok")
             return self.json_response(start_response, 200, {"ok": True, "result": {"logged_out": True}})
         legacy_route = {
-            "version": "panel/version",
             "users/bulk": "users/create-bulk",
             "users/auto": "users/create-auto",
         }.get(route, route)

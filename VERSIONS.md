@@ -11,6 +11,21 @@
 - новый функционал/фича → минор (`+0.1`), например `1.0.0 → 1.1.0`;
 - мажорная обнова → мажор (`+1.0`), например `1.0.0 → 2.0.0`.
 
+## 1.1.1
+
+Удалён апстрим-механизм обновления панели из веб-интерфейса:
+
+- из раздела «Система» убран блок «PANEL UPDATE / Версия панели» с кнопкой
+  «Обновить панель», проверкой версии на GitHub и запуском самообновления;
+- удалены роуты `panel/version` / `panel/update`, функции `panel_version()` и
+  `start_panel_update()` в `admin.py`, а также `PANEL_VERSION_URL` и
+  `PANEL_UPDATE_COMMAND`;
+- установщик больше не создаёт wrapper `/usr/local/sbin/wdtt-panel-update` и не
+  ставит `panel/update.sh` (файл удалён): раньше он скачивал апстрим
+  `bootstrap.sh` с GitHub и подменял форк оригиналом;
+- обновление выполняется вручную из локального форка:
+  `sudo ./install.sh update` (из корня) или `sudo bash /opt/wdtt-panel/install.sh update`.
+
 ## 1.1.0
 
 Авто-очистка диска:
@@ -37,7 +52,7 @@
 | Компонент  | Версия (заморожена)            | Источник                                               |
 |------------|--------------------------------|--------------------------------------------------------|
 | Ядро       | `qWDTT v1.4.3`                 | `src/proxy-turn-vk-android-1.4.3/` (SpaceNeuroX/proxy-turn-vk-android) |
-| Панель     | `1.1.0`                        | `panel/` (lebrit/wdtt-control-panel)                   |
+| Панель     | `1.1.1`                        | `panel/` (lebrit/wdtt-control-panel)                   |
 | Go toolchain | `1.25.0` (проверено)         | скачивается при сборке в `env/go`                      |
 
 Лицензии upstream: ядро — GNU GPL v3 (`src/proxy-turn-vk-android-1.4.3/LICENSE`).

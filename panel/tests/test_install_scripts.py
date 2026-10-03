@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.1.0"', installer)
-        self.assertIn('__version__ = "1.1.0"', package)
-        self.assertIn("Текущая версия: 1.1.0", readme)
+        self.assertIn('PANEL_VERSION="1.1.1"', installer)
+        self.assertIn('__version__ = "1.1.1"', package)
+        self.assertIn("Текущая версия: 1.1.1", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -254,14 +254,12 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('if [ "$TLS_MODE" = "letsencrypt" ]; then', script)
         self.assertIn("HSTS_HEADER=", script)
 
-    def test_panel_exposes_version_update_and_full_backup_controls(self):
+    def test_panel_exposes_full_backup_controls(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "wdtt_panel" / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('id="update-panel"', html)
         self.assertIn('id="create-full-backup"', html)
         self.assertIn('id="create-users-backup"', html)
         self.assertIn('id="save-backup-schedule"', html)
-        self.assertIn('api("panel/update"', script)
         self.assertIn('api("backups/create"', script)
         self.assertIn('api("backups/delete"', script)
         self.assertIn('api("backups/schedule"', script)

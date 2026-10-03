@@ -70,12 +70,7 @@ LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/a
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
 MAX_INPUT = 90 * 1024 * 1024
-PANEL_UPDATE_COMMAND = Path(os.environ.get("WDTT_PANEL_UPDATE_COMMAND", "/usr/local/sbin/wdtt-panel-update"))
 PANEL_RENEW_COMMAND = Path(os.environ.get("WDTT_PANEL_RENEW_COMMAND", "/opt/wdtt-panel/install.sh"))
-PANEL_VERSION_URL = os.environ.get(
-    "WDTT_PANEL_VERSION_URL",
-    "https://raw.githubusercontent.com/lebrit/wdtt-control-panel/main/install.sh",
-)
 CASCADE_SETTINGS = Path(
     os.environ.get("WDTT_CASCADE_SETTINGS", "/var/lib/wdtt-panel-private/cascade.json")
 )
@@ -1704,48 +1699,6 @@ def version_parts(value: str) -> tuple[int, ...]:
         raise ValidationError(f"Некорректная версия панели: {value}")
     parts = tuple(int(part) for part in value.split("."))
     return parts + (0,) * (4 - len(parts))
-
-
-def panel_version(payload: dict[str, Any]) -> dict[str, Any]:
-    current = str(payload.get("current_version") or "0.0.0")
-    version_parts(current)
-    request = urllib.request.Request(PANEL_VERSION_URL, headers={"User-Agent": "wdtt-control-panel"})
-    try:
-        with urllib.request.urlopen(request, timeout=6) as response:
-            source = response.read(128 * 1024).decode("utf-8", "replace")
-        match = re.search(r'^PANEL_VERSION="([0-9.]+)"', source, re.MULTILINE)
-        if not match:
-            raise ValueError("PANEL_VERSION не найден")
-        latest = match.group(1)
-        return {
-            "current": current,
-            "latest": latest,
-            "update_available": version_parts(latest) > version_parts(current),
-        }
-    except (OSError, ValueError, urllib.error.URLError) as exc:
-        return {"current": current, "latest": "", "update_available": False, "error": str(exc)}
-
-
-def start_panel_update(payload: dict[str, Any]) -> dict[str, Any]:
-    if not PANEL_UPDATE_COMMAND.exists():
-        raise AdminError(f"Команда обновления не найдена: {PANEL_UPDATE_COMMAND}")
-    if SKIP_SYSTEMD:
-        return {"scheduled": True, "state": "test"}
-    unit = f"wdtt-panel-self-update-{int(time.time())}"
-    result = run(
-        [
-            "systemd-run",
-            "--quiet",
-            "--collect",
-            f"--unit={unit}",
-            "--on-active=3s",
-            str(PANEL_UPDATE_COMMAND),
-        ],
-        timeout=20,
-    )
-    if result.returncode != 0:
-        raise AdminError(result.stderr.strip() or "Не удалось запланировать обновление панели")
-    return {"scheduled": True, "unit": unit}
 
 
 def schedule_certificate_renew(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3989,8 +3942,6 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "backups.export": export_backup,
     "backups.import": import_backup,
     "backups.schedule": lambda payload: save_backup_schedule(payload) if payload else backup_schedule_status(),
-    "panel.version": panel_version,
-    "panel.update": start_panel_update,
     "certificate.export": export_certificate,
     "certificate.renew": schedule_certificate_renew,
     "telegram.status": lambda payload: telegram_status(payload),

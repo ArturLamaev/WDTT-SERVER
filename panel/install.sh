@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.1.0"
+PANEL_VERSION="1.1.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -895,7 +895,6 @@ install_panel_files() {
     cp -a "$SCRIPT_DIR/wdtt_panel" "$INSTALL_DIR/wdtt_panel"
     install -m 0755 "$SCRIPT_DIR/install.sh" "$INSTALL_DIR/install.sh"
     install -m 0755 "$SCRIPT_DIR/bootstrap.sh" "$INSTALL_DIR/bootstrap.sh"
-    install -m 0755 "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/update.sh"
     install -m 0755 "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
     # WDTT-SERVER: замораживаем локальный форк ядра в /opt, чтобы обновления
     # панели из /opt/wdtt-panel не обращались на GitHub.
@@ -931,7 +930,7 @@ EOF
 write_maintenance_scripts() {
   rm -f "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane
   install -m 0755 "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"
-  ln -sfn "$INSTALL_DIR/update.sh" "$UPDATE_WRAPPER"
+  rm -f "$UPDATE_WRAPPER"
   ln -sfn "$INSTALL_DIR/uninstall.sh" "$UNINSTALL_WRAPPER"
   cat > "$STATUS_WRAPPER" <<EOF
 #!/bin/sh
