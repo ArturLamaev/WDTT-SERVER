@@ -425,6 +425,7 @@
     }
     if (key === "expires") return user.expires_at || Number.MAX_SAFE_INTEGER;
     if (key === "device") return `${user.device?.device_id || user.device_id || ""} ${user.device?.ip || ""}`;
+    if (key === "devices") return (user.device_ids || user.devices || []).length;
     if (key === "traffic") return Number(user.down_bytes || 0) + Number(user.up_bytes || 0);
     if (key === "activity") return lastUserActivity(user);
     return "";
@@ -467,6 +468,12 @@
       const quotaText = quotaManaged ? (user.traffic_unlimited ? "Без лимита" : `${formatBytes(user.traffic_remaining_bytes)} из ${formatBytes(quotaLimit)} осталось`) : "";
       const traffic = user.traffic_supported === false ? "Появится после включения" : `${formatBytes(user.down_bytes)} ↓ / ${formatBytes(user.up_bytes)} ↑${quotaText ? `<br><small>${escapeHtml(quotaText)}</small>${warning}` : ""}`;
       const deviceItems = (user.devices && user.devices.length) ? user.devices : [];
+      const deviceUsed = (user.device_ids && user.device_ids.length) ? user.device_ids.length : deviceItems.length;
+      const deviceLimit = Number(user.max_devices || 0);
+      const deviceTotal = deviceLimit >= 10000 ? "∞" : String(Math.max(1, deviceLimit));
+      const devicesCell = user.role === "admin"
+        ? "<span class=\"muted\">—</span>"
+        : `<strong>${deviceUsed}</strong> / ${deviceTotal}`;
       const device = deviceItems.length
         ? deviceItems.map((item) => `${escapeHtml(item.device_id)}<br><small>${escapeHtml(item.ip || "")}${item.connected ? " · онлайн" : ""}</small>`).join("<br>")
         : (user.device ? `${escapeHtml(user.device.device_id || user.device_id)}<br><small>${escapeHtml(user.device.ip || "")}</small>` : "Не привязан");
@@ -479,10 +486,10 @@
         <td><strong class="mono">${escapeHtml(user.password)}</strong><br><small>${escapeHtml(user.vk_hash)}</small></td>
         <td><span class="badge ${statusClass}">${status}</span></td>
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
-        <td class="mono">${device}</td><td>${traffic}</td>
+        <td class="mono">${device}</td><td class="mono" title="Занято / доступно">${devicesCell}</td><td>${traffic}</td>
         <td><strong>${escapeHtml(formatActivityDate(lastActivity))}</strong><br><small>${escapeHtml(lastUserActivityKind(user))}</small></td>
         <td><button class="user-actions-trigger" data-actions-toggle="${escapeHtml(user.password)}">Действия</button></td></tr>`;
-    }).join("") || `<tr><td colspan="9" class="muted">Пользователи не найдены.</td></tr>`;
+    }).join("") || `<tr><td colspan="10" class="muted">Пользователи не найдены.</td></tr>`;
     closeUserActions();
     renderUserSortControls();
     renderSelectedUsersControls();
