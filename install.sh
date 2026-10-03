@@ -13,8 +13,9 @@
 #
 # Возможности (по мотивам wdtt-old.sh):
 #   * проверка root с авто-эскалацией через sudo (диагностика no-new-privileges);
-#   * обнаружение предыдущей установки WDTT/панели и запрос на чистый снос
-#     (--force-clean — снести без запроса, --non-interactive — не трогать);
+#   * обнаружение установленной панели: предлагает обновить её с сохранением
+#     конфига (снимок конфига создаётся автоматически); --force-clean — снести
+#     и поставить начисто, --non-interactive — обновить панель без вопросов;
 #   * пост-проверка установки (директории, sudoers, пользователь wdtt-panel);
 #   * авто-рестарт панели и WDTT каждые 6 часов (systemd timer + cron fallback);
 #   * полный тейкдаун через `uninstall` (панель + ядро + данные) с резервной
@@ -32,6 +33,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 KERNEL_DIR="$ROOT_DIR/src/proxy-turn-vk-android-1.4.3"
 PANEL_INSTALL="$ROOT_DIR/panel/install.sh"
+PANEL_CONFIG_FILE="/etc/wdtt-panel/config.json"
 
 info() { printf '[wdtt-server] %s\n' "$*"; }
 die()  { printf '[wdtt-server] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -84,6 +86,58 @@ detect_previous_install() {
   [ -e /etc/nginx/conf.d/wdtt-panel.conf ] && return 0
   systemctl list-units --all 2>/dev/null | grep -qE 'wdtt-panel|wdtt\.service' && return 0
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Проверка установленной панели и предложение обновления (WDTT-SERVER)
+# ---------------------------------------------------------------------------
+panel_is_installed() {
+  [ -f "$PANEL_CONFIG_FILE" ] || [ -f /opt/wdtt-panel/install.sh ] || [ -d /opt/wdtt-panel ]
+}
+
+panel_installed_version() {
+  [ -r "$PANEL_CONFIG_FILE" ] || return 0
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("version", ""))' "$PANEL_CONFIG_FILE" 2>/dev/null || true
+}
+
+panel_target_version() {
+  sed -n 's/^PANEL_VERSION="\([^"]*\)".*$/\1/p' "$PANEL_INSTALL" | head -n 1 || true
+}
+
+requested_force_clean() {
+  case " $* " in
+    *" --force-clean "*) return 0 ;;
+  esac
+  return 1
+}
+
+confirm_update() {
+  local ans="" flags="$*" cur target
+  if requested_force_clean "$@"; then
+    return 1
+  fi
+  if [[ " $flags " == *" --non-interactive "* ]]; then
+    info "--non-interactive: обновляю установленную панель с сохранением конфигурации"
+    return 0
+  fi
+  cur="$(panel_installed_version)"
+  target="$(panel_target_version)"
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf "Обновить панель %s до версии %s? Конфиг и данные сохранятся (будет создан снимок конфига). [Y/n]: " "${cur:-неизвестной}" "${target:-новой}" > /dev/tty
+    IFS= read -r ans </dev/tty || true
+  else
+    printf "Обновить панель %s до версии %s? [Y/n]: " "${cur:-неизвестной}" "${target:-новой}"
+    IFS= read -r ans || true
+  fi
+  case "${ans:-Y}" in
+    y|Y|yes|YES|да|Да) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+upgrade_existing_install() {
+  info "Обновляю панель до версии $(panel_target_version) с сохранением конфигурации..."
+  bash "$PANEL_INSTALL" update
 }
 
 wipe_previous_install() {
@@ -292,18 +346,40 @@ main() {
     install|--install|-i)
       require_local_sources
       check_fork_limits
-      if detect_previous_install; then
-        info "Обнаружена предыдущая установка WDTT / панели"
+      local upgrade=0
+      if panel_is_installed; then
+        local cur target
+        cur="$(panel_installed_version)"
+        target="$(panel_target_version)"
+        info "Найдена установленная панель WDTT-SERVER${cur:+ (версия $cur)}${target:+, в репозитории $target}"
+        if requested_force_clean "$@"; then
+          info "--force-clean: сношу установленную панель и ставлю начисто"
+          wipe_previous_install
+        elif confirm_update "$@"; then
+          upgrade=1
+        elif confirm_wipe "$@"; then
+          wipe_previous_install
+        else
+          info "Оставляю установку как есть, ставлю поверх (может остаться мусор)"
+        fi
+      elif detect_previous_install; then
+        info "Найдены следы прежней установки WDTT без панели"
         if confirm_wipe "$@"; then
           wipe_previous_install
         else
           info "Пропускаю снос, ставлю поверх (может остаться мусор)"
         fi
       else
-        info "Старая установка не найдена — ставлю начисто"
+        info "Установка не найдена — ставлю начисто"
       fi
-      bash "$PANEL_INSTALL" "$@"
-      validate_installation
+
+      if [ "$upgrade" -eq 1 ]; then
+        upgrade_existing_install "$@"
+        validate_installation || true
+      else
+        bash "$PANEL_INSTALL" "$@"
+        validate_installation
+      fi
       setup_auto_restart
       print_final_notes
       ;;

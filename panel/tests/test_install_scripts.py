@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.1.1"', installer)
-        self.assertIn('__version__ = "1.1.1"', package)
-        self.assertIn("Текущая версия: 1.1.1", readme)
+        self.assertIn('PANEL_VERSION="1.2.0"', installer)
+        self.assertIn('__version__ = "1.2.0"', package)
+        self.assertIn("Текущая версия: 1.2.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -40,6 +40,8 @@ class InstallScriptTests(unittest.TestCase):
     def test_installer_has_update_and_certificate_renewal(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("update_panel()", script)
+        self.assertIn("backup_panel_config_before_update()", script)
+        self.assertIn("migrate_panel_config()", script)
         self.assertIn("renew_certificates()", script)
         self.assertIn("OnUnitActiveSec=12h", script)
         self.assertIn("write_maintenance_scripts", script)

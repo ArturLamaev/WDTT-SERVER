@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.1.1"
+PANEL_VERSION="1.2.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -984,6 +984,76 @@ backup_wdtt_database_before_update() {
   log "Создан снимок базы WDTT перед обновлением: $(basename "$snapshot")"
 }
 
+# WDTT-SERVER: снимок конфигурации панели перед обновлением, чтобы можно было
+# откатиться, если миграция конфига на новую версию пойдёт не так.
+backup_panel_config_before_update() {
+  [ -f "$CONFIG_FILE" ] || return 0
+  local dir="$PRIVATE_STATE_DIR/config-backups" stamp target
+  install -d -m 0700 "$dir"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  target="$dir/config-before-$PANEL_VERSION-$stamp.json"
+  install -m 0600 "$CONFIG_FILE" "$target"
+  log "Создан снимок конфигурации панели: $target"
+  # Держим не больше 20 последних копий конфига.
+  ls -1t "$dir"/config-before-*.json 2>/dev/null | tail -n +21 | xargs -r rm -f
+}
+
+# WDTT-SERVER: переносит существующий config.json на текущую версию панели:
+# досыпает недостающие поля значениями по умолчанию, чинит типы портов и
+# обновляет поле version. Пароль и session_secret сохраняются.
+migrate_panel_config() {
+  if ! python3 - "$CONFIG_FILE" "$PANEL_VERSION" <<'PY'
+import json, os, sys
+
+path, version = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    data = json.load(handle)
+if not isinstance(data, dict):
+    raise SystemExit("config.json повреждён")
+
+missing_secrets = [key for key in ("password_hash", "session_secret") if not data.get(key)]
+if missing_secrets:
+    raise SystemExit("config.json неполон: нет " + ", ".join(missing_secrets))
+
+defaults = {
+    "username": "admin",
+    "base_path": "/",
+    "public_host": "",
+    "https_port": 9999,
+    "listen_host": "127.0.0.1",
+    "listen_port": 8787,
+    "certificate_path": "",
+    "tls_mode": "self-signed",
+    "certificate_email": "",
+}
+added = []
+for key, value in defaults.items():
+    if key not in data:
+        data[key] = value
+        added.append(key)
+for key in ("https_port", "listen_port"):
+    try:
+        data[key] = int(data[key])
+    except (TypeError, ValueError):
+        data[key] = defaults[key]
+data["version"] = version
+
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+if added:
+    print("Перенесены поля конфига: " + ", ".join(added))
+PY
+  then
+    die "Не удалось перенести конфигурацию панели на версию $PANEL_VERSION — проверьте $CONFIG_FILE (снимок в $PRIVATE_STATE_DIR/config-backups)"
+  fi
+  chown root:wdtt-panel "$CONFIG_FILE"
+  chmod 0640 "$CONFIG_FILE"
+}
+
 write_xray_services() {
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE"
@@ -1752,8 +1822,10 @@ update_panel() {
   log "Обновление панели до версии $PANEL_VERSION"
   remove_obsolete_fleet_agent
   backup_wdtt_database_before_update
+  backup_panel_config_before_update
   install_panel_files
   write_maintenance_scripts
+  migrate_panel_config
   update_panel_config_metadata
   write_panel_service
   write_final_nginx
