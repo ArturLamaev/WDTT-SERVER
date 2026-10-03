@@ -1,6 +1,6 @@
 # WDTT-SERVER Control Panel (fork)
 
-**Текущая версия: 1.2.0** (форк WDTT-SERVER от lebrit/wdtt-control-panel)
+**Текущая версия: 1.3.0** (форк WDTT-SERVER от lebrit/wdtt-control-panel)
 
 > Отличия форка: лимит пользователей/ключей поднят с **10 до 10000** (`MAX_USERS` в `wdtt_panel/core.py`), новым ключам выдаётся `max_devices=10000` (`DEFAULT_MAX_DEVICES`), в ядре лимит ключей и лимит устройств подняты так же (`maxGeneratedPasswords`, `canConnectAndBind`). Установка всегда выполняется из локального `src/` форка, а не с GitHub.
 

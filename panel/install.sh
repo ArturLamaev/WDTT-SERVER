@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.2.0"
+PANEL_VERSION="1.3.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +15,8 @@ PANEL_SERVICE="wdtt-panel.service"
 ADMIN_WRAPPER="/usr/local/sbin/wdtt-panel-admin"
 SUDOERS_FILE="/etc/sudoers.d/wdtt-panel"
 UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-update"
+SELF_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-self-update"
+SOURCE_CONF_FILE="$CONFIG_DIR/source.conf"
 UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
 STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
 GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
@@ -927,10 +929,177 @@ EOF
   install_vk_hash_seed
 }
 
+# WDTT-SERVER: запоминает каталог git-репозитория для веб-обновления, чтобы
+# панель могла выполнить git pull. Срабатывает только когда install.sh запущен
+# из самого репозитория (рядом есть .git и корневой install.sh).
+record_source_repo() {
+  local repo
+  repo="$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || true)"
+  if [ -z "$repo" ] || [ ! -d "$repo/.git" ] || [ ! -f "$repo/install.sh" ]; then
+    return 0
+  fi
+  install -d -m 0755 "$CONFIG_DIR"
+  printf 'WDTT_REPO_DIR=%s\n' "$(printf '%q' "$repo")" > "$SOURCE_CONF_FILE"
+  chmod 0644 "$SOURCE_CONF_FILE"
+  log "Источник веб-обновления: $repo"
+}
+
+# WDTT-SERVER: обёртка самообновления. Запускается вне systemd-песочницы панели
+# (через systemd-run) от root и умеет два режима:
+#   check  — git fetch и запись доступной версии в self-update-status.json;
+#   update — git pull, install.sh update (конфиг сохраняется) и полный перезапуск.
+# Панель лишь читает статус и запускает обёртку, поэтому её sandbox не мешает.
+write_self_update_wrapper() {
+  cat > "$SELF_UPDATE_WRAPPER" <<'EOF'
+#!/bin/sh
+# WDTT-SERVER panel self-update helper (check|update). Runs as root outside the
+# panel sandbox. Поведение: git pull -> install.sh update -> restart служб.
+set -eu
+
+SOURCE_CONF="/etc/wdtt-panel/source.conf"
+CONFIG_FILE="/etc/wdtt-panel/config.json"
+STATUS_FILE="/var/lib/wdtt-panel-private/self-update-status.json"
+LOG_FILE="/var/log/wdtt-panel-self-update.log"
+MODE="${1:-update}"
+
+# install.sh update перезаписывает этот самый файл. Чтобы продолжение работы не
+# сломалось на перечитывании изменившегося файла, для режима update копируем себя
+# в /tmp и перезапускаемся уже оттуда — оригинал спокойно перезапишет установщик.
+if [ "$MODE" = "update" ] && [ "${WDTT_SELF_UPDATE_RELOCATED:-}" != "1" ]; then
+  RELOCATED="$(mktemp "${TMPDIR:-/tmp}/wdtt-panel-self-update.XXXXXX")"
+  cp "$0" "$RELOCATED"
+  chmod 0700 "$RELOCATED"
+  WDTT_SELF_UPDATE_RELOCATED=1 WDTT_SELF_UPDATE_FILE="$RELOCATED" exec sh "$RELOCATED" "$MODE"
+fi
+if [ -n "${WDTT_SELF_UPDATE_FILE:-}" ]; then
+  trap 'rm -f "$WDTT_SELF_UPDATE_FILE"' EXIT
+fi
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+set_status() {
+  # state current latest available message
+  python3 - "$STATUS_FILE" "$1" "$2" "$3" "$4" "$5" <<'PY'
+import json, os, sys, time
+path, state, current, latest, available, message = sys.argv[1:7]
+data = {
+    "state": state,
+    "current": current,
+    "latest": latest,
+    "update_available": available == "1",
+    "message": message,
+    "checked_at": int(time.time()),
+}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False)
+    handle.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+}
+
+current_version() {
+  python3 - "$CONFIG_FILE" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("version", ""))
+except Exception:
+    print("")
+PY
+}
+
+version_gt() {
+  # Истина, если версия $1 новее $2.
+  [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | tail -n 1)" = "$1" ]
+}
+
+resolve_repo() {
+  [ -r "$SOURCE_CONF" ] || return 1
+  # shellcheck disable=SC1090
+  . "$SOURCE_CONF"
+  [ -n "${WDTT_REPO_DIR:-}" ] || return 1
+  [ -d "$WDTT_REPO_DIR/.git" ] || return 1
+  printf '%s' "$WDTT_REPO_DIR"
+}
+
+mkdir -p "$(dirname "$STATUS_FILE")"
+
+CUR="$(current_version)"
+REPO="$(resolve_repo || true)"
+
+case "$MODE" in
+  check)
+    if [ -z "$REPO" ]; then
+      set_status error "$CUR" "" 0 "Репозиторий не найден (WDTT_REPO_DIR в $SOURCE_CONF)"
+      exit 1
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+      set_status error "$CUR" "" 0 "git не установлен"
+      exit 1
+    fi
+    log "check: git fetch в $REPO"
+    if ! git -C "$REPO" fetch --prune >>"$LOG_FILE" 2>&1; then
+      set_status error "$CUR" "" 0 "git fetch не удался (см. $LOG_FILE)"
+      exit 1
+    fi
+    UPSTREAM="$(git -C "$REPO" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    [ -n "$UPSTREAM" ] || UPSTREAM="origin/$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+    LATEST="$(git -C "$REPO" show "$UPSTREAM:panel/install.sh" 2>/dev/null | sed -n 's/^PANEL_VERSION="\([^"]*\)".*$/\1/p' | head -n 1 || true)"
+    if [ -z "$LATEST" ]; then
+      set_status error "$CUR" "" 0 "Не удалось определить версию в $UPSTREAM"
+      exit 1
+    fi
+    if version_gt "$LATEST" "$CUR"; then
+      set_status ok "$CUR" "$LATEST" 1 ""
+    else
+      set_status ok "$CUR" "$LATEST" 0 ""
+    fi
+    log "check: установлено $CUR, в репозитории $LATEST"
+    ;;
+  update)
+    if [ -z "$REPO" ]; then
+      set_status error "$CUR" "" 0 "Репозиторий не найден (WDTT_REPO_DIR в $SOURCE_CONF)"
+      exit 1
+    fi
+    set_status running "$CUR" "" 0 "Обновление запущено"
+    log "update: git pull в $REPO"
+    if ! git -C "$REPO" pull --ff-only >>"$LOG_FILE" 2>&1; then
+      if ! git -C "$REPO" pull >>"$LOG_FILE" 2>&1; then
+        set_status error "$CUR" "" 0 "git pull не удался (см. $LOG_FILE)"
+        exit 1
+      fi
+    fi
+    log "update: install.sh update"
+    if ! bash "$REPO/install.sh" update >>"$LOG_FILE" 2>&1; then
+      set_status error "$CUR" "" 0 "install.sh update завершился ошибкой (см. $LOG_FILE)"
+      exit 1
+    fi
+    NEW="$(current_version)"
+    set_status done "$NEW" "$NEW" 0 "Панель обновлена до v$NEW"
+    log "update: перезапуск панели, ядра и демонов"
+    bash "$REPO/install.sh" restart >>"$LOG_FILE" 2>&1 || true
+    log "update: готово (v$NEW)"
+    ;;
+  *)
+    echo "Usage: $0 [check|update]" >&2
+    exit 2
+    ;;
+esac
+EOF
+  chown root:root "$SELF_UPDATE_WRAPPER"
+  chmod 0755 "$SELF_UPDATE_WRAPPER"
+}
+
 write_maintenance_scripts() {
+  record_source_repo
   rm -f "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane
   install -m 0755 "$INSTALL_DIR/bootstrap.sh" "$MANAGER_WRAPPER"
   rm -f "$UPDATE_WRAPPER"
+  write_self_update_wrapper
   ln -sfn "$INSTALL_DIR/uninstall.sh" "$UNINSTALL_WRAPPER"
   cat > "$STATUS_WRAPPER" <<EOF
 #!/bin/sh
@@ -974,6 +1143,28 @@ case "\${1:-apply}" in
 esac
 EOF
   chmod 0755 "$GATEWAY_RULES_WRAPPER"
+}
+
+# WDTT-SERVER: полный перезапуск панели, ядра WDTT и демонов. Используется
+# веб-обновлением (обёртка self-update) и командой `install.sh restart`.
+restart_services() {
+  require_root
+  log "Перезапуск панели, ядра WDTT и демонов"
+  local unit
+  for unit in "$WDTT_SERVICE" "$PANEL_SERVICE" wdtt-app.service; do
+    systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
+  done
+  for unit in nginx.service "$XRAY_SERVICE" "$XRAY_GATEWAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$LEGACY_CASCADE_SERVICE"; do
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+      systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
+    fi
+  done
+  for unit in wdtt-auto-restart.timer wdtt-panel-cert-renew.timer "$WDTT_EXTENSIONS_TIMER" "$AUTOCLEAN_TIMER" wdtt-panel-backup.timer; do
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+      systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
+    fi
+  done
+  log "Перезапуск завершён"
 }
 
 backup_wdtt_database_before_update() {
@@ -1888,6 +2079,7 @@ install_panel() {
 case "${1:-install}" in
   install|--install|-i) install_panel ;;
   update|--update) update_panel ;;
+  restart|--restart) restart_services ;;
   renew-cert|--renew-cert) renew_certificates ;;
   status|--status|-s) require_root; load_panel_config; status_panel ;;
   change-password|--change-password) change_panel_password ;;
@@ -1896,5 +2088,5 @@ case "${1:-install}" in
   install-xray-runtime) install_xray_runtime ;;
   install-warp-runtime) install_warp_runtime ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
+  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
 esac

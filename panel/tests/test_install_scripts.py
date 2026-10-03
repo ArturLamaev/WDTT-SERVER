@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.2.0"', installer)
-        self.assertIn('__version__ = "1.2.0"', package)
-        self.assertIn("Текущая версия: 1.2.0", readme)
+        self.assertIn('PANEL_VERSION="1.3.0"', installer)
+        self.assertIn('__version__ = "1.3.0"', package)
+        self.assertIn("Текущая версия: 1.3.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -381,6 +381,46 @@ class InstallScriptTests(unittest.TestCase):
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertEqual(html.count('value="cancel" formnovalidate'), 8)
+
+    def test_panel_self_update_wrapper_uses_git_and_install(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("SELF_UPDATE_WRAPPER=", script)
+        self.assertIn("SOURCE_CONF_FILE=", script)
+        self.assertIn("record_source_repo()", script)
+        self.assertIn("write_self_update_wrapper()", script)
+        self.assertIn("restart_services()", script)
+        self.assertIn("restart|--restart) restart_services ;;", script)
+        self.assertIn("WDTT_REPO_DIR", script)
+        self.assertIn('git -C "$REPO" fetch --prune', script)
+        self.assertIn('git -C "$REPO" pull --ff-only', script)
+        self.assertIn('bash "$REPO/install.sh" update', script)
+        self.assertIn('bash "$REPO/install.sh" restart', script)
+        self.assertIn("self-update-status.json", script)
+        self.assertIn("WDTT_SELF_UPDATE_RELOCATED", script)
+        self.assertIn("mktemp", script)
+
+    def test_root_installer_exposes_restart(self):
+        script = (ROOT.parent / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('restart|--restart) require_local_sources; exec bash "$PANEL_INSTALL" "$@" ;;', script)
+
+    def test_panel_exposes_self_update_controls(self):
+        html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "wdtt_panel" / "static" / "app.js").read_text(encoding="utf-8")
+        app = (ROOT / "wdtt_panel" / "app.py").read_text(encoding="utf-8")
+        admin = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")
+        self.assertIn('id="update-panel"', html)
+        self.assertIn('id="check-panel-update"', html)
+        self.assertIn('id="panel-version-info"', html)
+        self.assertIn('api("panel/update"', script)
+        self.assertIn('api("panel/check"', script)
+        self.assertIn('api("panel/version"', script)
+        self.assertIn('"panel/version": "panel.version"', app)
+        self.assertIn('"panel/check": "panel.check"', app)
+        self.assertIn('"panel/update": "panel.update"', app)
+        self.assertIn('"panel.version": panel_version', admin)
+        self.assertIn('"panel.check": schedule_panel_check', admin)
+        self.assertIn('"panel.update": start_panel_update', admin)
+        self.assertIn('"systemd-run"', admin)
 
 
 if __name__ == "__main__":

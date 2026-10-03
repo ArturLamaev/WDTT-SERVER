@@ -8,6 +8,8 @@
   const PANEL_VERSION = meta("panel-version");
   const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
 
+  let panelVersionTimer = null;
+
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -49,7 +51,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
-    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); }
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); loadPanelVersion(); }
   }
 
   function restoreActiveTab() {
@@ -987,6 +989,104 @@
     finally { setBusy(button, false); }
   }
 
+  function renderPanelVersion(result) {
+    const info = $("#panel-version-info");
+    const updateButton = $("#update-panel");
+    const current = result.current || PANEL_VERSION;
+    const latest = result.latest || "";
+    const rows = [`<div class="detail-row"><span>Установлена</span><strong>v${escapeHtml(current)}</strong></div>`];
+    if (latest) rows.push(`<div class="detail-row"><span>В репозитории</span><strong>v${escapeHtml(latest)}</strong></div>`);
+    if (result.state === "running" || result.state === "checking") {
+      rows.push('<div class="detail-row"><span>Проверка</span><strong>выполняется…</strong></div>');
+    } else if (result.state === "error") {
+      rows.push(`<div class="detail-row"><span>Проверка</span><strong>${escapeHtml(result.message || "ошибка")}</strong></div>`);
+    } else if (result.checked_at) {
+      rows.push(`<div class="detail-row"><span>Проверено</span><strong>${escapeHtml(formatDate(result.checked_at))}</strong></div>`);
+    }
+    info.innerHTML = rows.join("");
+    updateButton.hidden = !(result.update_available || result.state === "error");
+    updateButton.textContent = result.update_available && latest ? `Обновить до v${latest}` : "Обновить панель";
+    $("#panel-version-pill").textContent = result.update_available && latest ? `v${current} → v${latest}` : `v${current}`;
+  }
+
+  function schedulePanelVersionPoll(attempt = 0) {
+    if (panelVersionTimer) clearTimeout(panelVersionTimer);
+    panelVersionTimer = setTimeout(async () => {
+      panelVersionTimer = null;
+      try {
+        const result = await api("panel/version");
+        if ((result.state === "running" || result.state === "checking") && attempt < 12) {
+          schedulePanelVersionPoll(attempt + 1);
+          return;
+        }
+        renderPanelVersion(result);
+      } catch (_) {
+        if (attempt < 12) schedulePanelVersionPoll(attempt + 1);
+      }
+    }, 2500);
+  }
+
+  async function loadPanelVersion(autoCheck = true) {
+    let result;
+    try { result = await api("panel/version"); }
+    catch (error) {
+      $("#panel-version-info").innerHTML = `<p class="muted">Не удалось получить версию панели: ${escapeHtml(error.message)}</p>`;
+      return;
+    }
+    renderPanelVersion(result);
+    if (!autoCheck) return;
+    const busy = result.state === "running" || result.state === "checking";
+    const stale = !result.checked_at || (Math.floor(Date.now() / 1000) - Number(result.checked_at)) > 600;
+    if (busy) schedulePanelVersionPoll(0);
+    else if (stale) checkPanelUpdate(false);
+  }
+
+  async function checkPanelUpdate(manual = true) {
+    try { await api("panel/check", { method: "POST" }); }
+    catch (error) { if (manual) toast(error.message, true); return; }
+    if (manual) toast("Проверяю обновления…");
+    schedulePanelVersionPoll(0);
+  }
+
+  async function updatePanel() {
+    const button = $("#update-panel");
+    if (!confirm("Обновить панель? Будет выполнен git pull, переустановка с сохранением конфига и перезапуск панели, ядра WDTT и демонов. Панель временно отключится.")) return;
+    setBusy(button, true);
+    try {
+      await api("panel/update", { method: "POST" });
+      toast("Обновление запущено. Панель перезапустится автоматически.");
+    } catch (error) {
+      toast(error.message, true);
+      setBusy(button, false);
+      return;
+    }
+    let attempts = 0;
+    const timer = setInterval(async () => {
+      attempts += 1;
+      try {
+        const result = await api("panel/version");
+        if (result.state === "error") {
+          clearInterval(timer);
+          toast(result.message || "Обновление завершилось ошибкой", true);
+          setBusy(button, false);
+          loadPanelVersion(false);
+          return;
+        }
+        if (result.state === "done") {
+          clearInterval(timer);
+          toast("Панель обновлена. Перезагружаю страницу…");
+          setTimeout(() => location.reload(), 1500);
+          return;
+        }
+      } catch (_) { /* панель перезапускается */ }
+      if (attempts >= 30) {
+        clearInterval(timer);
+        toast("Обновление выполняется. Перезагрузите страницу позже.");
+        setBusy(button, false);
+      }
+    }, 4000);
+  }
+
   async function loadAudit() {
     const result = await api("audit");
     $("#audit-body").innerHTML = (result.items || []).map((item) => `<tr><td>${escapeHtml(formatDate(item[0]))}</td><td>${escapeHtml(item[1])}</td><td class="mono">${escapeHtml(item[2])}</td><td>${escapeHtml(item[3])}</td><td><span class="badge ${item[4] === "ok" ? "ok" : "bad"}">${escapeHtml(item[4])}</span></td></tr>`).join("");
@@ -1546,6 +1646,8 @@
     $("#run-autoclean").addEventListener("click", runAutoclean);
     $("#save-telegram").addEventListener("click", saveTelegramSettings);
     $("#test-telegram").addEventListener("click", testTelegramSettings);
+    $("#check-panel-update").addEventListener("click", () => checkPanelUpdate(true));
+    $("#update-panel").addEventListener("click", updatePanel);
     $("#renew-certificate").addEventListener("click", renewCertificate);
     $("#download-certificate").addEventListener("click", downloadCertificate);
     $("#upload-backup").addEventListener("click", () => $("#backup-upload").click());
@@ -1696,6 +1798,6 @@
   restoreActiveTab();
   bindEvents();
   restoreUserAutoRefresh();
-  Promise.all([loadOverview(), loadUsers(), loadVkHashes()]).catch((error) => toast(error.message, true));
+  Promise.all([loadOverview(), loadUsers(), loadVkHashes(), loadPanelVersion()]).catch((error) => toast(error.message, true));
   setInterval(() => loadOverview().catch(() => {}), 10000);
 })();

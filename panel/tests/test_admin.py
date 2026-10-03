@@ -1058,5 +1058,72 @@ class AdminDatabaseTests(unittest.TestCase):
         with self.assertRaises(admin.ValidationError):
             admin.normalize_xray_geofiles([{"tag": "bad", "filename": "bad.dat", "url": "http://example.com/bad.dat"}])
 
+
+class PanelUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.status = Path(self.temp.name) / "self-update-status.json"
+        self.command = Path(self.temp.name) / "wdtt-panel-self-update"
+        self.command.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.patchers = [
+            mock.patch.object(admin, "PANEL_UPDATE_STATUS_FILE", self.status),
+            mock.patch.object(admin, "PANEL_SELF_UPDATE_COMMAND", self.command),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.temp.cleanup()
+
+    def test_panel_version_reports_cached_status(self):
+        self.status.write_text(
+            json.dumps(
+                {
+                    "state": "ok",
+                    "current": "1.2.0",
+                    "latest": "1.3.0",
+                    "update_available": True,
+                    "message": "",
+                    "checked_at": 1234,
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = admin.panel_version({"current_version": "1.2.0"})
+        self.assertEqual(result["current"], "1.2.0")
+        self.assertEqual(result["latest"], "1.3.0")
+        self.assertTrue(result["update_available"])
+        self.assertEqual(result["checked_at"], 1234)
+
+    def test_panel_version_without_status_reports_no_update(self):
+        result = admin.panel_version({"current_version": "1.2.0"})
+        self.assertFalse(result["update_available"])
+        self.assertEqual(result["latest"], "")
+        self.assertEqual(result["state"], "unknown")
+
+    def test_panel_check_and_update_schedule_systemd_units(self):
+        calls = []
+
+        def fake_run(command, timeout=20, check=False, cwd=None, env=None):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin, "run", side_effect=fake_run):
+            self.assertTrue(admin.schedule_panel_check({})["scheduled"])
+            self.assertTrue(admin.start_panel_update({})["scheduled"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][:2], ["systemd-run", "--quiet"])
+        self.assertEqual(calls[1][:2], ["systemd-run", "--quiet"])
+        self.assertIn("check", calls[0])
+        self.assertIn("update", calls[1])
+
+    def test_panel_update_requires_helper_command(self):
+        with mock.patch.object(admin, "PANEL_SELF_UPDATE_COMMAND", Path(self.temp.name) / "missing"):
+            with self.assertRaises(admin.AdminError):
+                admin.start_panel_update({})
+
+
 if __name__ == "__main__":
     unittest.main()

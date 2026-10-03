@@ -388,6 +388,7 @@ main() {
       bash "$PANEL_INSTALL" "$@"
       validate_installation || true
       ;;
+    restart|--restart) require_local_sources; exec bash "$PANEL_INSTALL" "$@" ;;
     uninstall|--uninstall|-u) cmd_uninstall "$@" ;;
     renew-cert|--renew-cert) exec bash "$PANEL_INSTALL" "$@" ;;
     status|--status|-s) exec bash "$PANEL_INSTALL" "$@" ;;
@@ -401,7 +402,7 @@ main() {
         main "$@"
         return 0
       fi
-      die "Использование: $0 [install|update|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]"
+      die "Использование: $0 [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]"
       ;;
   esac
 }
