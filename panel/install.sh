@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.4.0"
+PANEL_VERSION="1.4.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -971,9 +971,12 @@ if [ "$MODE" = "update" ] && [ "${WDTT_SELF_UPDATE_RELOCATED:-}" != "1" ]; then
   chmod 0700 "$RELOCATED"
   WDTT_SELF_UPDATE_RELOCATED=1 WDTT_SELF_UPDATE_FILE="$RELOCATED" exec sh "$RELOCATED" "$MODE"
 fi
-if [ -n "${WDTT_SELF_UPDATE_FILE:-}" ]; then
-  trap 'rm -f "$WDTT_SELF_UPDATE_FILE"' EXIT
-fi
+WORK_DIR=""
+cleanup() {
+  [ -z "${WORK_DIR:-}" ] || rm -rf "$WORK_DIR"
+  [ -z "${WDTT_SELF_UPDATE_FILE:-}" ] || rm -f "$WDTT_SELF_UPDATE_FILE"
+}
+trap cleanup EXIT
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null || true
@@ -1066,8 +1069,31 @@ case "$MODE" in
       exit 1
     fi
     set_status running "$CUR" "" 0 "Обновление запущено"
-    log "update: git pull в $REPO"
-    if ! git -C "$REPO" pull --ff-only >>"$LOG_FILE" 2>&1; then
+    BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || echo main)"
+    UPSTREAM="origin/$BRANCH"
+    log "update: git fetch в $REPO"
+    if ! git -C "$REPO" fetch --prune >>"$LOG_FILE" 2>&1; then
+      set_status error "$CUR" "" 0 "git fetch не удался (см. $LOG_FILE)"
+      exit 1
+    fi
+    # Незакоммиченные правки в файлах, которые тоже изменились в origin, мешают
+    # слиянию. Перезаписываем ТОЛЬКО такие файлы версией origin, а все прочие
+    # незакоммиченные изменения оставляем как есть.
+    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-self-update.XXXXXX")"
+    git -C "$REPO" diff --name-only HEAD > "$WORK_DIR/local" 2>/dev/null || true
+    git -C "$REPO" diff --name-only HEAD "$UPSTREAM" > "$WORK_DIR/upstream" 2>/dev/null || true
+    grep -Fxf "$WORK_DIR/local" "$WORK_DIR/upstream" > "$WORK_DIR/conflicts" 2>/dev/null || true
+    if [ -s "$WORK_DIR/conflicts" ]; then
+      while IFS= read -r changed; do
+        [ -n "$changed" ] || continue
+        log "update: локальная правка в $changed перезаписана версией origin"
+        git -C "$REPO" checkout -- "$changed" >>"$LOG_FILE" 2>&1 || true
+      done < "$WORK_DIR/conflicts"
+    fi
+    rm -rf "$WORK_DIR"
+    WORK_DIR=""
+    log "update: обновление рабочего дерева до $UPSTREAM"
+    if ! git -C "$REPO" merge --ff-only "$UPSTREAM" >>"$LOG_FILE" 2>&1; then
       if ! git -C "$REPO" pull >>"$LOG_FILE" 2>&1; then
         set_status error "$CUR" "" 0 "git pull не удался (см. $LOG_FILE)"
         exit 1
