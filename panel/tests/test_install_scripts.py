@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.8.1"', installer)
-        self.assertIn('__version__ = "1.8.1"', package)
-        self.assertIn("Текущая версия: 1.8.1", readme)
+        self.assertIn('PANEL_VERSION="1.8.2"', installer)
+        self.assertIn('__version__ = "1.8.2"', package)
+        self.assertIn("Текущая версия: 1.8.2", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -309,9 +309,12 @@ class InstallScriptTests(unittest.TestCase):
         script = (ROOT / "wdtt_panel" / "static" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "wdtt_panel" / "static" / "app.css").read_text(encoding="utf-8")
         self.assertIn('id="accent-picker"', html)
-        for accent in ("red", "orange", "yellow", "green", "blue", "purple", "ukraine"):
+        for accent in ("red", "orange", "yellow", "green", "blue", "purple"):
             self.assertIn(f'data-accent-option="{accent}"', html)
             self.assertIn(f'data-accent="{accent}"', css)
+        self.assertNotIn("ukraine", html)
+        self.assertNotIn("ukraine", script)
+        self.assertNotIn("ukraine", css)
         self.assertIn("wdtt-accent", script)
         self.assertIn("restoreAccent()", script)
         self.assertIn("applyAccent", script)

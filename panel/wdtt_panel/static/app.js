@@ -39,7 +39,7 @@
     renderTheme();
   }
 
-  const ACCENTS = ["red", "orange", "yellow", "green", "blue", "purple", "ukraine"];
+  const ACCENTS = ["red", "orange", "yellow", "green", "blue", "purple"];
 
   function renderAccent() {
     const current = document.body.dataset.accent || "red";
@@ -65,7 +65,9 @@
     let saved = "red";
     try { saved = localStorage.getItem("wdtt-accent") || saved; }
     catch (_) { /* Browser storage can be disabled. */ }
-    applyAccent(saved, false);
+    // Неизвестная сохранённая схема переводится на стандартную красную
+    // с перезаписью выбора, чтобы браузер не возвращался к несуществующей теме.
+    applyAccent(saved, !ACCENTS.includes(saved));
   }
 
   function activateTab(tabName, persist = true) {
