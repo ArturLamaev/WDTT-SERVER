@@ -1236,6 +1236,34 @@ class PanelUpdateTests(unittest.TestCase):
             with self.assertRaises(admin.AdminError):
                 admin.start_panel_update({})
 
+    def test_panel_update_retries_without_collect_on_old_systemd(self):
+        calls = []
+
+        def fake_run(command, timeout=20, check=False, cwd=None, env=None):
+            calls.append(command)
+            if "--collect" in command:
+                return subprocess.CompletedProcess(command, 1, "", "systemd-run: unrecognized option '--collect'\n")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin, "run", side_effect=fake_run):
+            self.assertTrue(admin.start_panel_update({})["scheduled"])
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--collect", calls[0])
+        self.assertNotIn("--collect", calls[1])
+        self.assertIn("update", calls[1])
+
+    def test_panel_update_keeps_collect_on_modern_systemd(self):
+        calls = []
+
+        def fake_run(command, timeout=20, check=False, cwd=None, env=None):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(admin, "run", side_effect=fake_run):
+            self.assertTrue(admin.start_panel_update({})["scheduled"])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--collect", calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()

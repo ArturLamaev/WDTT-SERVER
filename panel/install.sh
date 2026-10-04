@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.9.1"
+PANEL_VERSION="1.9.3"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -2095,18 +2095,22 @@ PY
 }
 
 remove_firewall_rule() {
-  local port="$1"
+  local port="$1" proto="${2:-tcp}"
   [ -n "$port" ] || return 0
+  case "$proto" in tcp|udp) ;; *) return 0 ;; esac
   if command_exists ufw; then
-    ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true
+    while ufw --force delete allow "$port/$proto" >/dev/null 2>&1; do :; done
   fi
   if command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
-    firewall-cmd --permanent --remove-port="$port/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --remove-port="$port/$proto" >/dev/null 2>&1 || true
     firewall-cmd --reload >/dev/null 2>&1 || true
   fi
   if command_exists iptables; then
-    while iptables -C INPUT -p tcp --dport "$port" -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null; do
-      iptables -D INPUT -p tcp --dport "$port" -m comment --comment WDTT_PANEL -j ACCEPT || break
+    local comment
+    for comment in WDTT_PANEL WDTT_MANAGED WDTT_MIRRORED; do
+      while iptables -C INPUT -p "$proto" --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null; do
+        iptables -D INPUT -p "$proto" --dport "$port" -m comment --comment "$comment" -j ACCEPT || break
+      done
     done
   fi
 }
@@ -2123,7 +2127,13 @@ uninstall_panel() {
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
-  remove_firewall_rule "$panel_port"
+  remove_firewall_rule "$panel_port" tcp
+  # Порты ядра WDTT. 80/443 осознанно не трогаем: их могли открыть раньше
+  # для других служб. SSH-порт тоже не трогаем, чтобы не потерять доступ.
+  for kernel_port in 56000 56001; do
+    remove_firewall_rule "$kernel_port" tcp
+    remove_firewall_rule "$kernel_port" udp
+  done
   systemctl daemon-reload
   nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
   log "Панель удалена. Аудит оставлен в $STATE_DIR, резервные копии в $PRIVATE_STATE_DIR"

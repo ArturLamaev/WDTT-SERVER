@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.9.1"', installer)
-        self.assertIn('__version__ = "1.9.1"', package)
-        self.assertIn("Текущая версия: 1.9.1", readme)
+        self.assertIn('PANEL_VERSION="1.9.3"', installer)
+        self.assertIn('__version__ = "1.9.3"', package)
+        self.assertIn("Текущая версия: 1.9.3", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -416,6 +416,19 @@ class InstallScriptTests(unittest.TestCase):
         deploy = (ROOT.parent / "src" / "proxy-turn-vk-android-1.4.3" / "app" / "src" / "main" / "assets" / "deploy.sh").read_text(encoding="utf-8")
         self.assertIn("astra", deploy)
         self.assertIn("ID_LIKE", deploy)
+
+    def test_uninstall_closes_wdtt_ports_but_keeps_80_443(self):
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('local port="$1" proto="${2:-tcp}"', installer)
+        self.assertIn('for kernel_port in 56000 56001', installer)
+        self.assertIn('remove_firewall_rule "$panel_port" tcp', installer)
+        self.assertIn('remove_firewall_rule "$kernel_port" tcp', installer)
+        self.assertIn('remove_firewall_rule "$kernel_port" udp', installer)
+        self.assertIn("80/443", installer)
+        self.assertNotIn('remove_firewall_rule "80', installer)
+        self.assertNotIn("remove_firewall_rule '80", installer)
+        self.assertNotIn('remove_firewall_rule "443', installer)
+        self.assertNotIn("remove_firewall_rule '443", installer)
 
     def test_firewall_helpers_support_old_ufw_without_comment(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")

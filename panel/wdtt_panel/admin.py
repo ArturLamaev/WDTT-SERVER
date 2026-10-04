@@ -206,6 +206,22 @@ def run(
     )
 
 
+def run_transient_unit(command: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    """systemd-run для одноразовых юнитов.
+
+    --collect появился только в systemd 235, на старых системах
+    (Astra Linux 2.12, systemd 232) опция неизвестна — повторяем без неё.
+    """
+    result = run(command, timeout=timeout)
+    if result.returncode == 0 or "--collect" not in command:
+        return result
+    stderr = (result.stderr or "").lower()
+    if "unrecognized option" in stderr or "unknown option" in stderr:
+        fallback = [arg for arg in command if arg != "--collect"]
+        return run(fallback, timeout=timeout)
+    return result
+
+
 def service_active() -> bool:
     if SKIP_SYSTEMD:
         return False
@@ -1841,7 +1857,7 @@ def schedule_panel_self_update(action: str) -> dict[str, Any]:
     if SKIP_SYSTEMD:
         return {"scheduled": True, "state": "test"}
     unit = f"wdtt-panel-{action}-{int(time.time())}"
-    result = run(
+    result = run_transient_unit(
         [
             "systemd-run",
             "--quiet",
@@ -1870,7 +1886,7 @@ def schedule_certificate_renew(payload: dict[str, Any]) -> dict[str, Any]:
     if SKIP_SYSTEMD:
         return {"scheduled": True, "state": "test"}
     unit = f"wdtt-panel-cert-refresh-{int(time.time())}"
-    result = run(
+    result = run_transient_unit(
         ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(PANEL_RENEW_COMMAND), "renew-cert"],
         timeout=20,
     )
@@ -2651,7 +2667,7 @@ def schedule_cascade_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     if SKIP_SYSTEMD:
         return {"scheduled": True, "state": "test"}
     unit = f"wdtt-cascade-install-{int(time.time())}"
-    result = run(
+    result = run_transient_unit(
         ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(CASCADE_INSTALL_COMMAND), "install-cascade-runtime"],
         timeout=20,
     )
@@ -3444,7 +3460,7 @@ def schedule_xray_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     if SKIP_SYSTEMD:
         return {"scheduled": True, "state": "test"}
     unit = f"wdtt-xray-install-{int(time.time())}"
-    result = run(
+    result = run_transient_unit(
         ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(XRAY_INSTALL_COMMAND), "install-xray-runtime"],
         timeout=20,
     )
@@ -3551,7 +3567,7 @@ def schedule_warp_runtime(payload: dict[str, Any]) -> dict[str, Any]:
     if SKIP_SYSTEMD:
         return {"scheduled": True, "state": "test"}
     unit = f"wdtt-warp-install-{int(time.time())}"
-    result = run(
+    result = run_transient_unit(
         ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(WARP_INSTALL_COMMAND), "install-warp-runtime"],
         timeout=20,
     )
