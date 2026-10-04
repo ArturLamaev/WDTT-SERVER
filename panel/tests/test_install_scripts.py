@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.8.0"', installer)
-        self.assertIn('__version__ = "1.8.0"', package)
-        self.assertIn("Текущая версия: 1.8.0", readme)
+        self.assertIn('PANEL_VERSION="1.8.1"', installer)
+        self.assertIn('__version__ = "1.8.1"', package)
+        self.assertIn("Текущая версия: 1.8.1", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -440,6 +440,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('"panel.check": schedule_panel_check', admin)
         self.assertIn('"panel.update": start_panel_update', admin)
         self.assertIn('"systemd-run"', admin)
+        self.assertIn("schedulePanelVersionPoll(0, Number", script)
+        self.assertIn('state: "checking"', script)
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('set_status checking', installer)
 
 
 if __name__ == "__main__":

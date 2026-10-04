@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.8.0"
+PANEL_VERSION="1.8.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1045,6 +1045,7 @@ case "$MODE" in
       exit 1
     fi
     log "check: git fetch в $REPO"
+    set_status checking "$CUR" "" 0 "Проверка обновлений"
     if ! git -C "$REPO" fetch --prune >>"$LOG_FILE" 2>&1; then
       set_status error "$CUR" "" 0 "git fetch не удался (см. $LOG_FILE)"
       exit 1

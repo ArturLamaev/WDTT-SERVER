@@ -1049,19 +1049,23 @@
     $("#panel-version-pill").textContent = result.update_available && latest ? `v${current} → v${latest}` : `v${current}`;
   }
 
-  function schedulePanelVersionPoll(attempt = 0) {
+  function schedulePanelVersionPoll(attempt = 0, baseline = 0) {
     if (panelVersionTimer) clearTimeout(panelVersionTimer);
     panelVersionTimer = setTimeout(async () => {
       panelVersionTimer = null;
       try {
         const result = await api("panel/version");
-        if ((result.state === "running" || result.state === "checking") && attempt < 12) {
-          schedulePanelVersionPoll(attempt + 1);
+        // Фоновая проверка стартует с задержкой (systemd-run --on-active=2s) и
+        // сначала статус-файл содержит предыдущий результат. Ждём именно свежий
+        // ответ (checked_at вырос), иначе текст версии не обновится без перезагрузки.
+        const fresh = !baseline || Number(result.checked_at || 0) > baseline;
+        if (((result.state === "running" || result.state === "checking") || !fresh) && attempt < 12) {
+          schedulePanelVersionPoll(attempt + 1, baseline);
           return;
         }
         renderPanelVersion(result);
       } catch (_) {
-        if (attempt < 12) schedulePanelVersionPoll(attempt + 1);
+        if (attempt < 12) schedulePanelVersionPoll(attempt + 1, baseline);
       }
     }, 2500);
   }
@@ -1082,10 +1086,14 @@
   }
 
   async function checkPanelUpdate(manual = true) {
+    let snapshot = null;
+    try { snapshot = await api("panel/version"); }
+    catch (error) { if (manual) toast(error.message, true); }
     try { await api("panel/check", { method: "POST" }); }
     catch (error) { if (manual) toast(error.message, true); return; }
     if (manual) toast("Проверяю обновления…");
-    schedulePanelVersionPoll(0);
+    if (snapshot) renderPanelVersion({ ...snapshot, state: "checking", message: "" });
+    schedulePanelVersionPoll(0, Number((snapshot && snapshot.checked_at) || 0));
   }
 
   async function updatePanel() {
