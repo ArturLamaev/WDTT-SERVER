@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.8.2"
+PANEL_VERSION="1.8.3"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -930,7 +930,7 @@ EOF
 }
 
 # WDTT-SERVER: запоминает каталог git-репозитория для веб-обновления, чтобы
-# панель могла выполнить git pull. Срабатывает только когда install.sh запущен
+# панель могла выполнить git reset --hard. Срабатывает только когда install.sh запущен
 # из самого репозитория (рядом есть .git и корневой install.sh).
 record_source_repo() {
   local repo
@@ -947,13 +947,14 @@ record_source_repo() {
 # WDTT-SERVER: обёртка самообновления. Запускается вне systemd-песочницы панели
 # (через systemd-run) от root и умеет два режима:
 #   check  — git fetch и запись доступной версии в self-update-status.json;
-#   update — git pull, install.sh update (конфиг сохраняется) и полный перезапуск.
+#   update — git reset --hard до origin, install.sh update (конфиг сохраняется)
+#            и полный перезапуск. Историю не мержит, а перезаписывает.
 # Панель лишь читает статус и запускает обёртку, поэтому её sandbox не мешает.
 write_self_update_wrapper() {
   cat > "$SELF_UPDATE_WRAPPER" <<'EOF'
 #!/bin/sh
 # WDTT-SERVER panel self-update helper (check|update). Runs as root outside the
-# panel sandbox. Поведение: git pull -> install.sh update -> restart служб.
+# panel sandbox. Поведение: git reset --hard -> install.sh update -> restart служб.
 set -eu
 
 SOURCE_CONF="/etc/wdtt-panel/source.conf"
@@ -1029,6 +1030,21 @@ resolve_repo() {
   printf '%s' "$WDTT_REPO_DIR"
 }
 
+robust_fetch() {
+  # Принудительно перезаписывает remote-tracking ветки: переживает force-push
+  # (история переписана) и гонку двух процессов check/update, когда второй
+  # падает с "cannot lock ref ... but expected ...".
+  attempt=1
+  while [ "$attempt" -le 5 ]; do
+    if git -C "$REPO" fetch --force --prune origin "+refs/heads/*:refs/remotes/origin/*" >>"$LOG_FILE" 2>&1; then
+      return 0
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 mkdir -p "$(dirname "$STATUS_FILE")"
 
 CUR="$(current_version)"
@@ -1046,7 +1062,7 @@ case "$MODE" in
     fi
     log "check: git fetch в $REPO"
     set_status checking "$CUR" "" 0 "Проверка обновлений"
-    if ! git -C "$REPO" fetch --prune >>"$LOG_FILE" 2>&1; then
+    if ! robust_fetch; then
       set_status error "$CUR" "" 0 "git fetch не удался (см. $LOG_FILE)"
       exit 1
     fi
@@ -1073,32 +1089,17 @@ case "$MODE" in
     BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD 2>/dev/null || echo main)"
     UPSTREAM="origin/$BRANCH"
     log "update: git fetch в $REPO"
-    if ! git -C "$REPO" fetch --prune >>"$LOG_FILE" 2>&1; then
+    if ! robust_fetch; then
       set_status error "$CUR" "" 0 "git fetch не удался (см. $LOG_FILE)"
       exit 1
     fi
-    # Незакоммиченные правки в файлах, которые тоже изменились в origin, мешают
-    # слиянию. Перезаписываем ТОЛЬКО такие файлы версией origin, а все прочие
-    # незакоммиченные изменения оставляем как есть.
-    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-self-update.XXXXXX")"
-    git -C "$REPO" diff --name-only HEAD > "$WORK_DIR/local" 2>/dev/null || true
-    git -C "$REPO" diff --name-only HEAD "$UPSTREAM" > "$WORK_DIR/upstream" 2>/dev/null || true
-    grep -Fxf "$WORK_DIR/local" "$WORK_DIR/upstream" > "$WORK_DIR/conflicts" 2>/dev/null || true
-    if [ -s "$WORK_DIR/conflicts" ]; then
-      while IFS= read -r changed; do
-        [ -n "$changed" ] || continue
-        log "update: локальная правка в $changed перезаписана версией origin"
-        git -C "$REPO" checkout -- "$changed" >>"$LOG_FILE" 2>&1 || true
-      done < "$WORK_DIR/conflicts"
-    fi
-    rm -rf "$WORK_DIR"
-    WORK_DIR=""
-    log "update: обновление рабочего дерева до $UPSTREAM"
-    if ! git -C "$REPO" merge --ff-only "$UPSTREAM" >>"$LOG_FILE" 2>&1; then
-      if ! git -C "$REPO" pull >>"$LOG_FILE" 2>&1; then
-        set_status error "$CUR" "" 0 "git pull не удался (см. $LOG_FILE)"
-        exit 1
-      fi
+    # Историю не мержим, а перезаписываем: reset --hard переживает force-push,
+    # разошедшиеся ветки и любые правки в отслеживаемых файлах. Неотслеживаемые
+    # файлы (userdata, бэкапы) не трогаем — чистку через clean не делаем.
+    log "update: сброс рабочего дерева до $UPSTREAM"
+    if ! git -C "$REPO" reset --hard "$UPSTREAM" >>"$LOG_FILE" 2>&1; then
+      set_status error "$CUR" "" 0 "git reset не удался (см. $LOG_FILE)"
+      exit 1
     fi
     log "update: install.sh update"
     if ! bash "$REPO/install.sh" update >>"$LOG_FILE" 2>&1; then

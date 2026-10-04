@@ -1100,7 +1100,7 @@
 
   async function updatePanel() {
     const button = $("#update-panel");
-    if (!confirm("Обновить панель? Будет выполнен git pull, переустановка с сохранением конфига и перезапуск панели, ядра WDTT и демонов. Панель временно отключится.")) return;
+    if (!confirm("Обновить панель? Репозиторий будет принудительно синхронизирован с origin (git reset --hard), затем переустановка с сохранением конфига и перезапуск панели, ядра WDTT и демонов. Панель временно отключится.")) return;
     setBusy(button, true);
     try {
       await api("panel/update", { method: "POST" });
