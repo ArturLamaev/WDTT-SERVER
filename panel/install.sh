@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.9.0"
+PANEL_VERSION="1.9.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1691,9 +1691,19 @@ EOF
   systemctl reload nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось применить временную ACME-конфигурацию Nginx"; return 1; }
 }
 
+# Старый ufw (Debian 9 / Astra 2.12, ufw 0.35) не знает ключевое слово comment:
+# пробуем с комментарием, при неудаче — без него, иначе порт молча остаётся закрыт.
+ufw_allow() {
+  local spec="$1" comment="$2"
+  if ufw allow "$spec" comment "$comment" >/dev/null 2>&1; then
+    return 0
+  fi
+  ufw allow "$spec" >/dev/null 2>&1 || log "WARN: ufw не открыл $spec"
+}
+
 open_acme_firewall() {
   if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw allow 80/tcp comment 'WDTT Panel ACME' >/dev/null || true
+    ufw_allow "80/tcp" "WDTT Panel ACME"
   elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
     firewall-cmd --permanent --add-port=80/tcp >/dev/null || true
     firewall-cmd --reload >/dev/null || true
@@ -1952,7 +1962,7 @@ renew_certificates() {
 open_firewall() {
   [ "${HTTP_ENABLED:-0}" = "1" ] && open_acme_firewall
   if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw allow "$PANEL_HTTPS_PORT/tcp" comment 'WDTT Panel HTTPS' >/dev/null || true
+    ufw_allow "$PANEL_HTTPS_PORT/tcp" "WDTT Panel HTTPS"
   elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
     firewall-cmd --permanent --add-port="$PANEL_HTTPS_PORT/tcp" >/dev/null || true
     firewall-cmd --reload >/dev/null || true

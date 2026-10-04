@@ -186,6 +186,20 @@ detect_wan_interface() {
 # ─── Firewall helpers ────────────────────────────────────────────────────────
 FW_BACKEND=""
 
+ufw_is_active() {
+    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "Status: active"
+}
+
+# Порты ядра нужно регистрировать и в ufw, когда он активен: одних raw-iptables
+# при default-deny недостаточно. Старый ufw (Debian 9 / Astra 2.12) не знает
+# ключевое слово comment — пробуем с ним, при неудаче без него.
+ufw_allow_port() {
+    # $1 = proto, $2 = port
+    ufw allow "$2/$1" comment "WDTT" >/dev/null 2>&1 || \
+        ufw allow "$2/$1" >/dev/null 2>&1 || \
+        log_warn "ufw не открыл $2/$1"
+}
+
 iptables_add_input() {
     local proto="$1" port="$2" comment="$3"
     [ "$FW_BACKEND" = "iptables" ] || return 0
@@ -252,6 +266,9 @@ detect_firewall() {
 # ─── Firewall-абстракция ─────────────────────────────────────────────────────
 fw_add_input_udp() {
     local port="$1"
+    if ufw_is_active; then
+        ufw_allow_port udp "$port"
+    fi
     case "$FW_BACKEND" in
         iptables)
             iptables -C INPUT -p udp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \
@@ -276,6 +293,9 @@ fw_restrict_wg_to_loopback() {
 
 fw_add_input_tcp() {
     local port="$1"
+    if ufw_is_active; then
+        ufw_allow_port tcp "$port"
+    fi
     case "$FW_BACKEND" in
         iptables)
             iptables -C INPUT -p tcp --dport "$port" -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null || \

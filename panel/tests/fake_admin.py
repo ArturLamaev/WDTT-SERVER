@@ -135,7 +135,7 @@ elif action == "autoclean.settings":
 elif action == "autoclean.run":
     result = {"ran": False, "reason": "below_threshold", "disk_percent": 25.0, "threshold": 90, "settings": {"enabled": True, "disk_percent": 90, "keep_panel": 20, "keep_users": 20, "keep_days": 14}}
 elif action == "panel.version":
-    result = {"current": "1.9.0", "latest": "1.9.0", "update_available": False, "state": "ok", "message": "", "checked_at": 0}
+    result = {"current": "1.9.1", "latest": "1.9.1", "update_available": False, "state": "ok", "message": "", "checked_at": 0}
 elif action in {"panel.check", "panel.update"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "telegram.status":

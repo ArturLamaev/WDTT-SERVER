@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.9.0"', installer)
-        self.assertIn('__version__ = "1.9.0"', package)
-        self.assertIn("Текущая версия: 1.9.0", readme)
+        self.assertIn('PANEL_VERSION="1.9.1"', installer)
+        self.assertIn('__version__ = "1.9.1"', package)
+        self.assertIn("Текущая версия: 1.9.1", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -416,6 +416,20 @@ class InstallScriptTests(unittest.TestCase):
         deploy = (ROOT.parent / "src" / "proxy-turn-vk-android-1.4.3" / "app" / "src" / "main" / "assets" / "deploy.sh").read_text(encoding="utf-8")
         self.assertIn("astra", deploy)
         self.assertIn("ID_LIKE", deploy)
+
+    def test_firewall_helpers_support_old_ufw_without_comment(self):
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("ufw_allow()", installer)
+        self.assertIn('ufw allow "$spec" comment "$comment"', installer)
+        self.assertIn('ufw allow "$spec"', installer)
+        self.assertIn('ufw_allow "80/tcp"', installer)
+        self.assertIn('ufw_allow "$PANEL_HTTPS_PORT/tcp"', installer)
+        self.assertNotIn("ufw allow 80/tcp comment", installer)
+        deploy = (ROOT.parent / "src" / "proxy-turn-vk-android-1.4.3" / "app" / "src" / "main" / "assets" / "deploy.sh").read_text(encoding="utf-8")
+        self.assertIn("ufw_is_active()", deploy)
+        self.assertIn("ufw_allow_port()", deploy)
+        self.assertIn('ufw_allow_port udp "$port"', deploy)
+        self.assertIn('ufw_allow_port tcp "$port"', deploy)
 
     def test_panel_self_update_wrapper_uses_git_and_install(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
