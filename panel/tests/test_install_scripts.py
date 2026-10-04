@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.8.3"', installer)
-        self.assertIn('__version__ = "1.8.3"', package)
-        self.assertIn("Текущая версия: 1.8.3", readme)
+        self.assertIn('PANEL_VERSION="1.9.0"', installer)
+        self.assertIn('__version__ = "1.9.0"', package)
+        self.assertIn("Текущая версия: 1.9.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -400,6 +400,22 @@ class InstallScriptTests(unittest.TestCase):
     def test_dialog_cancel_buttons_skip_required_field_validation(self):
         html = (ROOT / "wdtt_panel" / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertEqual(html.count('value="cancel" formnovalidate'), 8)
+
+    def test_distro_detection_supports_astra_and_id_like(self):
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("astra", installer)
+        self.assertIn("ID_LIKE", installer)
+        self.assertIn("ensure_modern_python", installer)
+        self.assertIn("IS_ASTRA", installer)
+        self.assertIn("(3, 8)", installer)
+        self.assertIn("3.9.22", installer)
+        self.assertIn("PYTHON3_BIN", installer)
+        self.assertIn("exec $PYTHON3_BIN -m wdtt_panel.admin", installer)
+        self.assertIn("ExecStart=$PYTHON3_BIN -m wdtt_panel.app", installer)
+        self.assertNotIn("exec /usr/bin/python3", installer)
+        deploy = (ROOT.parent / "src" / "proxy-turn-vk-android-1.4.3" / "app" / "src" / "main" / "assets" / "deploy.sh").read_text(encoding="utf-8")
+        self.assertIn("astra", deploy)
+        self.assertIn("ID_LIKE", deploy)
 
     def test_panel_self_update_wrapper_uses_git_and_install(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")

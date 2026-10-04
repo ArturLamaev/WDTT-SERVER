@@ -25,7 +25,7 @@
 └── VERSIONS.md                        заморозка версий + список изменений
 ```
 
-## Быстрая установка (Ubuntu 22.04+/Debian 12+)
+## Быстрая установка (Ubuntu 22.04+/Debian 12+/Astra Linux)
 
 ```bash
 git clone https://git.a9fm.best/a9fm/WDTT-SERVER.git && cd WDTT-SERVER
@@ -101,7 +101,7 @@ sudo systemctl restart wdtt
 
 ## Требования
 
-- Ubuntu 22.04/24.04 или Debian 12+ (clean VPS, root);
+- Ubuntu 22.04/24.04, Debian 12+ или Astra Linux (на базе Debian, clean VPS, root);
 - публичный IPv4 (для панели и VPN), открытые TCP 80/443/9999 и UDP 56000-56001/9000;
 - интернет при первой сборке (Go toolchain + Go-модули).
   Повторные сборки используют кэш `env/`.

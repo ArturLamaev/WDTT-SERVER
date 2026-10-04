@@ -95,13 +95,24 @@ detect_os() {
     fi
     . /etc/os-release
     OS_ID="${ID:-unknown}"
+    OS_LIKE="${ID_LIKE:-}"
     case "$OS_ID" in
-        ubuntu|debian|linuxmint|pop)     PKG_MGR="apt" ;;
+        ubuntu|debian|linuxmint|pop|astra) PKG_MGR="apt" ;;
         centos|rhel|rocky|almalinux|oracle) PKG_MGR="yum"
             command -v dnf &>/dev/null && PKG_MGR="dnf" ;;
         fedora)                          PKG_MGR="dnf" ;;
         arch|manjaro|endeavouros)        PKG_MGR="pacman" ;;
-        *) die "Неподдерживаемый дистрибутив: $OS_ID" ;;
+        *)
+            # Деривативы (Astra Linux, Альт, РОСА и др.) опознаём по ID_LIKE.
+            case " $OS_LIKE " in
+                *" debian "*|*" ubuntu "*) PKG_MGR="apt" ;;
+                *" rhel "*|*" fedora "*|*" centos "*)
+                    PKG_MGR="yum"
+                    command -v dnf &>/dev/null && PKG_MGR="dnf" ;;
+                *" arch "*) PKG_MGR="pacman" ;;
+                *) die "Неподдерживаемый дистрибутив: $OS_ID (ID_LIKE=${OS_LIKE:-пусто})" ;;
+            esac
+            ;;
     esac
     log_info "ОС: ${PRETTY_NAME:-$OS_ID} | PM: $PKG_MGR"
 }

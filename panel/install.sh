@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.8.3"
+PANEL_VERSION="1.9.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -143,16 +143,100 @@ require_root() {
 
 detect_os() {
   [ -r /etc/os-release ] || die "Не найден /etc/os-release"
+  # shellcheck disable=SC1091
   . /etc/os-release
   OS_ID="${ID:-unknown}"
+  OS_LIKE="${ID_LIKE:-}"
+  # Astra Linux опознаём отдельно: только для неё разрешена автосборка Python
+  # (про остальные старые дистрибутивы неизвестно, заведётся ли сборка).
+  IS_ASTRA=0
+  if [ -f /etc/astra_version ] || [[ "${OS_ID,,}" == *astra* ]] || [[ "${OS_LIKE,,}" == *astra* ]]; then
+    IS_ASTRA=1
+  fi
   case "$OS_ID" in
-    ubuntu|debian|linuxmint|pop) PKG="apt" ;;
+    ubuntu|debian|linuxmint|pop|astra) PKG="apt" ;;
     fedora|rhel|centos|rocky|almalinux|oracle) command_exists dnf && PKG="dnf" || PKG="yum" ;;
     arch|manjaro|endeavouros) PKG="pacman" ;;
-    *) die "Неподдерживаемый дистрибутив: $OS_ID" ;;
+    *)
+      # Деривативы (Astra Linux, Альт, РОСА и др.) опознаём по ID_LIKE.
+      case " $OS_LIKE " in
+        *" debian "*|*" ubuntu "*) PKG="apt" ;;
+        *" rhel "*|*" fedora "*|*" centos "*) command_exists dnf && PKG="dnf" || PKG="yum" ;;
+        *" arch "*) PKG="pacman" ;;
+        *) die "Неподдерживаемый дистрибутив: $OS_ID (ID_LIKE=${OS_LIKE:-пусто})" ;;
+      esac
+      ;;
   esac
   log "ОС: ${PRETTY_NAME:-$OS_ID}"
   if command_exists nginx; then NGINX_WAS_INSTALLED=1; else NGINX_WAS_INSTALLED=0; fi
+}
+
+# Панель использует dataclasses/f-строки — нужен Python 3.8+.
+# Путь к нему запоминаем в PYTHON3_BIN и подставляем в юнит и admin-обёртку:
+# на Astra Linux собранный вручную Python 3.9 живёт в /usr/local/bin,
+# а не в /usr/bin, и хардкод сломал бы запуск панели.
+PYTHON3_BIN="/usr/bin/python3"
+PYTHON_BUILD_VERSION="3.9.22"
+
+resolve_python_bin() {
+  PYTHON3_BIN="$(command -v python3 2>/dev/null || echo /usr/bin/python3)"
+}
+
+python_version_ok() {
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
+}
+
+# На Astra Linux (штатный Python 3.5 в 2.12) автоматически собираем
+# Python 3.9.22 из исходников: это новейшая ветка, которая ещё собирается
+# с OpenSSL 1.1.0 таких систем (3.10+ потеряет ssl-модуль).
+# На остальных дистрибутивах автосборка отключена — только понятная ошибка.
+ensure_modern_python() {
+  command_exists python3 || die "python3 не найден после установки пакетов"
+  if python_version_ok; then
+    resolve_python_bin
+    log "Python: $(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])') ($PYTHON3_BIN)"
+    return 0
+  fi
+  [ "$IS_ASTRA" = "1" ] || die "Нужен Python 3.8+, а в системе $(python3 --version 2>&1). Автосборка Python включена только для Astra Linux — поставьте python3.8+ вручную и повторите установку"
+  command_exists curl || die "curl нужен для скачивания исходников Python"
+  log "python3 старше 3.8 — собираю Python $PYTHON_BUILD_VERSION из исходников (займёт несколько минут)"
+  local build_tmp="${TMPDIR:-/tmp}" free_mb jobs src_dir
+  free_mb="$(df -m "$build_tmp" 2>/dev/null | awk 'NR==2 {print $4}')"
+  [ "${free_mb:-0}" -ge 1200 ] || die "Для сборки Python нужно ≥1200 МБ свободно в $build_tmp (сейчас ${free_mb:-?} МБ)"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev libncurses5-dev libncursesw5-dev xz-utils tk-dev liblzma-dev >>"$LOG_FILE" 2>&1 \
+    || log "WARN: часть build-зависимостей Python не встала — пробую собрать с доступными"
+  jobs="$(nproc 2>/dev/null || echo 1)"
+  src_dir="$build_tmp/Python-$PYTHON_BUILD_VERSION"
+  rm -rf "$src_dir" "$build_tmp/python-src.tgz"
+  curl -fsSL --max-time 300 "https://www.python.org/ftp/python/$PYTHON_BUILD_VERSION/Python-$PYTHON_BUILD_VERSION.tgz" -o "$build_tmp/python-src.tgz" >>"$LOG_FILE" 2>&1 \
+    || die "Не скачался Python $PYTHON_BUILD_VERSION с python.org (см. $LOG_FILE)"
+  tar -xzf "$build_tmp/python-src.tgz" -C "$build_tmp" >>"$LOG_FILE" 2>&1 \
+    || die "Не распаковался архив Python $PYTHON_BUILD_VERSION"
+  if ! (
+    cd "$src_dir" || exit 1
+    ./configure --with-ensurepip=install --enable-loadable-sqlite-extensions >>/tmp/python-configure.log 2>&1 \
+      && make -j"$jobs" >>/tmp/python-make.log 2>&1 \
+      && make altinstall >>/tmp/python-altinstall.log 2>&1
+  ); then
+    log "Параллельная сборка не удалась — повторяю в один поток (для слабых VM)"
+    (
+      cd "$src_dir" || exit 1
+      ./configure --with-ensurepip=install --enable-loadable-sqlite-extensions >>/tmp/python-configure.log 2>&1 \
+        && make -j1 >>/tmp/python-make.log 2>&1 \
+        && make altinstall >>/tmp/python-altinstall.log 2>&1
+    ) || die "Сборка Python $PYTHON_BUILD_VERSION не удалась (см. /tmp/python-*.log)"
+  fi
+  # altinstall не трогает системный /usr/bin/python3; /usr/local/bin раньше
+  # в PATH, поэтому python3 теперь указывает на 3.9.
+  ln -sf /usr/local/bin/python3.9 /usr/local/bin/python3
+  ln -sf /usr/local/bin/python3.9 /usr/local/bin/python
+  ln -sf /usr/local/bin/pip3.9 /usr/local/bin/pip3
+  ln -sf /usr/local/bin/pip3.9 /usr/local/bin/pip
+  rm -rf "$src_dir" "$build_tmp/python-src.tgz"
+  resolve_python_bin
+  python_version_ok || die "Сборка прошла, но python3 всё ещё старше 3.8 ($(python3 --version 2>&1), $PYTHON3_BIN)"
+  log "Python: $(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])') ($PYTHON3_BIN)"
 }
 
 install_packages() {
@@ -909,10 +993,10 @@ install_panel_files() {
   find "$INSTALL_DIR/wdtt_panel" -type d -exec chmod 0755 {} +
   find "$INSTALL_DIR/wdtt_panel" -type f -exec chmod 0644 {} +
 
-  cat > "$ADMIN_WRAPPER" <<'EOF'
+  cat > "$ADMIN_WRAPPER" <<EOF
 #!/bin/sh
 cd /opt/wdtt-panel || exit 1
-exec /usr/bin/python3 -m wdtt_panel.admin
+exec $PYTHON3_BIN -m wdtt_panel.admin
 EOF
   chown root:root "$ADMIN_WRAPPER"
   chmod 0755 "$ADMIN_WRAPPER"
@@ -1509,7 +1593,7 @@ Type=simple
 $panel_user_lines
 $panel_admin_env
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/python3 -m wdtt_panel.app
+ExecStart=$PYTHON3_BIN -m wdtt_panel.app
 Restart=on-failure
 RestartSec=3
 UMask=0027
@@ -2037,6 +2121,7 @@ uninstall_panel() {
 
 update_panel() {
   require_root
+  resolve_python_bin
   load_panel_config
   log "Обновление панели до версии $PANEL_VERSION"
   remove_obsolete_fleet_agent
@@ -2063,6 +2148,7 @@ install_panel() {
   require_root
   detect_os
   install_packages
+  ensure_modern_python
   if [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
     rm -f /etc/nginx/sites-enabled/default
   fi
