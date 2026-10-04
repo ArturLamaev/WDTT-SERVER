@@ -39,7 +39,7 @@
     renderTheme();
   }
 
-  const ACCENTS = ["red", "orange", "yellow", "green", "blue", "purple"];
+  const ACCENTS = ["red", "orange", "yellow", "green", "blue", "purple", "ukraine"];
 
   function renderAccent() {
     const current = document.body.dataset.accent || "red";

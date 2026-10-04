@@ -28,4 +28,4 @@
 Версия хранится синхронно в `panel/install.sh` (`PANEL_VERSION`),
 `panel/wdtt_panel/__init__.py` (`__version__`) и `panel/README.md`
 («Текущая версия»); согласованность проверяет `test_version_is_consistent`.
-Историю вести в `VERSIONS.md`. Текущая версия — `1.7.0`.
+Историю вести в `VERSIONS.md`. Текущая версия — `1.8.0`.
