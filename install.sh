@@ -145,6 +145,7 @@ wipe_previous_install() {
   systemctl stop wdtt wdtt-panel wdtt-app 2>/dev/null || true
   systemctl disable wdtt wdtt-panel wdtt-app 2>/dev/null || true
   pkill -x wdtt-server 2>/dev/null || true
+  uninstall_wdtt_kernel
   rm -f /etc/systemd/system/wdtt.service /etc/systemd/system/wdtt-app.service \
         /etc/systemd/system/wdtt-panel.service /etc/systemd/system/wdtt-panel-wdtt-extensions.* \
         /etc/systemd/system/wdtt-auto-restart.* /etc/systemd/system/wdtt-fleet-agent.service 2>/dev/null || true
@@ -288,6 +289,18 @@ print_final_notes() {
 # ---------------------------------------------------------------------------
 # Полный тейкдаун: панель + ядро WDTT + данные, с резервной копией
 # ---------------------------------------------------------------------------
+# Штатное удаление ядра официальным deploy.sh: сервис, интерфейс, NAT/firewall,
+# sysctl. Идущие дальше ручные rm — fallback для остатков и данных.
+uninstall_wdtt_kernel() {
+  local deploy="$KERNEL_DIR/app/src/main/assets/deploy.sh"
+  if [ -f "$deploy" ]; then
+    info "Удаляю ядро WDTT штатным deploy.sh (сервис, интерфейс, NAT, firewall, sysctl)..."
+    bash "$deploy" uninstall >>/var/log/wdtt-panel-install.log 2>&1 || true
+  else
+    info "WARN: deploy.sh ядра не найден ($deploy) — удаляю ядро вручную"
+  fi
+}
+
 cmd_uninstall() {
   local auto=0 a ts backup_file
   for a in "$@"; do
@@ -320,7 +333,9 @@ cmd_uninstall() {
   info "Удаляю web-панель (штатным снос-скриптом)..."
   bash "$PANEL_INSTALL" uninstall "$@" || true
 
-  info "Удаляю авто-рестарт, ядро WDTT и лефтоверы..."
+  uninstall_wdtt_kernel
+
+  info "Удаляю авто-рестарт, остатки ядра WDTT и лефтоверы..."
   systemctl disable --now wdtt-auto-restart.timer wdtt-auto-restart.service 2>/dev/null || true
   rm -f /etc/systemd/system/wdtt-auto-restart.* 2>/dev/null || true
   systemctl stop wdtt 2>/dev/null || true

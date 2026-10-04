@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.9.3"
+PANEL_VERSION="1.9.4"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -2128,9 +2128,10 @@ uninstall_panel() {
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   remove_firewall_rule "$panel_port" tcp
-  # Порты ядра WDTT. 80/443 осознанно не трогаем: их могли открыть раньше
-  # для других служб. SSH-порт тоже не трогаем, чтобы не потерять доступ.
-  for kernel_port in 56000 56001; do
+  # Порты ядра WDTT (56000/56001 — DTLS/WG, 56002 — admin; открывает deploy.sh).
+  # 80/443 осознанно не трогаем: их могли открыть раньше для других служб.
+  # SSH-порт тоже не трогаем, чтобы не потерять доступ.
+  for kernel_port in 56000 56001 56002; do
     remove_firewall_rule "$kernel_port" tcp
     remove_firewall_rule "$kernel_port" udp
   done

@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.9.3"', installer)
-        self.assertIn('__version__ = "1.9.3"', package)
-        self.assertIn("Текущая версия: 1.9.3", readme)
+        self.assertIn('PANEL_VERSION="1.9.4"', installer)
+        self.assertIn('__version__ = "1.9.4"', package)
+        self.assertIn("Текущая версия: 1.9.4", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -420,7 +420,7 @@ class InstallScriptTests(unittest.TestCase):
     def test_uninstall_closes_wdtt_ports_but_keeps_80_443(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn('local port="$1" proto="${2:-tcp}"', installer)
-        self.assertIn('for kernel_port in 56000 56001', installer)
+        self.assertIn('for kernel_port in 56000 56001 56002', installer)
         self.assertIn('remove_firewall_rule "$panel_port" tcp', installer)
         self.assertIn('remove_firewall_rule "$kernel_port" tcp', installer)
         self.assertIn('remove_firewall_rule "$kernel_port" udp', installer)
@@ -443,6 +443,13 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("ufw_allow_port()", deploy)
         self.assertIn('ufw_allow_port udp "$port"', deploy)
         self.assertIn('ufw_allow_port tcp "$port"', deploy)
+
+    def test_root_uninstall_removes_kernel_via_deploy(self):
+        root_installer = (ROOT.parent / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("uninstall_wdtt_kernel()", root_installer)
+        self.assertIn("uninstall_wdtt_kernel() {", root_installer)
+        self.assertIn("app/src/main/assets/deploy.sh", root_installer)
+        self.assertIn('"$deploy" uninstall', root_installer)
 
     def test_panel_self_update_wrapper_uses_git_and_install(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
