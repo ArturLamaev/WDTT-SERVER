@@ -124,3 +124,9 @@ sudo systemctl restart wdtt
 - Ядро: https://github.com/SpaceNeuroX/proxy-turn-vk-android (v1.4.3)
 - Панель: https://github.com/lebrit/wdtt-control-panel (0.12.3)
 - Проект-предок (svariant): https://github.com/ildarmaga/wdtt
+
+## Авторы
+
+Полный список — в [CREDITS.md](CREDITS.md): оригинальный WDTT (amurcanov),
+ядро qWDTT (SpaceNeuroX), панель (lebrit), проект-предок (ildarmaga),
+maintainer форка WDTT-SERVER — [a9fm](https://git.a9fm.best/a9fm).
