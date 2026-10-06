@@ -11,6 +11,17 @@
 - новый функционал/фича → минор (`+0.1`), например `1.0.0 → 1.1.0`;
 - мажорная обнова → мажор (`+1.0`), например `1.0.0 → 2.0.0`.
 
+## 1.9.6
+
+Лимит GeoFile поднят с 64 до 128 МБ (upstream lebrit/wdtt-control-panel#10):
+
+- `geosite.dat` из `runetfreedom/russia-v2ray-rules-dat` весит ~74 МБ
+  и отвергался панелью («превышает 64 МБ»), из-за чего каскад RU → EU
+  нельзя было включить через UI на дефолтном источнике GeoFiles;
+- единая константа `GEOFILE_MAX_BYTES = 128 МБ` покрывает загрузку
+  (`geofile_from_payload`), обновление (`refresh_geofile`) и скачивание
+  Xray-ассетов (`xray_download_geofile`).
+
 ## 1.9.5
 
 Починка маршрутизации WDTT → Xray/WARP (upstream lebrit/wdtt-control-panel#3):

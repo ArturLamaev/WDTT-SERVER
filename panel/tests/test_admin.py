@@ -1289,5 +1289,44 @@ class PanelUpdateTests(unittest.TestCase):
         self.assertIn("--collect", calls[0])
 
 
+class GeofileSizeLimitTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.patchers = [
+            mock.patch.object(admin, "GEOFILES_DIR", root / "geofiles"),
+            mock.patch.object(admin, "XRAY_ASSETS", root / "xray-assets"),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.temp.cleanup()
+
+    def test_geofile_max_bytes_is_128mb(self):
+        self.assertEqual(admin.GEOFILE_MAX_BYTES, 128 * 1024 * 1024)
+
+    def test_geofile_upload_accepts_runetfreedom_size(self):
+        payload = {
+            "name": "geosite.srs",
+            "tag": "geosite",
+            "kind": "srs",
+            "content": base64.b64encode(b"x" * (74 * 1024 * 1024)).decode("ascii"),
+        }
+        self.assertEqual(admin.geofile_from_payload(payload)["tag"], "geosite")
+
+    def test_geofile_upload_rejects_over_limit(self):
+        payload = {
+            "name": "big.srs",
+            "tag": "big",
+            "kind": "srs",
+            "content": base64.b64encode(b"x" * (admin.GEOFILE_MAX_BYTES + 1)).decode("ascii"),
+        }
+        with self.assertRaisesRegex(admin.ValidationError, "128 МБ"):
+            admin.geofile_from_payload(payload)
+
+
 if __name__ == "__main__":
     unittest.main()

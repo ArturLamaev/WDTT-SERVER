@@ -92,6 +92,9 @@ WARP_DIR = Path(os.environ.get("WDTT_WARP_DIR", "/var/lib/wdtt-panel-private/war
 GEOFILES_DIR = Path(
     os.environ.get("WDTT_GEOFILES_DIR", "/var/lib/wdtt-panel-private/geofiles")
 )
+# Лимит размера GeoFile: runetfreedom geosite.dat весит ~74 МБ и не влезал
+# в прежние 64 МБ (upstream lebrit/wdtt-control-panel#10).
+GEOFILE_MAX_BYTES = 128 * 1024 * 1024
 CASCADE_SERVICE = os.environ.get("WDTT_CASCADE_SERVICE", "wdtt-cascade.service")
 CASCADE_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_CASCADE_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
@@ -2722,8 +2725,8 @@ def geofile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raw = base64.b64decode(content, validate=True)
     except ValueError as exc:
         raise ValidationError("GeoFile передан в неверном формате") from exc
-    if not raw or len(raw) > 64 * 1024 * 1024:
-        raise ValidationError("GeoFile пустой или превышает 64 МБ")
+    if not raw or len(raw) > GEOFILE_MAX_BYTES:
+        raise ValidationError("GeoFile пустой или превышает 128 МБ")
     GEOFILES_DIR.mkdir(parents=True, exist_ok=True)
     source = GEOFILES_DIR / filename
     source.write_bytes(raw)
@@ -2783,11 +2786,11 @@ def refresh_geofile(payload: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request(str(item["url"]), headers={"User-Agent": "wdtt-control-panel"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read(64 * 1024 * 1024 + 1)
+            raw = response.read(GEOFILE_MAX_BYTES + 1)
     except (OSError, urllib.error.URLError) as exc:
         raise AdminError(f"Не удалось загрузить GeoFile: {exc}") from exc
-    if len(raw) > 64 * 1024 * 1024:
-        raise ValidationError("Удаленный GeoFile превышает 64 МБ")
+    if len(raw) > GEOFILE_MAX_BYTES:
+        raise ValidationError("Удаленный GeoFile превышает 128 МБ")
     updated = geofile_from_payload(
         {
             **item,
@@ -3742,11 +3745,11 @@ def xray_download_geofile(item: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={"User-Agent": "wdtt-control-panel"})
     try:
         with urllib.request.urlopen(request, timeout=45) as response:
-            raw = response.read(64 * 1024 * 1024 + 1)
+            raw = response.read(GEOFILE_MAX_BYTES + 1)
     except (OSError, urllib.error.URLError) as exc:
         raise AdminError(f"Не удалось загрузить GeoFile {item.get('tag', '')}: {exc}") from exc
-    if not raw or len(raw) > 64 * 1024 * 1024:
-        raise ValidationError(f"GeoFile {item.get('tag', '')} пустой или превышает 64 МБ")
+    if not raw or len(raw) > GEOFILE_MAX_BYTES:
+        raise ValidationError(f"GeoFile {item.get('tag', '')} пустой или превышает 128 МБ")
     XRAY_ASSETS.mkdir(parents=True, exist_ok=True)
     destination = XRAY_ASSETS / str(item["filename"])
     fd, name = tempfile.mkstemp(prefix=f"{destination.name}.", suffix=".tmp", dir=XRAY_ASSETS)
