@@ -1,6 +1,7 @@
 import json
 import base64
 import errno
+import ipaddress
 import sqlite3
 import subprocess
 import tempfile
@@ -1128,6 +1129,29 @@ class AdminDatabaseTests(unittest.TestCase):
         config = admin.build_effective_xray_config(xray, routing)
         google_rule = next(rule for rule in config["routing"]["rules"] if rule.get("domain") == ["domain:gemini.google.com"])
         self.assertEqual(google_rule["outboundTag"], "eu-vless")
+
+    def test_wdtt_client_cidr_covers_whole_kernel_pool(self):
+        # Ядро раздаёт 10.66.0.1 → 10.66.255.254 (getNextIP, wgServerCIDR /16),
+        # дефолты шлюза/каскада обязаны покрывать весь пул (issue #3).
+        self.assertEqual(admin.default_xray_settings()["gateway_source_cidr"], "10.66.0.0/16")
+        self.assertEqual(admin.default_xray_cascade_settings()["source_cidr"], "10.66.0.0/16")
+        gateway = ipaddress.ip_network(admin.default_xray_settings()["gateway_source_cidr"])
+        for client_ip in ("10.66.0.2", "10.66.0.24", "10.66.1.5", "10.66.66.2", "10.66.255.254"):
+            self.assertIn(ipaddress.ip_address(client_ip), gateway, client_ip)
+        narrow = ipaddress.ip_network("10.66.66.0/24")
+        self.assertNotIn(ipaddress.ip_address("10.66.0.2"), narrow)
+
+    def test_legacy_client_cidrs_migrate_to_full_pool(self):
+        gateway_file = self.xray_settings
+        gateway_file.write_text(json.dumps({"gateway_source_cidr": "10.66.66.0/24"}), encoding="utf-8")
+        self.assertEqual(admin.load_xray_settings()["gateway_source_cidr"], "10.66.0.0/16")
+        gateway_file.write_text(json.dumps({"gateway_source_cidr": "10.66.0.0/24"}), encoding="utf-8")
+        self.assertEqual(admin.load_xray_settings()["gateway_source_cidr"], "10.66.0.0/16")
+        cascade_file = self.xray_cascade_settings
+        cascade_file.write_text(json.dumps({"source_cidr": "10.66.66.0/24"}), encoding="utf-8")
+        self.assertEqual(admin.load_xray_cascade_settings()["source_cidr"], "10.66.0.0/16")
+        cascade_file.write_text(json.dumps({"source_cidr": "10.66.0.0/24"}), encoding="utf-8")
+        self.assertEqual(admin.load_xray_cascade_settings()["source_cidr"], "10.66.0.0/16")
 
     def test_warp_profile_becomes_xray_wireguard_outbound(self):
         self.warp_dir.mkdir()

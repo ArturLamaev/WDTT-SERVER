@@ -1442,7 +1442,7 @@
       $("#xray-log-level").value = state.xray.log_level || "warning";
       $("#xray-access-log").checked = Boolean(state.xray.access_log);
       $("#xray-gateway-enabled").checked = Boolean(state.xray.gateway_enabled);
-      $("#xray-gateway-source-cidr").value = state.xray.gateway_source_cidr || "10.66.66.0/24";
+      $("#xray-gateway-source-cidr").value = state.xray.gateway_source_cidr || "10.66.0.0/16";
       $("#xray-gateway-inbound-port").value = state.xray.gateway_inbound_port || 12346;
       state.xrayGateway = result.gateway || null;
       $("#xray-raw-config").value = state.xray.raw_config || "";
@@ -1512,7 +1512,7 @@
     state.cascade = result;
     const settings = result.settings || {};
     $("#cascade-enabled").checked = Boolean(settings.enabled);
-    $("#cascade-source-cidr").value = settings.source_cidr || "10.66.66.0/24";
+    $("#cascade-source-cidr").value = settings.source_cidr || "10.66.0.0/16";
     $("#cascade-inbound-port").value = settings.inbound_port || 12345;
     $("#cascade-geosite-category").value = settings.geosite_category || "ru-blocked";
     $("#cascade-geoip-category").value = settings.geoip_category || "ru-blocked";

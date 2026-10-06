@@ -117,6 +117,14 @@ XRAY_CASCADE_SETTINGS = Path(
 )
 XRAY_CASCADE_SERVICE = os.environ.get("WDTT_XRAY_CASCADE_SERVICE", "wdtt-xray-cascade.service")
 XRAY_GATEWAY_SERVICE = os.environ.get("WDTT_XRAY_GATEWAY_SERVICE", "wdtt-xray-gateway.service")
+# Клиентская подсеть ядра WDTT (server/core.go: wgServerCIDR = 10.66.66.1/16,
+# server/database_bot.go: getNextIP выдаёт 10.66.0.1 → 10.66.255.254).
+# Шлюз WDTT → Xray и каскад обязаны матчить всю /16 через TPROXY -s:
+# дефолт 10.66.66.0/24 покрывал лишь ~0.4% пула (первые юзеры получают
+# 10.66.0.x), статус выглядел активным, а трафик в Xray/WARP не попадал
+# (upstream lebrit/wdtt-control-panel#3).
+WDTT_CLIENT_CIDR = "10.66.0.0/16"
+LEGACY_CLIENT_CIDRS = frozenset({"10.66.66.0/24", "10.66.0.0/24"})
 IPTABLES_BINARY: str | None = None
 XTABLES_LOCK_FILE = os.environ.get("WDTT_XTABLES_LOCK_FILE", "/var/lib/wdtt-panel-private/xtables.lock")
 XRAY_ACCESS_LOG = Path(
@@ -2828,7 +2836,7 @@ def default_xray_settings() -> dict[str, Any]:
         "log_level": "warning",
         "access_log": False,
         "gateway_enabled": False,
-        "gateway_source_cidr": "10.66.66.0/24",
+        "gateway_source_cidr": WDTT_CLIENT_CIDR,
         "gateway_inbound_port": 12346,
         "inbounds": [],
         "outbounds": [],
@@ -2883,9 +2891,13 @@ def load_xray_settings() -> dict[str, Any]:
     settings["gateway_enabled"] = bool(settings.get("gateway_enabled", False))
     try:
         gateway_network = ipaddress.ip_network(str(settings.get("gateway_source_cidr") or ""), strict=False)
-        settings["gateway_source_cidr"] = str(gateway_network) if gateway_network.version == 4 and gateway_network.prefixlen <= 30 else "10.66.66.0/24"
+        raw_gateway = str(settings.get("gateway_source_cidr") or "").strip()
+        if raw_gateway in LEGACY_CLIENT_CIDRS:
+            settings["gateway_source_cidr"] = WDTT_CLIENT_CIDR
+        else:
+            settings["gateway_source_cidr"] = str(gateway_network) if gateway_network.version == 4 and gateway_network.prefixlen <= 30 else WDTT_CLIENT_CIDR
     except ValueError:
-        settings["gateway_source_cidr"] = "10.66.66.0/24"
+        settings["gateway_source_cidr"] = WDTT_CLIENT_CIDR
     try:
         gateway_port = int(settings.get("gateway_inbound_port") or 12346)
         settings["gateway_inbound_port"] = gateway_port if 1024 <= gateway_port <= 65535 else 12346
@@ -3195,7 +3207,7 @@ def build_xray_config(settings: dict[str, Any], extra_outbound_tags: set[str] | 
 def default_xray_cascade_settings() -> dict[str, Any]:
     return {
         "enabled": False,
-        "source_cidr": "10.66.66.0/24",
+        "source_cidr": WDTT_CLIENT_CIDR,
         "inbound_port": 12345,
         "eu_vless_uri": "",
         "geosite_category": "ru-blocked",
@@ -3214,6 +3226,8 @@ def load_xray_cascade_settings() -> dict[str, Any]:
                 settings.update(saved)
         except (OSError, json.JSONDecodeError):
             pass
+    if str(settings.get("source_cidr") or "").strip() in LEGACY_CLIENT_CIDRS:
+        settings["source_cidr"] = WDTT_CLIENT_CIDR
     return settings
 
 
