@@ -19,6 +19,7 @@
     <nav>
       <button class="nav-item active" data-tab="dashboard">Обзор</button>
       <button class="nav-item" data-tab="users">Пользователи</button>
+      <button class="nav-item" data-tab="wdtt">WDTT</button>
       <button class="nav-item" data-tab="xray">Xray</button>
       <button class="nav-item" data-tab="logs">Журналы</button>
       <button class="nav-item" data-tab="system">Система</button>
@@ -122,6 +123,39 @@
       </article>
     </section>
 
+    <section class="tab" id="tab-wdtt">
+      <div class="section-head"><div><p class="eyebrow">WDTT INBOUND</p><h2>Подключение WDTT</h2><p class="muted">Сохранение переписывает ExecStart в wdtt.service и перезапускает ядро — активные туннели разорвутся на несколько секунд.</p></div><div class="inline-actions"><span id="wdtt-extension-status" class="muted">проверка расширения…</span></div></div>
+      <div class="system-grid">
+        <article class="panel-card">
+          <p class="eyebrow">LISTEN</p><h2>Адреса и порты</h2>
+          <div class="form-grid compact-grid">
+            <label>Адрес прослушивания<input id="wdtt-listen-host" placeholder="0.0.0.0"></label>
+            <label>DTLS-порт<input id="wdtt-dtls-port" type="number" min="1" max="65535" step="1"></label>
+            <label>WireGuard-порт<input id="wdtt-wg-port" type="number" min="1" max="65535" step="1"></label>
+            <label class="wide">DNS клиентов<input id="wdtt-dns" placeholder="1.1.1.1"></label>
+            <label>Direct-порт (0 — выкл)<input id="wdtt-direct-port" type="number" min="0" max="65535" step="1"></label>
+            <label>RAW-порт (0 — выкл)<input id="wdtt-raw-port" type="number" min="0" max="65535" step="1"></label>
+            <label>Лимит пользователей<input id="wdtt-max-users" type="number" min="1" max="10000" step="1"></label>
+            <label class="wide">Admin HTTP<input id="wdtt-admin-listen" placeholder="0.0.0.0:56002 (пусто — выкл)"></label>
+          </div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">ADVANCED</p><h2>Расширенные</h2>
+          <div class="form-grid compact-grid">
+            <label>DTLS handshake, сек<input id="wdtt-handshake-timeout" type="number" min="5" max="300" step="1"></label>
+            <label>Онлайн-таймаут, сек<input id="wdtt-first-packet-timeout" type="number" min="5" max="120" step="1"></label>
+            <label>WG keepalive, сек<input id="wdtt-wg-keepalive" type="number" min="0" max="300" step="1"></label>
+            <label>Интервал stats, сек<input id="wdtt-stats-interval" type="number" min="2" max="3600" step="1"></label>
+            <label>MTU<input id="wdtt-mtu" type="number" min="576" max="9000" step="1"></label>
+            <label>DTLS на device (0 — без лимита)<input id="wdtt-max-dtls" type="number" min="0" max="100" step="1"></label>
+            <label class="wide">Окно онлайна, сек<input id="wdtt-online-window" type="number" min="10" max="600" step="1"></label>
+          </div>
+          <p id="wdtt-tunables-note" class="muted">Расширенные параметры ядра требуют расширение v10 (ставится автоматически при обновлении панели).</p>
+          <div class="button-row"><button id="save-wdtt-settings" class="primary">Сохранить настройки WDTT</button></div>
+        </article>
+      </div>
+    </section>
+
     <section class="tab" id="tab-logs">
       <div class="section-head"><div><p class="eyebrow">FULL DIAGNOSTICS</p><h2>Полные журналы служб</h2><p class="muted">Выберите источник, загрузите до 5000 строк и при необходимости скачайте файл для диагностики. Для проверки правил включите в Xray «Журнал доменов и маршрутов»: «домены и маршруты» покажет, куда ушёл запрос, а «ошибки соединений» — почему он не открылся.</p></div><div class="inline-actions"><select id="log-source"><option value="wdtt">WDTT</option><option value="xray">Xray / WARP</option><option value="xray-access">Xray: домены и маршруты</option><option value="xray-errors">Xray: ошибки соединений</option><option value="cascade">Каскад RU → EU</option><option value="panel">Панель</option><option value="nginx">Nginx</option><option value="installer">Установщик</option><option value="all">Все службы</option></select><select id="log-limit"><option value="500">500 строк</option><option value="1000" selected>1000 строк</option><option value="2000">2000 строк</option><option value="5000">5000 строк</option></select><select id="log-filter"><option value="">Без фильтра</option><option value="[СТАТ]">Статистика</option><option value="[WG]">WireGuard</option><option value="[WRAP]">WRAP</option><option value="[DTLS]">DTLS</option><option value="[WARP]">WARP</option><option value="error">error</option><option value="failed">failed</option></select><button id="download-logs" class="secondary">Скачать</button><button id="load-logs" class="primary">Загрузить</button></div></div>
       <p id="logs-summary" class="muted">Выберите источник журнала.</p>
@@ -180,7 +214,7 @@
           <div class="button-row"><button id="save-telegram" class="primary">Сохранить Telegram</button><button id="test-telegram" class="secondary">Отправить тест</button></div>
         </article>
         <article class="panel-card">
-          <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div><div class="button-row"><button id="renew-certificate" class="secondary">Проверить/обновить</button><button id="download-certificate" class="secondary">Скачать сертификат</button></div>
+          <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div><div class="form-grid compact-grid"><label class="wide">Домен или IP<input id="domain-host" placeholder="panel.example.com — пусто: оставить текущий"></label><label class="wide">Email для Let's Encrypt<input id="domain-email" placeholder="admin@example.com (необязательно)"></label></div><p class="muted">Привязка домена перевыпускает сертификат (Let's Encrypt, иначе self-signed), обновляет nginx и перезапускает панель. A-запись домена должна указывать на этот сервер, TCP 80 открыт.</p><div class="button-row"><button id="renew-certificate" class="secondary">Проверить/обновить</button><button id="download-certificate" class="secondary">Скачать сертификат</button><button id="change-domain" class="primary">Привязать домен</button></div>
         </article>
         <article class="panel-card wide">
           <div class="section-head"><div><p class="eyebrow">PANEL UPDATE</p><h2>Версия панели</h2></div><div class="inline-actions"><button id="check-panel-update" class="secondary">Проверить обновления</button><button id="update-panel" class="primary" hidden>Обновить панель</button></div></div>
@@ -226,6 +260,8 @@
         </div>
         <label>Порты<input id="edit-ports" value="56000,56001,9000" required></label>
         <label>Количество устройств<input id="edit-max-devices" type="number" min="1" max="10000" step="1" value="10000" title="Сколько устройств может подключиться к ключу: 1–10000, где 10000 — без ограничения"></label>
+        <label>Скорость вниз, Мбит/с<input id="edit-max-down" type="number" min="0" max="10000" step="0.5" value="0" title="Лимит входящей скорости клиента через tc HTB: 0 — без ограничения"></label>
+        <label>Скорость вверх, Мбит/с<input id="edit-max-up" type="number" min="0" max="10000" step="0.5" value="0" title="Лимит исходящей скорости клиента через tc ingress policer: 0 — без ограничения"></label>
         <label class="checkbox wide"><input id="edit-unlimited" type="checkbox"> Бессрочный доступ</label>
         <label class="checkbox wide"><input id="edit-disabled" type="checkbox"> Деактивировать</label>
       </div>
@@ -250,6 +286,8 @@
         </div>
         <label>Порты<input id="bulk-ports" value="56000,56001,9000" required></label>
         <label>Количество устройств каждому<input id="bulk-max-devices" type="number" min="1" max="10000" step="1" value="10000" title="Сколько устройств может подключиться к каждому ключу: 1–10000, где 10000 — без ограничения"></label>
+        <label>Скорость вниз каждому, Мбит/с<input id="bulk-max-down" type="number" min="0" max="10000" step="0.5" value="0" title="0 — без ограничения"></label>
+        <label>Скорость вверх каждому, Мбит/с<input id="bulk-max-up" type="number" min="0" max="10000" step="0.5" value="0" title="0 — без ограничения"></label>
         <label class="checkbox wide"><input id="bulk-unlimited" type="checkbox"> Бессрочный доступ</label>
         <label class="checkbox wide"><input id="bulk-disabled" type="checkbox"> Создать деактивированными</label>
       </div>

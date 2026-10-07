@@ -153,8 +153,26 @@ elif action == "cascade.status":
     result = {"settings": {"enabled": False, "source_cidr": "10.66.66.0/24", "inbound_port": 12345, "eu_vless_uri": "", "geosite_category": "ru-blocked", "geoip_category": "ru-blocked", "domains": [], "ip_cidrs": []}, "xray_active": False, "service_active": False, "rules_active": False, "eu_summary": ""}
 elif action == "warp.ping":
     result = {"ok": True, "latency_ms": 42, "warp": "on", "ip": "198.51.100.10", "colo": "FRA"}
-elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew"}:
+elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew", "certificate.change_domain", "wdtt.save"}:
     result = {"scheduled": True, "state": "test"}
+elif action == "wdtt.settings":
+    result = {
+        "listen_host": "0.0.0.0",
+        "dtls_port": 56000,
+        "wg_port": 56001,
+        "dns": "1.1.1.1",
+        "direct_port": 0,
+        "raw_port": 0,
+        "max_users": 10000,
+        "admin_listen": "0.0.0.0:56002",
+        "handshake_timeout_s": 60,
+        "first_packet_timeout_s": 30,
+        "wg_keepalive_s": 25,
+        "wg_mtu": 1280,
+        "stats_interval_s": 10,
+        "max_dtls_per_device": 0,
+        "online_window_s": 75,
+    }
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}
 elif action == "backups.export":

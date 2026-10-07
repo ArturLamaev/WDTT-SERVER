@@ -437,6 +437,9 @@ class Panel:
             "cascade": "cascade.status",
             "cascade/save": "cascade.save",
             "cascade/restart": "cascade.restart",
+            "wdtt": "wdtt.settings",
+            "wdtt/save": "wdtt.save",
+            "certificate/change-domain": "certificate.change_domain",
         }
         if route == "history" and method == "GET":
             return self.json_response(start_response, 200, self.history())
@@ -445,7 +448,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status", "wdtt.settings"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})

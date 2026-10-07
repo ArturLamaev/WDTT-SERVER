@@ -37,6 +37,7 @@ from .core import (
     normalize_hash,
     normalize_hashes,
     normalize_max_devices,
+    normalize_speed_mbps,
     normalize_user_label,
     parse_expiration,
     traffic_quota,
@@ -44,6 +45,7 @@ from .core import (
     user_view,
     validate_password,
     validate_ports,
+    validate_public_host,
 )
 
 
@@ -52,7 +54,7 @@ PANEL_STATE_DB = Path(os.environ.get("WDTT_PANEL_STATE", "/var/lib/wdtt-panel/pa
 VK_HASH_LIMIT = 4
 PANEL_LABELS_FILE = Path(os.environ.get("WDTT_PANEL_LABELS_FILE", "/var/lib/wdtt-panel-private/user-labels.json"))
 WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdtt-panel-private/wdtt-extensions.json"))
-WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v9"
+WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v10"
 STATS_FILE = Path(os.environ.get("WDTT_STATS_FILE", "/etc/wdtt/server.log"))
 BACKUP_DIR = Path(os.environ.get("WDTT_BACKUP_DIR", "/var/lib/wdtt-panel-private/backups"))
 BACKUP_FORMAT = "wdtt-panel-backup-v1"
@@ -71,6 +73,7 @@ AUTOCLEAN_SERVICE_FILE = Path(os.environ.get("WDTT_AUTOCLEAN_SERVICE_FILE", f"/e
 AUTOCLEAN_RUNNER = Path(os.environ.get("WDTT_AUTOCLEAN_RUNNER", "/usr/local/sbin/wdtt-panel-autoclean"))
 WDTT_UNIT_FILE = Path(os.environ.get("WDTT_UNIT_FILE", "/etc/systemd/system/wdtt.service"))
 WDTT_BOT_TOKEN_FILE = Path(os.environ.get("WDTT_BOT_TOKEN_FILE", "/etc/wdtt/bot.token"))
+WDTT_SETTINGS_FILE = Path(os.environ.get("WDTT_SETTINGS_FILE", "/var/lib/wdtt-panel-private/wdtt-settings.json"))
 LOCK_FILE = Path(os.environ.get("WDTT_LOCK_FILE", "/var/lib/wdtt-panel-private/admin.lock"))
 SERVICE = os.environ.get("WDTT_SERVICE", "wdtt.service")
 SKIP_SYSTEMD = os.environ.get("WDTT_SKIP_SYSTEMD") == "1"
@@ -645,7 +648,9 @@ def entry_with_legacy_label(data: dict[str, Any], password: str, entry: dict[str
     return entry
 
 
-def _admin_device_records(data: dict[str, Any], handshakes: dict[str, int]) -> list[dict[str, Any]]:
+def _admin_device_records(
+    data: dict[str, Any], handshakes: dict[str, int], window: int = 75
+) -> list[dict[str, Any]]:
     user_device_ids = {
         device_id
         for entry in data.get("passwords", {}).values()
@@ -664,7 +669,7 @@ def _admin_device_records(data: dict[str, Any], handshakes: dict[str, int]) -> l
                 "device_id": device_id,
                 "ip": str(device.get("ip") or ""),
                 "last_handshake": last_handshake,
-                "connected": handshake_is_active(last_handshake),
+                "connected": handshake_is_active(last_handshake, window),
             }
         )
     records.sort(key=lambda record: record["device_id"])
@@ -675,6 +680,7 @@ def list_users() -> dict[str, Any]:
     data = load_database()
     panel_labels = {} if wdtt_extensions_are_verified() else load_panel_labels()
     handshakes = wireguard_handshakes()
+    window = int(load_wdtt_settings().get("online_window_s") or 75)
     users = [
         connected_user_view(
             user_view(
@@ -683,11 +689,12 @@ def list_users() -> dict[str, Any]:
                 data["devices"],
             ).as_dict(),
             handshakes,
+            window,
         )
         for password, entry in data["passwords"].items()
     ]
     users.sort(key=lambda item: (item["expired"], item["is_deactivated"], item["password"]))
-    records = _admin_device_records(data, handshakes)
+    records = _admin_device_records(data, handshakes, window)
     main_traffic_supported = "main_down_bytes" in data or "main_up_bytes" in data
     admins: list[dict[str, Any]] = []
     if data.get("main_password") or records:
@@ -812,7 +819,7 @@ def handshake_is_active(stamp: int, window: int = 75) -> bool:
     return stamp > 0 and time.time() - stamp <= window
 
 
-def connected_user_view(user: dict[str, Any], handshakes: dict[str, int]) -> dict[str, Any]:
+def connected_user_view(user: dict[str, Any], handshakes: dict[str, int], window: int = 75) -> dict[str, Any]:
     devices = user.get("devices") or []
     if not devices:
         device = user.get("device") or {}
@@ -827,7 +834,7 @@ def connected_user_view(user: dict[str, Any], handshakes: dict[str, int]) -> dic
     for item in devices:
         public_key = str(item.get("pub_key") or "")
         last_handshake = int(handshakes.get(public_key) or 0)
-        item["connected"] = handshake_is_active(last_handshake)
+        item["connected"] = handshake_is_active(last_handshake, window)
         item["last_handshake"] = last_handshake
         max_handshake = max(max_handshake, last_handshake)
     user["devices"] = devices
@@ -923,6 +930,8 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
     vk_hash = normalize_hashes(raw_vk_hash) if raw_vk_hash else ""
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
     max_devices = normalize_max_devices(payload.get("max_devices"))
+    max_down_mbps = normalize_speed_mbps(payload.get("max_down_mbps"))
+    max_up_mbps = normalize_speed_mbps(payload.get("max_up_mbps"))
     label = normalize_user_label(str(payload.get("label") or ""))
     library = read_vk_hash_library()
     if not vk_hash and not library:
@@ -932,11 +941,14 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
         if password in data["passwords"] or password == data.get("main_password"):
             raise ValidationError("Такой пароль уже существует")
-        if len(data["passwords"]) >= MAX_USERS:
-            raise ValidationError(f"Лимит WDTT: не более {MAX_USERS} пользователей")
+        user_limit = wdtt_effective_user_limit()
+        if len(data["passwords"]) >= user_limit:
+            raise ValidationError(f"Лимит WDTT: не более {user_limit} пользователей")
         entry = {
             "device_id": "",
             "max_devices": max_devices,
+            "max_down_mbps": max_down_mbps,
+            "max_up_mbps": max_up_mbps,
             "expires_at": expires_at,
             "down_bytes": 0,
             "up_bytes": 0,
@@ -971,12 +983,15 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
     expires_at = parse_expiration(payload)
     ports = validate_ports(str(payload.get("ports") or "56000,56001,9000"))
     max_devices = normalize_max_devices(payload.get("max_devices"))
+    max_down_mbps = normalize_speed_mbps(payload.get("max_down_mbps"))
+    max_up_mbps = normalize_speed_mbps(payload.get("max_up_mbps"))
     is_deactivated = bool(payload.get("is_deactivated", False))
     label_prefix = normalize_user_label(str(payload.get("label_prefix") or ""))
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
-        available = MAX_USERS - len(data["passwords"])
+        user_limit = wdtt_effective_user_limit()
+        available = user_limit - len(data["passwords"])
         if count > available:
             raise ValidationError(f"Доступно мест: {available}; запрошено пользователей: {count}")
 
@@ -996,6 +1011,8 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
             entry = {
                 "device_id": "",
                 "max_devices": max_devices,
+                "max_down_mbps": max_down_mbps,
+                "max_up_mbps": max_up_mbps,
                 "expires_at": expires_at,
                 "down_bytes": 0,
                 "up_bytes": 0,
@@ -1038,6 +1055,10 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
             entry["ports"] = validate_ports(str(payload["ports"]))
         if "max_devices" in payload:
             entry["max_devices"] = normalize_max_devices(payload["max_devices"])
+        if "max_down_mbps" in payload:
+            entry["max_down_mbps"] = normalize_speed_mbps(payload["max_down_mbps"])
+        if "max_up_mbps" in payload:
+            entry["max_up_mbps"] = normalize_speed_mbps(payload["max_up_mbps"])
         if "label" in payload:
             entry["label"] = normalize_user_label(str(payload["label"] or ""))
         if any(key in payload for key in ("days", "expires_at", "unlimited")):
@@ -2373,6 +2394,351 @@ def local_tls_status(host: str, port: int) -> dict[str, Any]:
     except OSError as exc:
         result["error"] = str(exc)
     return result
+
+
+def default_wdtt_settings() -> dict[str, Any]:
+    """Глобальные настройки ядра WDTT (вкладка «WDTT» в панели).
+
+    Значения по умолчанию повторяют хардкоды ядра и deploy.sh:
+    DTLS 56000, WG 56001, admin 56002, DNS 1.1.1.1, MTU 1280, keepalive 25.
+    """
+    return {
+        "listen_host": "0.0.0.0",
+        "dtls_port": 56000,
+        "wg_port": 56001,
+        "dns": "1.1.1.1",
+        "direct_port": 0,
+        "raw_port": 0,
+        "max_users": MAX_USERS,
+        "admin_listen": "0.0.0.0:56002",
+        "handshake_timeout_s": 60,
+        "first_packet_timeout_s": 30,
+        "wg_keepalive_s": 25,
+        "wg_mtu": 1280,
+        "stats_interval_s": 10,
+        "max_dtls_per_device": 0,
+        "online_window_s": 75,
+    }
+
+
+def _normalize_wdtt_listen_host(value: Any) -> str:
+    host = str(value or "").strip()
+    if not host:
+        return "0.0.0.0"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValidationError("Адрес прослушивания должен быть IPv4") from exc
+    if address.version != 4:
+        raise ValidationError("Адрес прослушивания должен быть IPv4")
+    return str(address)
+
+
+def _normalize_wdtt_port(value: Any, name: str, default: int) -> int:
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} должен быть числом") from exc
+    if not 1 <= port <= 65535:
+        raise ValidationError(f"{name} должен быть в диапазоне 1-65535")
+    return port
+
+
+def _normalize_wdtt_optional_port(value: Any) -> int:
+    if value is None or str(value).strip() == "":
+        return 0
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Опциональный порт должен быть числом") from exc
+    if not 0 <= port <= 65535:
+        raise ValidationError("Опциональный порт должен быть в диапазоне 0-65535 (0 — выключено)")
+    return port
+
+
+def _normalize_wdtt_dns(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValidationError("Укажите DNS для клиентов")
+    servers = [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+    if not 1 <= len(servers) <= 3:
+        raise ValidationError("Укажите от 1 до 3 DNS-серверов через запятую")
+    return ",".join(validate_public_host(server) for server in servers)
+
+
+def _normalize_wdtt_int(value: Any, name: str, minimum: int, maximum: int, default: int) -> int:
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} должен быть целым числом") from exc
+    if not minimum <= number <= maximum:
+        raise ValidationError(f"{name} должен быть в диапазоне {minimum}-{maximum}")
+    return number
+
+
+def _normalize_wdtt_admin_listen(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    host, separator, port = raw.rpartition(":")
+    if not separator or not host:
+        raise ValidationError("Admin HTTP задаётся как адрес:порт")
+    return f"{_normalize_wdtt_listen_host(host)}:{_normalize_wdtt_port(port, 'Admin HTTP порт', 56002)}"
+
+
+def normalize_wdtt_settings(payload: dict[str, Any], base: dict[str, Any] | None = None) -> dict[str, Any]:
+    current = dict(base) if isinstance(base, dict) else default_wdtt_settings()
+    merged = {**default_wdtt_settings(), **current, **(payload or {})}
+    return {
+        "listen_host": _normalize_wdtt_listen_host(merged.get("listen_host")),
+        "dtls_port": _normalize_wdtt_port(merged.get("dtls_port"), "DTLS-порт", 56000),
+        "wg_port": _normalize_wdtt_port(merged.get("wg_port"), "WireGuard-порт", 56001),
+        "dns": _normalize_wdtt_dns(merged.get("dns")),
+        "direct_port": _normalize_wdtt_optional_port(merged.get("direct_port")),
+        "raw_port": _normalize_wdtt_optional_port(merged.get("raw_port")),
+        "max_users": _normalize_wdtt_int(merged.get("max_users"), "Лимит пользователей", 1, MAX_USERS, MAX_USERS),
+        "admin_listen": _normalize_wdtt_admin_listen(merged.get("admin_listen")),
+        "handshake_timeout_s": _normalize_wdtt_int(merged.get("handshake_timeout_s"), "DTLS handshake", 5, 300, 60),
+        "first_packet_timeout_s": _normalize_wdtt_int(
+            merged.get("first_packet_timeout_s"), "Онлайн-таймаут", 5, 120, 30
+        ),
+        "wg_keepalive_s": _normalize_wdtt_int(merged.get("wg_keepalive_s"), "WG keepalive", 0, 300, 25),
+        "wg_mtu": _normalize_wdtt_int(merged.get("wg_mtu"), "MTU", 576, 9000, 1280),
+        "stats_interval_s": _normalize_wdtt_int(merged.get("stats_interval_s"), "Интервал stats", 2, 3600, 10),
+        "max_dtls_per_device": _normalize_wdtt_int(
+            merged.get("max_dtls_per_device"), "DTLS на device", 0, 100, 0
+        ),
+        "online_window_s": _normalize_wdtt_int(merged.get("online_window_s"), "Окно онлайна", 10, 600, 75),
+    }
+
+
+def _seed_wdtt_settings_from_unit() -> dict[str, Any]:
+    """Первичные значения из текущего ExecStart wdtt.service (best effort)."""
+    seed: dict[str, Any] = {}
+    try:
+        lines = WDTT_UNIT_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return seed
+    for line in lines:
+        if not line.startswith("ExecStart="):
+            continue
+        try:
+            tokens = shlex.split(line.split("=", 1)[1])
+        except ValueError:
+            continue
+        args = tokens[1:]
+        index = 0
+        while index < len(args):
+            token = args[index]
+            name, equals, inline = token.partition("=")
+            value = inline if equals else (args[index + 1] if index + 1 < len(args) else "")
+            if not equals:
+                index += 1
+            if name in {"-listen", "--listen"} and ":" in value:
+                host, _, port = value.rpartition(":")
+                seed["listen_host"] = host
+                seed["dtls_port"] = port
+            elif name in {"-wg-port", "--wg-port"}:
+                seed["wg_port"] = value
+            elif name in {"-dns", "--dns"}:
+                seed["dns"] = value
+            elif name in {"-listen-direct", "--listen-direct"} and ":" in value:
+                seed["direct_port"] = value.rpartition(":")[2]
+            elif name in {"-listen-raw", "--listen-raw"} and ":" in value:
+                seed["raw_port"] = value.rpartition(":")[2]
+            elif name in {"-admin-listen", "--admin-listen"}:
+                seed["admin_listen"] = value
+            elif name == "-handshake-timeout":
+                seed["handshake_timeout_s"] = value.rstrip("s")
+            elif name == "-first-packet-timeout":
+                seed["first_packet_timeout_s"] = value.rstrip("s")
+            elif name == "-wg-keepalive":
+                seed["wg_keepalive_s"] = value
+            elif name == "-wg-mtu":
+                seed["wg_mtu"] = value
+            elif name == "-stats-interval":
+                seed["stats_interval_s"] = value.rstrip("s")
+            elif name == "-max-dtls-per-device":
+                seed["max_dtls_per_device"] = value
+            index += 1
+    return seed
+
+
+def load_wdtt_settings() -> dict[str, Any]:
+    try:
+        stored = json.loads(WDTT_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    if not stored and not WDTT_SETTINGS_FILE.is_file():
+        stored = _seed_wdtt_settings_from_unit()
+    try:
+        return normalize_wdtt_settings(stored)
+    except ValidationError:
+        return normalize_wdtt_settings({})
+
+
+def wdtt_effective_user_limit() -> int:
+    return min(MAX_USERS, int(load_wdtt_settings().get("max_users") or MAX_USERS))
+
+
+def _set_wdtt_service_flag(
+    tokens: list[str], names: set[str], canonical: str, value: str | None
+) -> list[str]:
+    """Заменить/добавить/убрать флаг в ExecStart. value None — убрать флаг."""
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        name, equals, _ = token.partition("=")
+        if name in names:
+            if equals:
+                index += 1
+                continue
+            index += 2
+            continue
+        result.append(token)
+        index += 1
+    if value is not None:
+        result.extend([canonical, value])
+    return result
+
+
+def set_wdtt_service_inbound(settings: dict[str, Any], runtime_tunables: bool) -> bool:
+    """Переписать известные флаги ExecStart wdtt.service из настроек панели.
+
+    Неизвестные аргументы (admin-токены, bot-token-file, пути) сохраняются.
+    Возвращает True, если файл изменился.
+    """
+    if not WDTT_UNIT_FILE.is_file():
+        raise AdminError(f"Не найден {WDTT_UNIT_FILE}; настройте wdtt.service вручную")
+    lines = WDTT_UNIT_FILE.read_text(encoding="utf-8").splitlines()
+    changed = False
+    found = False
+    next_lines: list[str] = []
+    for line in lines:
+        if not line.startswith("ExecStart="):
+            next_lines.append(line)
+            continue
+        found = True
+        try:
+            tokens = shlex.split(line.split("=", 1)[1])
+        except ValueError as exc:
+            raise AdminError(f"Не удалось разобрать ExecStart в {WDTT_UNIT_FILE}: {exc}") from exc
+        if not tokens:
+            raise AdminError(f"Пустой ExecStart в {WDTT_UNIT_FILE}")
+        binary, args = tokens[0], tokens[1:]
+        args = _set_wdtt_service_flag(
+            args, {"-listen", "--listen"}, "-listen", f"{settings['listen_host']}:{settings['dtls_port']}"
+        )
+        args = _set_wdtt_service_flag(args, {"-wg-port", "--wg-port"}, "-wg-port", str(settings["wg_port"]))
+        args = _set_wdtt_service_flag(args, {"-dns", "--dns"}, "-dns", str(settings["dns"]))
+        args = _set_wdtt_service_flag(
+            args,
+            {"-listen-direct", "--listen-direct"},
+            "-listen-direct",
+            f"0.0.0.0:{settings['direct_port']}" if settings["direct_port"] else None,
+        )
+        args = _set_wdtt_service_flag(
+            args,
+            {"-listen-raw", "--listen-raw"},
+            "-listen-raw",
+            f"0.0.0.0:{settings['raw_port']}" if settings["raw_port"] else None,
+        )
+        args = _set_wdtt_service_flag(
+            args,
+            {"-admin-listen", "--admin-listen"},
+            "-admin-listen",
+            str(settings["admin_listen"] or "") or None,
+        )
+        if runtime_tunables:
+            args = _set_wdtt_service_flag(
+                args, {"-handshake-timeout"}, "-handshake-timeout", f"{settings['handshake_timeout_s']}s"
+            )
+            args = _set_wdtt_service_flag(
+                args,
+                {"-first-packet-timeout"},
+                "-first-packet-timeout",
+                f"{settings['first_packet_timeout_s']}s",
+            )
+            args = _set_wdtt_service_flag(
+                args, {"-wg-keepalive"}, "-wg-keepalive", str(settings["wg_keepalive_s"])
+            )
+            args = _set_wdtt_service_flag(args, {"-wg-mtu"}, "-wg-mtu", str(settings["wg_mtu"]))
+            args = _set_wdtt_service_flag(
+                args, {"-stats-interval"}, "-stats-interval", f"{settings['stats_interval_s']}s"
+            )
+            args = _set_wdtt_service_flag(
+                args, {"-max-dtls-per-device"}, "-max-dtls-per-device", str(settings["max_dtls_per_device"])
+            )
+        next_line = "ExecStart=" + " ".join(systemd_exec_token(token) for token in [binary, *args])
+        changed = changed or next_line != line
+        next_lines.append(next_line)
+    if not found:
+        raise AdminError(f"В {WDTT_UNIT_FILE} не найден ExecStart")
+    if changed:
+        write_systemd_unit(WDTT_UNIT_FILE, "\n".join(next_lines) + "\n")
+        reloaded = run(["systemctl", "daemon-reload"], timeout=45)
+        if reloaded.returncode != 0:
+            raise AdminError(reloaded.stderr.strip() or "Не удалось обновить systemd после настройки WDTT")
+    return changed
+
+
+def save_wdtt_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = normalize_wdtt_settings(payload, load_wdtt_settings())
+    save_private_json(WDTT_SETTINGS_FILE, settings)
+    if SKIP_SYSTEMD:
+        return {"saved": settings, "applied": False, "state": "test"}
+    # Новые флаги понимает только ядро с расширением v10; на старом бинарнике
+    # неизвестный флаг уронит старт — пишем только legacy-флаги и просим обновиться.
+    tunables = wdtt_extensions_are_verified()
+    changed = set_wdtt_service_inbound(settings, tunables)
+    was_active = service_active()
+    restarted = False
+    if was_active:
+        result = run(["systemctl", "restart", SERVICE], timeout=60)
+        if result.returncode != 0:
+            raise AdminError(result.stderr.strip() or "Не удалось перезапустить WDTT с новыми настройками")
+        restarted = True
+    return {
+        "saved": settings,
+        "applied": changed or restarted,
+        "restarted": restarted,
+        "active": service_active(),
+        "runtime_tunables": tunables,
+        "extension_pending": not tunables,
+    }
+
+
+def change_panel_domain(payload: dict[str, Any]) -> dict[str, Any]:
+    host = validate_public_host(str(payload.get("host") or ""))
+    email = str(payload.get("email") or "").strip()
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise ValidationError("Некорректный email для Let's Encrypt")
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test", "host": host}
+    unit = f"wdtt-panel-domain-{int(time.time())}"
+    command = [
+        "systemd-run",
+        "--quiet",
+        "--collect",
+        f"--unit={unit}",
+        "--on-active=2s",
+        f"--setenv=PANEL_HOST={host}",
+        str(PANEL_RENEW_COMMAND),
+        "change-domain",
+    ]
+    if email:
+        command.insert(-2, f"--setenv=PANEL_EMAIL={email}")
+    result = run_transient_unit(command, timeout=20)
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать смену домена")
+    return {"scheduled": True, "unit": unit, "host": host}
 
 
 def default_cascade_settings() -> dict[str, Any]:
@@ -4109,6 +4475,11 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "disk": {"total": disk.total, "used": disk.used, "free": disk.free, "percent": disk_percent},
         "certificate": certificate,
+        "wdtt": {
+            "settings": load_wdtt_settings(),
+            "extension_current": wdtt_extensions_are_verified(),
+            "extension_marker": WDTT_EXTENSION_MARKER,
+        },
         "timestamp": int(time.time()),
     }
 
@@ -4167,6 +4538,9 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "cascade.restart": cascade_restart,
     "cascade.apply": cascade_apply_rules,
     "cascade.remove": cascade_remove_rules,
+    "wdtt.settings": lambda payload: load_wdtt_settings(),
+    "wdtt.save": save_wdtt_settings,
+    "certificate.change_domain": change_panel_domain,
 }
 
 

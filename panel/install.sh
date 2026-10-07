@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.9.7"
+PANEL_VERSION="1.10.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +60,7 @@ GO_VERSION="${GO_VERSION:-1.25.0}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
-WDTT_EXTENSION_MARKER="wdtt-panel-extension-v9"
+WDTT_EXTENSION_MARKER="wdtt-panel-extension-v10"
 # Панель всегда запускается от root и вызывает root-хелпер напрямую (без sudo).
 # Причина: юнит задаёт RestrictAddressFamilies=/LockPersonality=, а systemd для них
 # принудительно включает NoNewPrivileges=yes (его нельзя отключить), поэтому sudo
@@ -423,7 +423,7 @@ try:
     state = json.load(open(sys.argv[1], encoding="utf-8"))
     features = state.get("features", [])
     raise SystemExit(0 if (
-        {"labels", "main_traffic", "activity", "traffic_quota", "retained_expired"}.issubset(features)
+        {"labels", "main_traffic", "activity", "traffic_quota", "retained_expired", "speed_limits", "runtime_tunables"}.issubset(features)
         and state.get("marker") == sys.argv[2]
         and state.get("wdtt_repository") == sys.argv[3]
         and state.get("wdtt_ref") == sys.argv[4]
@@ -700,7 +700,7 @@ def replace_once(old, new, title):
 
 replace_once(
     'func main() {\n',
-    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v9"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
+    'const wdttPanelExtensionMarker = "wdtt-panel-extension-v10"\n\nfunc main() {\n\tlog.Printf("[WDTT Panel] extension %s enabled", wdttPanelExtensionMarker)\n',
     "extension marker",
 )
 
@@ -945,7 +945,7 @@ PY
     die "После обновления WDTT обнаружена потеря пользователей, устройств или данных квот; прежний бинарный файл и база восстановлены"
   fi
   rm -f "$PRIVATE_STATE_DIR/user-labels.json"
-  printf '{"enabled_at": %s, "marker": "%s", "wdtt_repository": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "traffic_quota", "retained_expired", "spaceneurox_v1_4_3"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REPOSITORY" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
+  printf '{"enabled_at": %s, "marker": "%s", "wdtt_repository": "%s", "wdtt_ref": "%s", "features": ["labels", "main_traffic", "activity", "traffic_quota", "retained_expired", "speed_limits", "runtime_tunables", "spaceneurox_v1_4_3"]}\n' "$(date +%s)" "$WDTT_EXTENSION_MARKER" "$WDTT_REPOSITORY" "$WDTT_REF" > "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   chmod 0600 "$PRIVATE_STATE_DIR/wdtt-extensions.json"
   log "Расширение WDTT включено: метки общие с Telegram-ботом, трафик и последняя активность пользователей учитываются"
 }
@@ -2035,6 +2035,67 @@ PY
   log "Пароль входа в панель изменен; все активные сессии завершены"
 }
 
+# WDTT-SERVER 1.10.0: смена домена/IP панели наживую (вызывается из веб-панели
+# через systemd-run, чтобы выйти из песочницы ProtectSystem=strict).
+# Вход: PANEL_HOST (обязательно), PANEL_EMAIL (опционально, для Let's Encrypt).
+change_panel_domain() {
+  require_root
+  local requested_host="${PANEL_HOST:-}" requested_email="${PANEL_EMAIL:-}"
+  [ -n "$requested_host" ] || die "Укажите домен или публичный IPv4 через PANEL_HOST"
+  if [ -n "$requested_email" ]; then
+    [[ "$requested_email" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || die "Некорректный PANEL_EMAIL"
+  fi
+  load_panel_config
+  PANEL_HOST="$requested_host"
+  PANEL_EMAIL="$requested_email"
+  [[ "$PANEL_HOST" != *:* ]] || die "IPv6 пока не поддерживается; используйте домен или IPv4"
+  PANEL_HOST="$(python3 - "$PANEL_HOST" <<'PY'
+import ipaddress, re, sys
+value = sys.argv[1].strip().rstrip(".").lower()
+try:
+    address = ipaddress.ip_address(value)
+    if address.version != 4:
+        raise ValueError
+    print(value)
+    raise SystemExit
+except ValueError:
+    pass
+labels = value.split(".")
+pattern = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+if len(labels) < 2 or len(value) > 253 or not all(pattern.fullmatch(label) for label in labels):
+    raise SystemExit(2)
+print(value)
+PY
+)" || die "Некорректный PANEL_HOST"
+  backup_panel_config_before_update
+  if request_certificate; then
+    log "Получен публично доверенный сертификат Let's Encrypt для $PANEL_HOST"
+  else
+    log "Let's Encrypt недоступен для $PANEL_HOST, создается self-signed сертификат"
+    create_self_signed_certificate
+  fi
+  python3 - "$CONFIG_FILE" "$PANEL_HOST" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" <<'PY'
+import json, os, sys
+path, public_host, certificate_path, tls_mode, certificate_email = sys.argv[1:]
+data = json.load(open(path, encoding="utf-8"))
+data["public_host"] = public_host
+data["certificate_path"] = certificate_path
+data["tls_mode"] = tls_mode
+data["certificate_email"] = certificate_email
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  chown root:wdtt-panel "$CONFIG_FILE"
+  chmod 0640 "$CONFIG_FILE"
+  write_final_nginx
+  systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить панель после смены домена"
+  log "Домен панели изменен на $PANEL_HOST (TLS: $TLS_MODE)"
+}
+
 clean_system_safe() {
   require_root
   local keep_days="${CLEAN_KEEP_DAYS:-14}"
@@ -2221,10 +2282,11 @@ case "${1:-install}" in
   renew-cert|--renew-cert) renew_certificates ;;
   status|--status|-s) require_root; load_panel_config; status_panel ;;
   change-password|--change-password) change_panel_password ;;
+  change-domain|--change-domain) change_panel_domain ;;
   clean-system|--clean-system|clean-logs) clean_system_safe ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-xray-runtime) install_xray_runtime ;;
   install-warp-runtime) install_warp_runtime ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
+  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
 esac

@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.9.7"', installer)
-        self.assertIn('__version__ = "1.9.7"', package)
-        self.assertIn("Текущая версия: 1.9.7", readme)
+        self.assertIn('PANEL_VERSION="1.10.0"', installer)
+        self.assertIn('__version__ = "1.10.0"', package)
+        self.assertIn("Текущая версия: 1.10.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -58,7 +58,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("WDTT_EXTENSION_MARKER", script)
         self.assertIn('WDTT_REPOSITORY="${WDTT_REPOSITORY:-SpaceNeuroX/proxy-turn-vk-android}"', script)
         self.assertIn('WDTT_REF="${WDTT_REF:-v1.4.3}"', script)
-        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v9"', script)
+        self.assertIn('WDTT_EXTENSION_MARKER="wdtt-panel-extension-v10"', script)
         self.assertIn("download_wdtt_archive", script)
         self.assertIn("https://github.com/${WDTT_REPOSITORY}/archive", script)
         self.assertIn("refs/${kind}/${WDTT_REF}.zip", script)
@@ -111,11 +111,16 @@ class InstallScriptTests(unittest.TestCase):
         )
 
         patcher = (ROOT / "wdtt_panel" / "wdtt_server_patch.py").read_text(encoding="utf-8")
-        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v9"', patcher)
+        self.assertIn('EXTENSION_MARKER = "wdtt-panel-extension-v10"', patcher)
         self.assertIn('json:"traffic_primary_bytes,omitempty"', patcher)
         self.assertIn("trafficQuotaExhausted", patcher)
         self.assertIn('json:"main_down_bytes,omitempty"', patcher)
         self.assertIn('json:"last_upload_at,omitempty"', patcher)
+        self.assertIn('json:"max_down_mbps,omitempty"', patcher)
+        self.assertIn('json:"max_up_mbps,omitempty"', patcher)
+        self.assertIn("handshake-timeout", patcher)
+        self.assertIn("syncAllSpeedLimits", patcher)
+        self.assertIn("applySpeedLimitForEntryUnlocked", patcher)
         self.assertIn('cmd == "/settings"', patcher)
         self.assertIn('Отправьте метку нового пользователя', patcher)
         self.assertIn('telegramLabel(label), p, expiry', patcher)
@@ -219,6 +224,19 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("change_panel_password()", script)
         self.assertIn('change-password|--change-password) change_panel_password ;;', script)
         self.assertIn('data["session_secret"] = session_secret', script)
+
+    def test_installer_can_change_the_panel_domain(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("change_panel_domain()", script)
+        self.assertIn('change-domain|--change-domain) change_panel_domain ;;', script)
+        self.assertIn("change-domain|clean-system", script)
+        self.assertIn('data["public_host"] = public_host', script)
+        self.assertIn("backup_panel_config_before_update", script.split("change_panel_domain()")[1])
+        change = script[script.index("change_panel_domain()"):]
+        self.assertIn("request_certificate", change)
+        self.assertIn("create_self_signed_certificate", change)
+        self.assertIn("write_final_nginx", change)
+        self.assertIn('systemctl restart "$PANEL_SERVICE"', change)
 
     def test_acme_opens_port_80_before_certbot(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")

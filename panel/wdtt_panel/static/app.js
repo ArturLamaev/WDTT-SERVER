@@ -82,6 +82,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
+    if (name === "wdtt") loadWdttSettings();
     if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); loadPanelVersion(); }
   }
 
@@ -360,6 +361,7 @@
   function renderCertificate(cert) {
     const rows = [];
     rows.push(`<div class="detail-row"><span>Режим</span><strong>${escapeHtml(cert.mode || "неизвестно")}</strong></div>`);
+    if (cert.host) rows.push(`<div class="detail-row"><span>Домен</span><strong>${escapeHtml(cert.host)}</strong></div>`);
     rows.push(`<div class="detail-row"><span>Файл</span><strong>${cert.exists ? "найден" : "не найден"}</strong></div>`);
     rows.push(`<div class="detail-row"><span>HTTPS локально</span><strong>${cert.local_tls_ok ? "работает" : "не отвечает"}</strong></div>`);
     rows.push(`<div class="detail-row"><span>Порт</span><strong>${cert.listening ? "слушается" : "не слушается"}</strong></div>`);
@@ -618,6 +620,8 @@
     $("#edit-label").value = user?.role === "admin" ? "" : (user?.label || "");
     $("#edit-ports").value = user?.ports || "56000,56001,9000";
     $("#edit-max-devices").value = String(user?.max_devices ?? 10000);
+    $("#edit-max-down").value = String(user?.max_down_mbps ?? 0);
+    $("#edit-max-up").value = String(user?.max_up_mbps ?? 0);
     $("#edit-unlimited").checked = Boolean(user && !user.expires_at);
     $("#edit-unlimited").disabled = Boolean(user);
     $("#edit-disabled").checked = Boolean(user?.is_deactivated);
@@ -691,6 +695,8 @@
     rows.push(["Последняя загрузка", formatActivityDate(user.last_download_at)]);
     rows.push(["Отправлено всего", formatBytes(user.up_bytes)]);
     rows.push(["Загружено всего", formatBytes(user.down_bytes)]);
+    rows.push(["Скорость вниз", Number(user.max_down_mbps || 0) ? `${user.max_down_mbps} Мбит/с` : "без ограничения"]);
+    rows.push(["Скорость вверх", Number(user.max_up_mbps || 0) ? `${user.max_up_mbps} Мбит/с` : "без ограничения"]);
     $("#user-activity-title").textContent = `Активность: ${title}`;
     $("#user-activity-details").innerHTML = rows.map(([label, value]) => `<div class="detail-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
     $("#user-activity-dialog").showModal();
@@ -707,6 +713,8 @@
       vk_hash: $("#edit-hashes").value,
       ports: $("#edit-ports").value,
       max_devices: Number($("#edit-max-devices").value),
+      max_down_mbps: Number($("#edit-max-down").value),
+      max_up_mbps: Number($("#edit-max-up").value),
       is_deactivated: $("#edit-disabled").checked,
     };
     if (state.editing) payload.current_password = state.editing.password;
@@ -757,6 +765,8 @@
     $("#bulk-traffic-unlimited").checked = false;
     $("#bulk-traffic").disabled = false;
     $("#bulk-max-devices").value = 10000;
+    $("#bulk-max-down").value = 0;
+    $("#bulk-max-up").value = 0;
     $("#bulk-expires").disabled = false;
     setExpiryPreset("bulk", 1, new Date());
     $("#bulk-user-dialog").showModal();
@@ -774,6 +784,8 @@
       label_prefix: $("#bulk-label-prefix").value,
       ports: $("#bulk-ports").value,
       max_devices: Number($("#bulk-max-devices").value),
+      max_down_mbps: Number($("#bulk-max-down").value),
+      max_up_mbps: Number($("#bulk-max-up").value),
       ...($("#bulk-unlimited").checked ? { unlimited: true } : expirationPayload("bulk")),
       traffic_primary_gib: Number($("#bulk-traffic").value),
       traffic_unlimited: $("#bulk-traffic-unlimited").checked,
@@ -1187,6 +1199,80 @@
       const result = await api("certificate/export");
       downloadText(result.name, result.content, "application/x-pem-file");
     } catch (error) { toast(error.message, true); }
+  }
+
+  const WDTT_FIELDS = [
+    ["listen_host", "wdtt-listen-host"],
+    ["dtls_port", "wdtt-dtls-port"],
+    ["wg_port", "wdtt-wg-port"],
+    ["dns", "wdtt-dns"],
+    ["direct_port", "wdtt-direct-port"],
+    ["raw_port", "wdtt-raw-port"],
+    ["max_users", "wdtt-max-users"],
+    ["admin_listen", "wdtt-admin-listen"],
+    ["handshake_timeout_s", "wdtt-handshake-timeout"],
+    ["first_packet_timeout_s", "wdtt-first-packet-timeout"],
+    ["wg_keepalive_s", "wdtt-wg-keepalive"],
+    ["stats_interval_s", "wdtt-stats-interval"],
+    ["wg_mtu", "wdtt-mtu"],
+    ["max_dtls_per_device", "wdtt-max-dtls"],
+    ["online_window_s", "wdtt-online-window"],
+  ];
+
+  async function loadWdttSettings() {
+    try {
+      const overview = await api("overview");
+      const wdtt = overview.wdtt || {};
+      const settings = wdtt.settings || {};
+      WDTT_FIELDS.forEach(([key, id]) => { $(`#${id}`).value = settings[key] ?? ""; });
+      const current = Boolean(wdtt.extension_current);
+      $("#wdtt-extension-status").textContent = current
+        ? `расширение ${wdtt.extension_marker || ""} активно`
+        : "расширение ядра устарело: расширенные параметры применятся после обновления панели";
+      $("#wdtt-tunables-note").hidden = current;
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function saveWdttSettings() {
+    const button = $("#save-wdtt-settings"); setBusy(button, true);
+    const payload = {};
+    WDTT_FIELDS.forEach(([key, id]) => { payload[key] = $(`#${id}`).value; });
+    try {
+      const result = await api("wdtt/save", { method: "POST", body: payload });
+      if (result.extension_pending) toast("Сохранено, но ядро без расширения v10: расширенные параметры пропущены до обновления");
+      else toast(result.restarted ? "Настройки WDTT применены, ядро перезапущено" : "Настройки WDTT сохранены");
+      await Promise.all([loadWdttSettings(), loadOverview()]);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function changeDomain() {
+    const host = $("#domain-host").value.trim();
+    const email = $("#domain-email").value.trim();
+    if (!host) { toast("Укажите домен или IP", true); return; }
+    if (!confirm(`Привязать панель к ${host}? Сертификат будет перевыпущен, панель перезапустится.`)) return;
+    const button = $("#change-domain"); setBusy(button, true);
+    try {
+      await api("certificate/change-domain", { method: "POST", body: { host, email } });
+      toast("Смена домена запущена, жду применения…");
+      for (let attempt = 0; attempt < 36; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        try {
+          const overview = await api("overview");
+          if ((overview.certificate || {}).host === host.toLowerCase()) {
+            const pill = document.querySelector(".host-pill:last-of-type");
+            if (pill) pill.textContent = host.toLowerCase();
+            const meta = document.querySelector('meta[name="public-host"]');
+            if (meta) meta.setAttribute("content", host.toLowerCase());
+            toast(`Панель привязана к ${host}`);
+            await loadOverview();
+            return;
+          }
+        } catch (_) { /* панель перезапускается */ }
+      }
+      toast("Домен пока не применился — проверьте журнал установщика", true);
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
   }
 
   const xrayInboundTemplate = (kind) => {
@@ -1705,6 +1791,8 @@
     $("#update-panel").addEventListener("click", updatePanel);
     $("#renew-certificate").addEventListener("click", renewCertificate);
     $("#download-certificate").addEventListener("click", downloadCertificate);
+    $("#change-domain").addEventListener("click", changeDomain);
+    $("#save-wdtt-settings").addEventListener("click", saveWdttSettings);
     $("#upload-backup").addEventListener("click", () => $("#backup-upload").click());
     $("#backup-upload").addEventListener("change", (event) => uploadBackup(event.target.files[0]));
     $("#backups-list").addEventListener("click", (event) => {

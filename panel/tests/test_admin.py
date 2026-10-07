@@ -58,6 +58,7 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "NGINX_ERROR_LOG", self.nginx_error_log),
             mock.patch.object(admin, "WDTT_UNIT_FILE", root / "wdtt.service"),
             mock.patch.object(admin, "WDTT_BOT_TOKEN_FILE", root / "etc" / "bot.token"),
+            mock.patch.object(admin, "WDTT_SETTINGS_FILE", root / "wdtt-settings.json"),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -1326,6 +1327,201 @@ class GeofileSizeLimitTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(admin.ValidationError, "128 МБ"):
             admin.geofile_from_payload(payload)
+
+
+class WdttInboundAndSpeedTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.patchers = [
+            mock.patch.object(admin, "DB_FILE", root / "passwords.json"),
+            mock.patch.object(admin, "WDTT_UNIT_FILE", root / "wdtt.service"),
+            mock.patch.object(admin, "WDTT_BOT_TOKEN_FILE", root / "bot.token"),
+            mock.patch.object(admin, "WDTT_SETTINGS_FILE", root / "wdtt-settings.json"),
+            mock.patch.object(admin, "WDTT_EXTENSION_STATE", root / "wdtt-extensions.json"),
+            mock.patch.object(admin, "SKIP_SYSTEMD", True),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        admin.save_database(admin.empty_database())
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.temp.cleanup()
+
+    def test_create_update_speed_limits(self):
+        created = admin.create_user(
+            {
+                "password": "SpeedUser123",
+                "days": 30,
+                "vk_hash": "hash_one",
+                "ports": "56000,56001,9000",
+                "max_down_mbps": "10.5",
+                "max_up_mbps": 5,
+            }
+        )
+        self.assertEqual(created["max_down_mbps"], 10.5)
+        self.assertEqual(created["max_up_mbps"], 5.0)
+        updated = admin.update_user(
+            {"current_password": "SpeedUser123", "max_down_mbps": 0, "max_up_mbps": "20"}
+        )
+        self.assertEqual(updated["max_down_mbps"], 0.0)
+        self.assertEqual(updated["max_up_mbps"], 20.0)
+        stored = admin.load_database()["passwords"]["SpeedUser123"]
+        self.assertEqual(stored["max_down_mbps"], 0.0)
+        self.assertEqual(stored["max_up_mbps"], 20.0)
+
+    def test_rejects_bad_speed(self):
+        with self.assertRaises(admin.ValidationError):
+            admin.create_user(
+                {
+                    "password": "BadSpeedUser1",
+                    "days": 30,
+                    "vk_hash": "hash_one",
+                    "ports": "56000,56001,9000",
+                    "max_down_mbps": "-3",
+                }
+            )
+
+    def test_bulk_create_with_speed_limits(self):
+        result = admin.create_users_bulk(
+            {
+                "count": 2,
+                "vk_hash": "hash_one",
+                "days": 30,
+                "ports": "56000,56001,9000",
+                "max_down_mbps": 7,
+                "max_up_mbps": 3,
+            }
+        )
+        self.assertEqual(result["count"], 2)
+        self.assertTrue(all(user["max_down_mbps"] == 7.0 for user in result["users"]))
+        self.assertTrue(all(user["max_up_mbps"] == 3.0 for user in result["users"]))
+
+    def test_wdtt_settings_defaults(self):
+        settings = admin.load_wdtt_settings()
+        self.assertEqual(settings["dtls_port"], 56000)
+        self.assertEqual(settings["wg_port"], 56001)
+        self.assertEqual(settings["wg_mtu"], 1280)
+        self.assertEqual(settings["handshake_timeout_s"], 60)
+        self.assertEqual(settings["max_dtls_per_device"], 0)
+
+    def test_wdtt_settings_validation(self):
+        with self.assertRaises(admin.ValidationError):
+            admin.normalize_wdtt_settings({"dtls_port": 70000})
+        with self.assertRaises(admin.ValidationError):
+            admin.normalize_wdtt_settings({"dns": ""})
+        with self.assertRaises(admin.ValidationError):
+            admin.normalize_wdtt_settings({"wg_mtu": 100})
+        with self.assertRaises(admin.ValidationError):
+            admin.normalize_wdtt_settings({"admin_listen": "not-a-listen"})
+        merged = admin.normalize_wdtt_settings({"wg_mtu": 1300, "max_dtls_per_device": 3})
+        self.assertEqual(merged["wg_mtu"], 1300)
+        self.assertEqual(merged["max_dtls_per_device"], 3)
+        self.assertEqual(
+            admin.normalize_wdtt_settings({"admin_listen": ""})["admin_listen"], ""
+        )
+
+    def test_wdtt_settings_seed_from_unit(self):
+        admin.WDTT_UNIT_FILE.write_text(
+            "[Service]\nExecStart=/usr/local/bin/wdtt-server -listen 127.0.0.1:57000 -wg-port 57001 -dns 9.9.9.9 -wg-mtu 1400\n",
+            encoding="utf-8",
+        )
+        settings = admin.load_wdtt_settings()
+        self.assertEqual(settings["listen_host"], "127.0.0.1")
+        self.assertEqual(settings["dtls_port"], 57000)
+        self.assertEqual(settings["wg_port"], 57001)
+        self.assertEqual(settings["dns"], "9.9.9.9")
+        self.assertEqual(settings["wg_mtu"], 1400)
+
+    def _fake_systemctl(self, active=True):
+        def fake_run(command, timeout=20, check=False, cwd=None, env=None):
+            if command[:2] == ["systemctl", "is-active"]:
+                return subprocess.CompletedProcess(command, 0 if active else 1, "", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        return fake_run
+
+    def test_wdtt_settings_save_rewrites_unit(self):
+        admin.WDTT_EXTENSION_STATE.write_text(
+            json.dumps({"marker": "wdtt-panel-extension-v10"}), encoding="utf-8"
+        )
+        admin.WDTT_UNIT_FILE.write_text(
+            "[Service]\nExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:56000 -wg-port 56001 -config-dir /etc/wdtt -password-file /etc/wdtt/main.password -dns 8.8.8.8 -admin-listen 0.0.0.0:56002 -admin-token-file /etc/wdtt/admin.token\n",
+            encoding="utf-8",
+        )
+        payload = {
+            "listen_host": "0.0.0.0",
+            "dtls_port": 56000,
+            "wg_port": 56001,
+            "dns": "1.1.1.1",
+            "direct_port": 0,
+            "raw_port": 0,
+            "max_users": 100,
+            "admin_listen": "",
+            "handshake_timeout_s": 45,
+            "first_packet_timeout_s": 20,
+            "wg_keepalive_s": 15,
+            "wg_mtu": 1300,
+            "stats_interval_s": 5,
+            "max_dtls_per_device": 3,
+            "online_window_s": 60,
+        }
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(
+            admin, "run", side_effect=self._fake_systemctl(active=True)
+        ):
+            result = admin.save_wdtt_settings(payload)
+        unit = admin.WDTT_UNIT_FILE.read_text(encoding="utf-8")
+        self.assertIn("-dns 1.1.1.1", unit)
+        self.assertIn("-handshake-timeout 45s", unit)
+        self.assertIn("-wg-mtu 1300", unit)
+        self.assertIn("-max-dtls-per-device 3", unit)
+        self.assertNotIn("-admin-listen", unit)
+        self.assertNotIn("-listen-direct", unit)
+        self.assertIn("-password-file /etc/wdtt/main.password", unit)
+        self.assertIn("-admin-token-file /etc/wdtt/admin.token", unit)
+        self.assertTrue(result["restarted"])
+        self.assertFalse(result["extension_pending"])
+        self.assertEqual(admin.load_wdtt_settings()["max_users"], 100)
+
+    def test_wdtt_settings_save_skips_tunables_without_v10(self):
+        admin.WDTT_UNIT_FILE.write_text(
+            "[Service]\nExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:56000 -wg-port 56001\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(
+            admin, "run", side_effect=self._fake_systemctl(active=False)
+        ):
+            result = admin.save_wdtt_settings({"wg_mtu": 1400, "handshake_timeout_s": 45})
+        unit = admin.WDTT_UNIT_FILE.read_text(encoding="utf-8")
+        self.assertNotIn("-wg-mtu", unit)
+        self.assertNotIn("-handshake-timeout", unit)
+        self.assertTrue(result["extension_pending"])
+        self.assertFalse(result["restarted"])
+
+    def test_change_panel_domain_schedules(self):
+        calls = []
+
+        def fake_transient(command, timeout=20):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(admin, "SKIP_SYSTEMD", False), mock.patch.object(
+            admin, "run_transient_unit", side_effect=fake_transient
+        ):
+            result = admin.change_panel_domain({"host": "panel.example.com", "email": "admin@example.com"})
+        self.assertTrue(result["scheduled"])
+        self.assertEqual(result["host"], "panel.example.com")
+        self.assertIn("--setenv=PANEL_HOST=panel.example.com", calls[0])
+        self.assertIn("--setenv=PANEL_EMAIL=admin@example.com", calls[0])
+        self.assertEqual(calls[0][-1], "change-domain")
+
+    def test_change_panel_domain_rejects_bad_input(self):
+        with self.assertRaises(admin.ValidationError):
+            admin.change_panel_domain({"host": "http://bad host"})
+        with self.assertRaises(admin.ValidationError):
+            admin.change_panel_domain({"host": "panel.example.com", "email": "not-an-email"})
 
 
 if __name__ == "__main__":

@@ -108,6 +108,8 @@ def validate_ports(value: str) -> str:
 MAX_DEVICES = DEFAULT_MAX_DEVICES  # верхняя граница лимита устройств на ключ (10000 = без ограничения)
 MIN_DEVICES = 1  # WDTT не понимает бесконечность: 0 ядро трактует как одно устройство
 
+MAX_SPEED_MBPS = 10000.0  # потолок шейпинга на пользователя: 10000 Мбит/с = 10 Гбит/с
+
 
 def normalize_max_devices(value: Any, default: int = DEFAULT_MAX_DEVICES) -> int:
     """Лимит устройств на ключ.
@@ -137,6 +139,29 @@ def entry_max_devices(entry: dict[str, Any]) -> int:
         return max(MIN_DEVICES, int(value))
     except (TypeError, ValueError):
         return DEFAULT_MAX_DEVICES
+
+
+def normalize_speed_mbps(value: Any) -> float:
+    """Лимит скорости пользователя в Мбит/с.
+
+    0 (или пусто) — без ограничения, enforcement через tc HTB в ядре.
+    """
+    if value is None or str(value).strip() == "":
+        return 0.0
+    try:
+        speed = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Скорость должна быть числом в Мбит/с") from exc
+    if not 0 <= speed <= MAX_SPEED_MBPS:
+        raise ValidationError(f"Скорость должна быть от 0 до {int(MAX_SPEED_MBPS)} Мбит/с (0 — без ограничения)")
+    return round(speed, 2)
+
+
+def entry_speed_mbps(entry: dict[str, Any], key: str) -> float:
+    try:
+        return max(0.0, float(entry.get(key) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def add_calendar_months(timestamp: int, months: int) -> int:
@@ -247,6 +272,8 @@ class UserView:
     vk_hash: str
     ports: str
     max_devices: int
+    max_down_mbps: float
+    max_up_mbps: float
     is_deactivated: bool
     expired: bool
     device: dict[str, Any] | None
@@ -319,6 +346,8 @@ def user_view(password: str, entry: dict[str, Any], devices: dict[str, Any]) -> 
         vk_hash=str(entry.get("vk_hash") or ""),
         ports=str(entry.get("ports") or "56000,56001,9000"),
         max_devices=entry_max_devices(entry),
+        max_down_mbps=entry_speed_mbps(entry, "max_down_mbps"),
+        max_up_mbps=entry_speed_mbps(entry, "max_up_mbps"),
         is_deactivated=bool(entry.get("is_deactivated", False)),
         expired=is_expired(entry),
         device=devices.get(device_ids[0]) if len(device_ids) == 1 else None,

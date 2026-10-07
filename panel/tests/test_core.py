@@ -6,7 +6,9 @@ from wdtt_panel.core import (
     ValidationError,
     GIB,
     add_calendar_months,
+    entry_speed_mbps,
     normalize_hashes,
+    normalize_speed_mbps,
     parse_expiration,
     quick_link,
     traffic_quota,
@@ -67,6 +69,28 @@ class CoreTests(unittest.TestCase):
             link,
             "wdtt://panel.example.com:56000:56001:9000:GoodPass123:hash1,hash2",
         )
+
+
+class SpeedLimitTests(unittest.TestCase):
+    def test_empty_means_unlimited(self):
+        self.assertEqual(normalize_speed_mbps(None), 0.0)
+        self.assertEqual(normalize_speed_mbps(""), 0.0)
+        self.assertEqual(normalize_speed_mbps(0), 0.0)
+
+    def test_accepts_megabits_with_decimals(self):
+        self.assertEqual(normalize_speed_mbps("10"), 10.0)
+        self.assertEqual(normalize_speed_mbps("10,5"), 10.5)
+        self.assertEqual(normalize_speed_mbps(0.25), 0.25)
+
+    def test_rejects_out_of_range(self):
+        for bad in ("-1", "abc", "10000.01", "99999"):
+            with self.assertRaises(ValidationError, msg=bad):
+                normalize_speed_mbps(bad)
+
+    def test_entry_speed_tolerates_missing_and_broken_values(self):
+        self.assertEqual(entry_speed_mbps({}, "max_down_mbps"), 0.0)
+        self.assertEqual(entry_speed_mbps({"max_down_mbps": "12.5"}, "max_down_mbps"), 12.5)
+        self.assertEqual(entry_speed_mbps({"max_down_mbps": "broken"}, "max_down_mbps"), 0.0)
 
 
 if __name__ == "__main__":

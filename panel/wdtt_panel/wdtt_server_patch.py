@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 
-EXTENSION_MARKER = "wdtt-panel-extension-v9"
+EXTENSION_MARKER = "wdtt-panel-extension-v10"
 SUPPORTED_LAYOUT = "SpaceNeuroX qWDTT v1.4.3"
 
 
@@ -43,7 +43,7 @@ def patch_spaceneurox_tree(root: Path) -> None:
 
     names = (
         "main.go", "database_bot.go", "statistics.go", "connections.go",
-        "raw.go", "profile_api.go", "admin_api.go",
+        "raw.go", "profile_api.go", "admin_api.go", "core.go",
     )
     sources = _read_sources(root, names)
 
@@ -54,6 +54,71 @@ def patch_spaceneurox_tree(root: Path) -> None:
         "\tlog.Printf(\"[WDTT Panel] extension %s enabled\", wdttPanelExtensionMarker)\n",
         "extension marker log",
     )
+    sources["main.go"] = _replace_once(
+        sources["main.go"],
+        '\tdnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")\n\tflag.Parse()',
+        '\tdnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")\n'
+        '\thandshakeTimeoutFlag := flag.Duration("handshake-timeout", 60*time.Second, "таймаут DTLS handshake")\n'
+        '\tfirstPacketTimeoutFlag := flag.Duration("first-packet-timeout", 30*time.Second, "ожидание первого пакета после handshake")\n'
+        '\twgKeepaliveFlag := flag.Int("wg-keepalive", 25, "WireGuard PersistentKeepalive для клиентов, сек (0 = выкл)")\n'
+        '\twgMTUFlag := flag.Int("wg-mtu", 1280, "MTU интерфейса wdtt0 и клиентских конфигов")\n'
+        '\tstatsIntervalFlag := flag.Duration("stats-interval", 10*time.Second, "интервал статистики и server.log")\n'
+        '\tmaxDTLSPerDeviceFlag := flag.Int("max-dtls-per-device", 0, "лимит параллельных DTLS-сессий на устройство (0 = без лимита)")\n'
+        "\tflag.Parse()",
+        "runtime tuning flags",
+    )
+    sources["main.go"] = _replace_once(
+        sources["main.go"],
+        "\tdns = *dnsFlag\n",
+        "\tdns = *dnsFlag\n"
+        "\thandshakeTimeoutSec = int(handshakeTimeoutFlag.Seconds())\n"
+        "\tfirstPacketTimeoutSec = int(firstPacketTimeoutFlag.Seconds())\n"
+        "\twgKeepalive = *wgKeepaliveFlag\n"
+        "\twgMTU = *wgMTUFlag\n"
+        "\tstatsIntervalSec = int(statsIntervalFlag.Seconds())\n"
+        "\tmaxDTLSPerDevice = *maxDTLSPerDeviceFlag\n",
+        "runtime tuning assignment",
+    )
+    sources["main.go"] = _replace_once(
+        sources["main.go"],
+        "\tsyncPersistedPeersToWG(wgDev)\n",
+        "\tsyncPersistedPeersToWG(wgDev)\n\tsyncAllSpeedLimits()\n",
+        "speed limit sync on startup",
+    )
+    sources["main.go"] = _replace_once(
+        sources["main.go"],
+        '\t\t\t\tlog.Println("[SYS] База паролей успешно перезагружена! Активных ключей в памяти:", serverWrapKeys.Count())\n',
+        '\t\t\t\tlog.Println("[SYS] База паролей успешно перезагружена! Активных ключей в памяти:", serverWrapKeys.Count())\n'
+        "\t\t\t\tsyncAllSpeedLimits()\n",
+        "speed limit sync on SIGHUP reload",
+    )
+
+    core_go_text = sources["core.go"]
+    core_go_text = _replace_once(
+        core_go_text,
+        "\tdefaultInternalWGPort = 56001\n\twgMTU                 = 1280\n\tkeepalive             = 25\n",
+        "\tdefaultInternalWGPort = 56001\n",
+        "runtime tunable consts",
+    )
+    core_go_text = _replace_once(
+        core_go_text,
+        'var dns = "8.8.8.8"',
+        'var dns = "8.8.8.8"\n'
+        "\n"
+        "// Настройки рантайма WDTT: панель меняет флагами -wg-mtu, -wg-keepalive,\n"
+        "// -handshake-timeout, -first-packet-timeout, -stats-interval,\n"
+        "// -max-dtls-per-device. Дефолты повторяют прежние хардкоды.\n"
+        "var (\n"
+        "\twgMTU                 = 1280\n"
+        "\tkeepalive             = 25\n"
+        "\thandshakeTimeoutSec   = 60\n"
+        "\tfirstPacketTimeoutSec = 30\n"
+        "\tstatsIntervalSec      = 10\n"
+        "\tmaxDTLSPerDevice      = 0\n"
+        ")",
+        "runtime tunable vars",
+    )
+    sources["core.go"] = core_go_text
 
     database = sources["database_bot.go"]
     database = _replace_once(
@@ -69,6 +134,14 @@ def patch_spaceneurox_tree(root: Path) -> None:
         '\tTrafficExtraBytes    int64                    `json:"traffic_extra_bytes,omitempty"`\n'
         '\tTrafficOperations    []map[string]interface{} `json:"traffic_operations,omitempty"`\n}',
         "activity and quota fields",
+    )
+    database = _replace_once(
+        database,
+        '\tTrafficOperations    []map[string]interface{} `json:"traffic_operations,omitempty"`\n}',
+        '\tTrafficOperations    []map[string]interface{} `json:"traffic_operations,omitempty"`\n'
+        '\tMaxDownMbps          float64                   `json:"max_down_mbps,omitempty"`\n'
+        '\tMaxUpMbps            float64                   `json:"max_up_mbps,omitempty"`\n}',
+        "per-user speed limit fields",
     )
     database = _replace_once(
         database,
@@ -250,6 +323,12 @@ def patch_spaceneurox_tree(root: Path) -> None:
         "\t\t\trecordMainTrafficLocked(deltaRx, deltaTx)\n\t\t}\n",
         "WireGuard activity and quotas",
     )
+    statistics = _replace_once(
+        statistics,
+        "\tticker := time.NewTicker(10 * time.Second)\n",
+        "\tticker := time.NewTicker(time.Duration(statsIntervalSec) * time.Second)\n",
+        "configurable stats interval",
+    )
     sources["statistics.go"] = statistics
 
     connections = sources["connections.go"]
@@ -262,6 +341,41 @@ def patch_spaceneurox_tree(root: Path) -> None:
         "\t\t\tdbMutex.Unlock()\n\t\t\treturn\n"
         "\t\t} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {\n",
         "WireGuard quota authentication",
+    )
+    connections = _replace_once(
+        connections,
+        "\t\thctx, hcancel := context.WithTimeout(ctx, 60*time.Second)\n",
+        "\t\thctx, hcancel := context.WithTimeout(ctx, time.Duration(handshakeTimeoutSec)*time.Second)\n",
+        "configurable DTLS handshake timeout",
+    )
+    connections = _replace_once(
+        connections,
+        "\tclientConn.SetReadDeadline(time.Now().Add(30 * time.Second))\n",
+        "\tclientConn.SetReadDeadline(time.Now().Add(time.Duration(firstPacketTimeoutSec) * time.Second))\n",
+        "configurable first packet timeout",
+    )
+    connections = _replace_once(
+        connections,
+        "\t\t} else if valid {\n\t\t\tconnDeviceID = deviceID\n\t\t\tauthenticatedPassword = password\n",
+        "\t\t} else if valid {\n"
+        "\t\t\tif isGenPass && maxDTLSPerDevice > 0 && dtlsDeviceConnectionsLocked(password, deviceID) >= maxDTLSPerDevice {\n"
+        "\t\t\t\tclientConn.Write([]byte(\"DENIED:too_many_connections\"))\n"
+        "\t\t\t\tlog.Printf(\"[WG] Отказ: превышен лимит DTLS-соединений на устройство для %s\", maskPassword(password))\n"
+        "\t\t\t\tdbMutex.Unlock()\n"
+        "\t\t\t\treturn\n"
+        "\t\t\t}\n"
+        "\t\t\tconnDeviceID = deviceID\n\t\t\tauthenticatedPassword = password\n",
+        "per-device DTLS connection limit",
+    )
+    connections = _replace_once(
+        connections,
+        "\t\t\tif dev != nil {\n\t\t\t\tupsertPeerInWG(wgDev, dev)\n",
+        "\t\t\tif dev != nil {\n"
+        "\t\t\t\tupsertPeerInWG(wgDev, dev)\n"
+        "\t\t\t\tif isGenPass && entry != nil {\n"
+        "\t\t\t\t\tapplySpeedLimitForEntryUnlocked(entry)\n"
+        "\t\t\t\t}\n",
+        "apply speed limit on GETCONF",
     )
     connections = _replace_once(
         connections,

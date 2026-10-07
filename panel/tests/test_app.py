@@ -247,6 +247,30 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["result"]["source"], "wdtt")
         self.assertEqual(parsed["result"]["stats"]["active"], 2)
 
+    def test_wdtt_settings_and_domain_routes_call_root_helper(self):
+        form = b"username=admin&password=Panel-password-12345"
+        headers, _ = self.request("/private-panel-path/login", "POST", form)
+        cookie = headers["headers"]["Set-Cookie"].split(";", 1)[0]
+        token = cookie.split("=", 1)[1]
+        session = read_session(token, "test-session-secret")
+        csrf = csrf_token(session["n"], "test-session-secret")
+
+        headers, body = self.request("/private-panel-path/api/wdtt", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["wg_mtu"], 1280)
+
+        payload = json.dumps({"wg_mtu": 1300}).encode()
+        headers, body = self.request("/private-panel-path/api/wdtt/save", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["scheduled"])
+
+        payload = json.dumps({"host": "panel.example.com"}).encode()
+        headers, body = self.request(
+            "/private-panel-path/api/certificate/change-domain", "POST", payload, cookie, csrf
+        )
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["scheduled"])
+
     def test_vk_hash_library_is_managed_without_calling_root_helper(self):
         form = b"username=admin&password=Panel-password-12345"
         headers, _ = self.request("/private-panel-path/login", "POST", form)
