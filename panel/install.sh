@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.10.3"
+PANEL_VERSION="1.10.4"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1984,13 +1984,12 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# RemainAfterExit обязателен: старый systemd (232 и подобные) отказывается
-# грузить Type=oneshot с Restart= без него («isn't allowed for Type=oneshot
-# services»), из-за чего update_panel падал до применения обновления.
+# Без автоперезапуска в юните: systemd 232 отвергает такую комбинацию для
+# одноразовых сервисов вообще (даже с RemainAfterExit), из-за чего update
+# падал до применения обновления. Повторы сборки остаются за таймером
+# (каждые 10 минут).
 RemainAfterExit=yes
 TimeoutStartSec=20min
-Restart=on-failure
-RestartSec=10min
 ExecStart=/bin/bash $INSTALL_DIR/install.sh enable-wdtt-extensions
 EOF
   cat > "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" <<EOF

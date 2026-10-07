@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.10.3"', installer)
-        self.assertIn('__version__ = "1.10.3"', package)
-        self.assertIn("Текущая версия: 1.10.3", readme)
+        self.assertIn('PANEL_VERSION="1.10.4"', installer)
+        self.assertIn('__version__ = "1.10.4"', package)
+        self.assertIn("Текущая версия: 1.10.4", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -220,15 +220,18 @@ class InstallScriptTests(unittest.TestCase):
             self.assertEqual(restored["passwords"]["LegacyUser123"]["label"], "Старое имя")
 
     def test_extensions_service_loads_on_old_systemd(self):
-        # systemd 232 отказывается грузить Type=oneshot с Restart= без
-        # RemainAfterExit («isn't allowed for Type=oneshot services») —
-        # update_panel падал до применения обновления.
+        # systemd 232 запрещает Restart= для Type=oneshot вообще (даже с
+        # RemainAfterExit — «isn't allowed for Type=oneshot services»):
+        # update_panel падал до применения обновления. Повторы сборки
+        # остаются за таймером (каждые 10 минут), поэтому в юните расширений
+        # не должно быть Restart=/RestartSec=.
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
         start = script.index("ExecStart=/bin/bash $INSTALL_DIR/install.sh enable-wdtt-extensions")
         block = script[script.rindex("[Service]", 0, start):start]
         self.assertIn("Type=oneshot", block)
         self.assertIn("RemainAfterExit=yes", block)
-        self.assertIn("Restart=on-failure", block)
+        self.assertNotIn("Restart=", block)
+        self.assertNotIn("RestartSec=", block)
 
     def test_installer_can_change_the_panel_login_password(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
