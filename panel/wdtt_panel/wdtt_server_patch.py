@@ -73,7 +73,7 @@ def patch_spaceneurox_tree(root: Path) -> None:
         "\tdns = *dnsFlag\n"
         "\thandshakeTimeoutSec = int(handshakeTimeoutFlag.Seconds())\n"
         "\tfirstPacketTimeoutSec = int(firstPacketTimeoutFlag.Seconds())\n"
-        "\twgKeepalive = *wgKeepaliveFlag\n"
+        "\tkeepalive = *wgKeepaliveFlag\n"
         "\twgMTU = *wgMTUFlag\n"
         "\tstatsIntervalSec = int(statsIntervalFlag.Seconds())\n"
         "\tmaxDTLSPerDevice = *maxDTLSPerDeviceFlag\n",
