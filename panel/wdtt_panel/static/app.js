@@ -460,6 +460,7 @@
     if (key === "device") return `${user.device?.device_id || user.device_id || ""} ${user.device?.ip || ""}`;
     if (key === "devices") return (user.device_ids || user.devices || []).length;
     if (key === "traffic") return Number(user.down_bytes || 0) + Number(user.up_bytes || 0);
+    if (key === "speed") return Number(user.max_down_mbps || 0) + Number(user.max_up_mbps || 0);
     if (key === "activity") return lastUserActivity(user);
     return "";
   }
@@ -513,16 +514,20 @@
       const title = user.label || user.password;
       const selectable = user.role !== "admin";
       const lastActivity = lastUserActivity(user);
+      const speedDown = Number(user.max_down_mbps || 0), speedUp = Number(user.max_up_mbps || 0);
+      const speed = user.role === "admin"
+        ? "<span class=\"muted\">—</span>"
+        : ((!speedDown && !speedUp) ? "Без ограничения" : `${speedDown ? `↓ ${speedDown}` : "↓ ∞"} / ${speedUp ? `↑ ${speedUp}` : "↑ ∞"}<br><small>Мбит/с</small>`);
       return `<tr>
         <td>${selectable ? `<input type="checkbox" data-select-user="${escapeHtml(user.password)}" aria-label="Выбрать ${escapeHtml(title)}" ${state.selectedUsers.has(user.password) ? "checked" : ""}>` : ""}</td>
         <td>${user.label ? `<strong>${escapeHtml(user.label)}</strong>` : "<span class=\"muted\">—</span>"}</td>
         <td><strong class="mono">${escapeHtml(user.password)}</strong><br><small>${escapeHtml(user.vk_hash)}</small></td>
         <td><span class="badge ${statusClass}">${status}</span></td>
         <td>${escapeHtml(formatDate(user.expires_at))}</td>
-        <td class="mono">${device}</td><td class="mono" title="Занято / доступно">${devicesCell}</td><td>${traffic}</td>
+        <td class="mono">${device}</td><td class="mono" title="Занято / доступно">${devicesCell}</td><td>${traffic}</td><td>${speed}</td>
         <td><strong>${escapeHtml(formatActivityDate(lastActivity))}</strong><br><small>${escapeHtml(lastUserActivityKind(user))}</small></td>
         <td><button class="user-actions-trigger" data-actions-toggle="${escapeHtml(user.password)}">Действия</button></td></tr>`;
-    }).join("") || `<tr><td colspan="10" class="muted">Пользователи не найдены.</td></tr>`;
+    }).join("") || `<tr><td colspan="11" class="muted">Пользователи не найдены.</td></tr>`;
     closeUserActions();
     renderUserSortControls();
     renderSelectedUsersControls();
