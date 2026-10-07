@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.9.6"', installer)
-        self.assertIn('__version__ = "1.9.6"', package)
-        self.assertIn("Текущая версия: 1.9.6", readme)
+        self.assertIn('PANEL_VERSION="1.9.7"', installer)
+        self.assertIn('__version__ = "1.9.7"', package)
+        self.assertIn("Текущая версия: 1.9.7", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -372,6 +372,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("Environment=WDTT_PANEL_ADMIN=$ADMIN_WRAPPER", panel_service)
         self.assertIn("$panel_admin_env", panel_service)
         self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK", panel_service)
+        self.assertIn("-/etc/systemd/system", panel_service)
 
     def test_installer_seeds_vk_hash_library_from_userdata(self):
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
