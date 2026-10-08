@@ -104,5 +104,25 @@ class InstallModeTests(unittest.TestCase):
         self.assertEqual(args.config, "/etc/wdtt-panel/config.json")
 
 
+class InstallModeSwitchTests(unittest.TestCase):
+    """Битая установка и смена режима: update вместо die, снос с таймаутами."""
+
+    def test_root_handles_broken_and_mode_switch(self):
+        root = (ROOT.parent / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("installed_panel_mode()", root)
+        self.assertIn("битая установка", root)
+        self.assertIn("Смена режима", root)
+        self.assertIn("--force-clean для чистой установки", root)
+        self.assertIn("sys_timeout()", root)
+
+    def test_panel_uninstall_has_stages_and_guards(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("sys_timeout()", script)
+        self.assertIn("Останавливаю и отключаю юниты панели", script)
+        self.assertIn("Чищу правила фаервола", script)
+        self.assertIn("sys_timeout 180 systemctl disable --now", script)
+        self.assertIn("sys_timeout 60 systemctl daemon-reload", script)
+
+
 if __name__ == "__main__":
     unittest.main()

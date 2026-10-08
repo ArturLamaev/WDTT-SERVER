@@ -44,6 +44,15 @@ WDTT_MODE="${WDTT_MODE:-node}"
 
 info() { printf '[wdtt-server] %s\n' "$*"; }
 die()  { printf '[wdtt-server] ERROR: %s\n' "$*" >&2; exit 1; }
+# systemctl на подвисшей системе иногда ждёт D-Bus вечно: ограничиваем ожидание.
+sys_timeout() {
+  local limit="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$limit" "$@" 2>/dev/null || true
+  else
+    "$@" 2>/dev/null || true
+  fi
+}
 
 # Режим node|controller: --mode/--mode=, env WDTT_MODE, вопрос на tty, иначе node.
 resolve_root_mode() {
@@ -143,6 +152,12 @@ panel_installed_version() {
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("version", ""))' "$PANEL_CONFIG_FILE" 2>/dev/null || true
 }
 
+# Режим установленной панели: node|controller. Пусто — конфига нет (битая установка).
+installed_panel_mode() {
+  [ -r "$PANEL_CONFIG_FILE" ] || return 0
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("mode", "node"))' "$PANEL_CONFIG_FILE" 2>/dev/null || true
+}
+
 panel_target_version() {
   sed -n 's/^PANEL_VERSION="\([^"]*\)".*$/\1/p' "$PANEL_INSTALL" | head -n 1 || true
 }
@@ -185,14 +200,15 @@ upgrade_existing_install() {
 
 wipe_previous_install() {
   info "Делаю полную очистку старой панели и WDTT..."
-  systemctl stop wdtt wdtt-panel wdtt-app 2>/dev/null || true
-  systemctl disable wdtt wdtt-panel wdtt-app 2>/dev/null || true
+  info "Останавливаю службы..."
+  sys_timeout 180 systemctl stop wdtt wdtt-panel wdtt-app
+  sys_timeout 60 systemctl disable wdtt wdtt-panel wdtt-app
   pkill -x wdtt-server 2>/dev/null || true
   uninstall_wdtt_kernel
   rm -f /etc/systemd/system/wdtt.service /etc/systemd/system/wdtt-app.service \
         /etc/systemd/system/wdtt-panel.service /etc/systemd/system/wdtt-panel-wdtt-extensions.* \
         /etc/systemd/system/wdtt-auto-restart.* /etc/systemd/system/wdtt-fleet-agent.service 2>/dev/null || true
-  systemctl daemon-reload 2>/dev/null || true
+  sys_timeout 60 systemctl daemon-reload
   rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-app /usr/local/bin/xray
   rm -rf /opt/wdtt-panel /etc/wdtt-panel /var/lib/wdtt-panel /var/lib/wdtt-panel-private \
          /etc/wdtt /var/lib/wdtt
@@ -405,15 +421,16 @@ cmd_uninstall() {
   uninstall_wdtt_kernel
 
   info "Удаляю авто-рестарт, остатки ядра WDTT и лефтоверы..."
-  systemctl disable --now wdtt-auto-restart.timer wdtt-auto-restart.service 2>/dev/null || true
+  sys_timeout 120 systemctl disable --now wdtt-auto-restart.timer wdtt-auto-restart.service
   rm -f /etc/systemd/system/wdtt-auto-restart.* 2>/dev/null || true
-  systemctl stop wdtt 2>/dev/null || true
-  systemctl disable wdtt 2>/dev/null || true
+  info "Останавливаю ядро WDTT..."
+  sys_timeout 120 systemctl stop wdtt
+  sys_timeout 60 systemctl disable wdtt
   rm -f /etc/systemd/system/wdtt.service /etc/systemd/system/wdtt-app.service 2>/dev/null || true
   rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-app 2>/dev/null || true
   rm -rf /etc/wdtt /var/lib/wdtt /var/lib/wdtt-panel /var/lib/wdtt-panel-private 2>/dev/null || true
   rm -f /var/log/wdtt-panel* /var/log/wdtt-server*.log 2>/dev/null || true
-  systemctl daemon-reload
+  sys_timeout 60 systemctl daemon-reload
 
   echo ""
   echo "======================================================"
@@ -433,19 +450,39 @@ main() {
       check_fork_limits
       local upgrade=0
       if panel_is_installed; then
-        local cur target
+        local cur target cur_mode
         cur="$(panel_installed_version)"
         target="$(panel_target_version)"
-        info "Найдена установленная панель WDTT-SERVER${cur:+ (версия $cur)}${target:+, в репозитории $target}"
-        if requested_force_clean "$@"; then
-          info "--force-clean: сношу установленную панель и ставлю начисто"
-          wipe_previous_install
-        elif confirm_update "$@"; then
-          upgrade=1
-        elif confirm_wipe "$@"; then
-          wipe_previous_install
+        cur_mode="$(installed_panel_mode)"
+        if [ -z "$cur_mode" ]; then
+          # Каталоги есть, а config.json нет — установка битая: обновлять нечего.
+          info "Найдены остатки панели без config.json (битая установка)"
+          if requested_force_clean "$@" || confirm_wipe "$@"; then
+            wipe_previous_install
+          else
+            die "Без сноса продолжить нельзя: задайте --force-clean для чистой установки в режиме $WDTT_MODE"
+          fi
+        elif [ "$cur_mode" != "$WDTT_MODE" ]; then
+          # Смена режима (нода <-> контроллер) только через чистую установку:
+          # состав служб и конфиг несовместимы.
+          info "Установлен режим $cur_mode, выбран $WDTT_MODE — смена режима только начисто"
+          if requested_force_clean "$@" || confirm_wipe "$@"; then
+            wipe_previous_install
+          else
+            die "Режим отличается: задайте --force-clean для переустановки в режиме $WDTT_MODE"
+          fi
         else
-          info "Оставляю установку как есть, ставлю поверх (может остаться мусор)"
+          info "Найдена установленная панель WDTT-SERVER${cur:+ (версия $cur)}${target:+, в репозитории $target}"
+          if requested_force_clean "$@"; then
+            info "--force-clean: сношу установленную панель и ставлю начисто"
+            wipe_previous_install
+          elif confirm_update "$@"; then
+            upgrade=1
+          elif confirm_wipe "$@"; then
+            wipe_previous_install
+          else
+            info "Оставляю установку как есть, ставлю поверх (может остаться мусор)"
+          fi
         fi
       elif detect_previous_install; then
         info "Найдены следы прежней установки WDTT без панели"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.18.0"
+PANEL_VERSION="1.18.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +85,16 @@ PANEL_RUN_AS_ROOT="${WDTT_PANEL_RUN_AS_ROOT:-1}"
 
 log() { printf '[wdtt-panel] %s\n' "$*" | tee -a "$LOG_FILE"; }
 die() { log "ERROR: $*"; exit 1; }
+# systemctl на подвисшей системе иногда ждёт D-Bus вечно: ограничиваем ожидание,
+# чтобы снос/обновление не зависали молча (какая стадия — видно по логам выше).
+sys_timeout() {
+  local limit="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$limit" "$@" 2>/dev/null || true
+  else
+    "$@" 2>/dev/null || true
+  fi
+}
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 random_token() { python3 -c "import secrets; print(secrets.token_urlsafe(${1:-24}))"; }
 random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+string.digits+"._~-"; print("".join(secrets.choice(a) for _ in range(24)))'; }
@@ -2217,12 +2227,16 @@ uninstall_panel() {
     panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
-  systemctl disable --now "$PANEL_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service 2>/dev/null || true
+  log "Останавливаю и отключаю юниты панели..."
+  sys_timeout 180 systemctl disable --now "$PANEL_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service
+  log "Удаляю unit-файлы и каталоги панели..."
   rm -f "/etc/systemd/system/$PANEL_SERVICE" "/etc/systemd/system/$FLEET_SERVICE" "/etc/systemd/system/$FLEET_BOT_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
-  systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
+  log "Останавливаю и отключаю Xray/каскад..."
+  sys_timeout 120 systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
+  log "Чищу правила фаервола панели и ядра..."
   remove_firewall_rule "$panel_port" tcp
   # Порты ядра WDTT (56000/56001 — DTLS/WG, 56002 — admin; открывает deploy.sh).
   # 80/443 осознанно не трогаем: их могли открыть раньше для других служб.
@@ -2231,8 +2245,9 @@ uninstall_panel() {
     remove_firewall_rule "$kernel_port" tcp
     remove_firewall_rule "$kernel_port" udp
   done
-  systemctl daemon-reload
-  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+  log "Перезагружаю systemd и nginx..."
+  sys_timeout 60 systemctl daemon-reload
+  nginx -t >/dev/null 2>&1 && sys_timeout 60 systemctl reload nginx || true
   log "Панель удалена. Аудит оставлен в $STATE_DIR, резервные копии в $PRIVATE_STATE_DIR"
 }
 
