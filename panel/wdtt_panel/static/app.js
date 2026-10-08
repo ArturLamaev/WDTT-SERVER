@@ -495,18 +495,41 @@
     const colors = chartColors();
     if (points.length < 2) { chartPlaceholder(ctx, width, height, [], 4, colors); return; }
     const active = points.map((item) => Number(item[1] || 0));
-    const total = points.map((item) => Number(item[2] || 0));
-    const max = niceMax(Math.max(4, ...active, ...total));
+    const max = niceMax(Math.max(4, ...active));
     const scale = drawChartFrame(ctx, width, height, points, max, colors, "шт.");
     fillArea(ctx, scale, active, colors);
     strokeSolid(ctx, scale, active, colors.accent, 2);
-    strokeDashed(ctx, scale, total, colors.muted);
+  }
+
+  // Окно истории: показываем с первого «живого» мгновения минус зазор (10 мин),
+  // максимум 24 часа назад от последней точки, минимум 2 точки для отрисовки.
+  function historyWindow(points, leadSeconds) {
+    const lead = leadSeconds || 600;
+    const firstRise = (() => {
+      for (let i = 1; i < points.length; i++) {
+        const dt = Number(points[i][0] || 0) - Number(points[i - 1][0] || 0);
+        const dg = (Number(points[i][4] || 0) - Number(points[i - 1][4] || 0))
+          + (Number(points[i][3] || 0) - Number(points[i - 1][3] || 0));
+        if (dt > 0 && dg > 0) return i;
+      }
+      return -1;
+    })();
+    if (firstRise < 1) return points;
+    const last = Number(points[points.length - 1][0] || 0);
+    const start = Math.max(
+      Number(points[firstRise][0] || 0) - lead,
+      last - 86400,
+      Number(points[0][0] || 0),
+    );
+    const trimmed = points.filter((p) => Number(p[0] || 0) >= start);
+    return trimmed.length >= 2 ? trimmed : points.slice(-2);
   }
 
   function drawSpeedChart(points) {
     // Скорость в Мбит/с — производная счётчиков ГБ по времени; сброс счётчика даёт 0.
     const [ctx, width, height] = setupCanvas("#speed-chart", 220);
     const colors = chartColors();
+    points = historyWindow(points);
     if (points.length < 2) { chartPlaceholder(ctx, width, height, [], 4, colors); return; }
     const rate = (idx) => points.map((item, i) => {
       if (!i) return 0;
