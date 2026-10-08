@@ -132,6 +132,8 @@ class FleetWebTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("n1", body)
         self.assertIn("n2", body)
+        self.assertIn("<svg", body)
+        self.assertIn('stroke="currentColor"', body)
 
     def test_api_login_and_bearer(self):
         b = self.browser()
@@ -249,6 +251,39 @@ class FleetWebTests(unittest.TestCase):
         self.login(b)
         _, _, body = b.get("/nodes")
         self.assertIn("n1", body)
+
+    def test_static_css(self):
+        b = self.browser()
+        code, _, body = b.get("/static/fleet.css")
+        self.assertEqual(code, 200)
+        self.assertIn("@import", body)
+        self.assertIn("var(--bg)", body)
+        code, _, node_css = b.get("/static/app.css")
+        self.assertEqual(code, 200)
+        self.assertIn("--accent", node_css)
+        code, _, _ = b.get("/static/../secret.py")
+        self.assertEqual(code, 404)
+
+    def test_theme_wiring(self):
+        b = self.browser()
+        self.login(b)
+        _, _, body = b.get("/nodes")
+        self.assertIn("static/fleet.css", body)
+        self.assertIn("wdtt-theme", body)
+        self.assertIn("wdtt-accent", body)
+        self.assertIn('class=active', body)
+
+    def test_user_page_lists_all_users(self):
+        b = self.browser()
+        self.login(b)
+        code, _, body = b.get("/user")
+        self.assertEqual(code, 200)
+        # агрегат по нодам: секции со счётчиками, ключи, кнопки удаления
+        self.assertIn("Все пользователи на нодах", body)
+        self.assertIn("KEY1", body)
+        self.assertIn("user/delete", body)
+        self.assertIn("name=confirm", body)
+        self.assertIn("Всего: 2", body)
 
 
 if __name__ == "__main__":

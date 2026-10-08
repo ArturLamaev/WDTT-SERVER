@@ -1,0 +1,70 @@
+"""Инлайн-иконки Tabler (MIT, https://tabler.io/icons) для fleet-панели.
+
+Вендорим path-данные нескольких outline-иконок, чтобы не тянуть внешние
+шрифты/JS и работать офлайн. Обновить иконку: скачать свежий
+`icons/outline/<имя>.svg` из tabler/tabler-icons и переложить `<path/>`.
+"""
+
+_PATHS = {
+    # Ноды (server, Devices).
+    "server": (
+        '<path d="M3 7a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v2a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-2" />'
+        '<path d="M3 15a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v2a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3l0 -2" />'
+        '<path d="M7 8l0 .01" />'
+        '<path d="M7 16l0 .01" />'
+    ),
+    # Статус (activity, Health).
+    "activity": '<path d="M3 12h4l3 8l4 -16l3 8h4" />',
+    # Пользователи (users, System).
+    "users": (
+        '<path d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" />'
+        '<path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2" />'
+        '<path d="M16 3.13a4 4 0 0 1 0 7.75" />'
+        '<path d="M21 21v-2a4 4 0 0 0 -3 -3.85" />'
+    ),
+    # Бот (robot, Games).
+    "robot": (
+        '<path d="M6 6a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v4a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2l0 -4" />'
+        '<path d="M12 2v2" />'
+        '<path d="M9 12v9" />'
+        '<path d="M15 12v9" />'
+        '<path d="M5 16l4 -2" />'
+        '<path d="M15 14l4 2" />'
+        '<path d="M9 18h6" />'
+        '<path d="M10 8v.01" />'
+        '<path d="M14 8v.01" />'
+    ),
+    # Действия (plus/trash/search/check, Math/System).
+    "plus": '<path d="M12 5l0 14" /><path d="M5 12l14 0" />',
+    "trash": (
+        '<path d="M4 7l16 0" />'
+        '<path d="M10 11l0 6" />'
+        '<path d="M14 11l0 6" />'
+        '<path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12" />'
+        '<path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3" />'
+    ),
+    "search": (
+        '<path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" />'
+        '<path d="M21 21l-6 -6" />'
+    ),
+    "check": '<path d="M5 12l5 5l10 -10" />',
+    # Тема (sun/moon, Weather).
+    "sun": (
+        '<path d="M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" />'
+        '<path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 '
+        '-.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7" />'
+    ),
+    "moon": '<path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454l0 .008" />',
+}
+
+
+def icon(name: str, size: int = 16) -> str:
+    """Инлайн-SVG иконки Tabler. Неизвестное имя → пустая строка."""
+    paths = _PATHS.get(name)
+    if not paths:
+        return ""
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+        f'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+        f'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{paths}</svg>'
+    )

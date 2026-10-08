@@ -1,7 +1,9 @@
 """Веб-панель контроллера: ноды, статус, ключи, создание/удаление.
 
-Только stdlib (wsgiref-совместимый WSGI), без статики — весь HTML
-генерируется здесь же. Авторизация: своя (не нодовая) — логин/пароль
+Только stdlib (wsgiref-совместимый WSGI). Оформление — в цветах темы
+нодовой панели: `fleet/static/fleet.css` поверх её `app.css`
+(переменные, светлая тема, акценты и localStorage-ключи общие).
+Авторизация: своя (не нодовая) — логин/пароль
 контроллера, cookie-сессия + CSRF для форм, Bearer для JSON API.
 
 HTML: GET /login, /nodes, /status, /user
@@ -22,35 +24,86 @@ from wsgiref.simple_server import make_server
 from .bot import TelegramAPI
 from .client import NodeClient, find_user
 from .fanout import fanout, fanout_route, summarize
+from .icons import icon
 from .models import Node, split_node_url, normalize_base_path
 from ..security import create_session, csrf_token, read_session, verify_csrf, verify_password
 from .settings import default_config_path, load_settings, parse_admins, save_settings
 from .store import FleetStore
+from pathlib import Path
 
 SESSION_COOKIE = "fleet_session"
 SESSION_TTL = 43_200
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+NODE_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_FILES = {"fleet.css": STATIC_DIR / "fleet.css", "app.css": NODE_STATIC_DIR / "app.css"}
+
+ACCENTS = (("red", "#f43f5e"), ("orange", "#f97316"), ("yellow", "#eab308"),
+           ("green", "#22c55e"), ("blue", "#3b82f6"), ("purple", "#a855f7"))
 
 
 def _h(text: Any) -> str:
     return html.escape(str(text if text is not None else ""))
 
 
-CSS = ("body{font-family:sans-serif;background:#141417;color:#e8e8e8;margin:0 auto;"
-       "max-width:900px;padding:16px}nav a{color:#7db4ff;margin-right:14px}"
-       "table{border-collapse:collapse;width:100%;margin:12px 0}"
-       "td,th{border:1px solid #444;padding:6px 8px;text-align:left;font-size:14px}"
-       "th{background:#222}input,button,select{background:#222;color:#eee;border:1px solid #555;"
-       "padding:6px 8px;margin:2px}button{cursor:pointer}.ok{color:#6f6}.err{color:#f88}"
-       ".card{background:#1c1c20;padding:12px;margin:12px 0;border-radius:8px}")
+def _hum(value: Any) -> str:
+    try:
+        size = float(value or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if size <= 0:
+        return "0"
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if size < 1024 or unit == "ТБ":
+            return f"{size:.0f} {unit}" if unit == "Б" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} ТБ"
 
 
-def _page(title: str, body: str) -> str:
+def _short_link(link: str, limit: int = 26) -> str:
+    link = link or ""
+    return link if len(link) <= limit else link[:limit] + "…"
+
+
+def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
+    dots = "".join(
+        f"<button title='{_h(name)}' data-a='{_h(name)}' style='background:{_h(color)}'"
+        f" onclick='fleetAccent(this.dataset.a)'></button>"
+        for name, color in ACCENTS)
+    nav_html = ""
+    if nav:
+        links = (("nodes", "Ноды", "server"), ("status", "Статус", "activity"),
+                 ("user", "Пользователи", "users"), ("bot", "Бот", "robot"))
+        items = "".join(
+            f"<a href={_h(name)}{' class=active' if name == active else ''}>"
+            f"{icon(icon_name)}{_h(label)}</a>"
+            for name, label, icon_name in links)
+        nav_html = (
+            f"<header class=fleet-top><div class=brand>WDTT Fleet"
+            f"<small>панель управления нодами</small></div>"
+            f"<nav class=fleet-nav>{items}</nav>"
+            f"<div class=fleet-tools><span class=accent-dots>{dots}</span>"
+            f"<button class=theme-btn onclick='fleetTheme()'>"
+            f"<span class=icon-sun>{icon('sun')}</span>"
+            f"<span class=icon-moon>{icon('moon')}</span></button></div></header>")
+    else:
+        nav_html = ("<header class=fleet-top><div class=brand>WDTT Fleet"
+                    "<small>панель управления нодами</small></div></header>")
     return (f"<!doctype html><html lang=ru><head><meta charset=utf-8>"
             f"<meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<title>{_h(title)} — WDTT Fleet</title><style>{CSS}</style></head><body>"
-            f"<nav><a href=nodes>Ноды</a><a href=status>Статус</a><a href=user>Пользователи</a>"
-            f"<a href=bot>Бот</a>"
-            f"<a href=login>Выйти</a></nav><h1>{_h(title)}</h1>{body}</body></html>")
+            f"<title>{_h(title)} — WDTT Fleet</title>"
+            f"<link rel=stylesheet href='static/fleet.css'></head><body>"
+            f"{nav_html}<div class=wrap><h1>{_h(title)}</h1>{body}</div>"
+            f"<script>try{{if(localStorage.getItem('wdtt-theme')==='light')"
+            f"document.body.classList.add('light-theme');var a=localStorage.getItem('wdtt-accent');"
+            f"if(a)document.body.dataset.accent=a;}}catch(e){{}}"
+            f"function fleetTheme(){{document.body.classList.toggle('light-theme');"
+            f"try{{localStorage.setItem('wdtt-theme',document.body.classList.contains('light-theme')"
+            f"?'light':'dark');}}catch(e){{}}}}"
+            f"function fleetAccent(a){{document.body.dataset.accent=a;"
+            f"try{{localStorage.setItem('wdtt-accent',a);}}catch(e){{}}"
+            f"document.querySelectorAll('.accent-dots button').forEach(function(b)"
+            f"{{b.classList.toggle('on',b.dataset.a===a);}});}}</script></body></html>")
 
 
 class FleetWeb:
@@ -80,6 +133,8 @@ class FleetWeb:
         relative = relative.lstrip("/")
         method = environ.get("REQUEST_METHOD", "GET")
 
+        if relative.startswith("static/") and method == "GET":
+            return self._static(start_response, relative[7:])
         if relative == "api/v1/auth/login" and method == "POST":
             return self._api_login(environ, start_response)
         if relative.startswith("api/v1/"):
@@ -149,8 +204,15 @@ class FleetWeb:
                            [("Cache-Control", "no-store")])
 
     def _html(self, start_response: Callable, title: str, body: str,
-              code: str = "200 OK") -> Iterable[bytes]:
-        return self._bytes(start_response, code, _page(title, body).encode())
+              code: str = "200 OK", active: str = "", nav: bool = True) -> Iterable[bytes]:
+        return self._bytes(start_response, code, _page(title, body, active, nav).encode())
+
+    def _static(self, start_response: Callable, name: str) -> Iterable[bytes]:
+        path = STATIC_FILES.get(name)
+        if path is None or not path.is_file():
+            return self._text(start_response, "404 Not Found", "Not found")
+        return self._bytes(start_response, "200 OK", path.read_bytes(),
+                           "text/css; charset=utf-8", [("Cache-Control", "max-age=3600")])
 
     def _redirect(self, start_response: Callable, name: str,
                   clear_cookie: bool = False) -> Iterable[bytes]:
@@ -207,10 +269,12 @@ class FleetWeb:
     def _login_page(self, start_response: Callable, error: str = "") -> Iterable[bytes]:
         err = f"<p class=err>{_h(error)}</p>" if error else ""
         return self._html(start_response, "Вход",
-                          f"{err}<form method=post action=login>"
-                          f"Логин <input name=username><br>Пароль "
-                          f"<input type=password name=password><br>"
-                          f"<button>Войти</button></form>")
+                          f"<div class=login-wrap><div class=card>{err}"
+                          f"<form method=post action=login>"
+                          f"Логин<input name=username autocomplete=username><br>Пароль"
+                          f"<input type=password name=password autocomplete=current-password><br>"
+                          f"<button class=primary>Войти</button></form></div></div>",
+                          nav=False)
 
     def _do_login(self, environ: dict, start_response: Callable) -> Iterable[bytes]:
         form = self._read_form(environ)
@@ -241,22 +305,24 @@ class FleetWeb:
     def _nodes_page(self, start_response: Callable, session: dict,
                     note: str = "") -> Iterable[bytes]:
         rows = "".join(
-            f"<tr><td>{_h(n.id)}</td><td>{_h(n.display_name)}</td>"
-            f"<td>{_h(n.api_root())}</td>"
-            f"<td>{'🟢' if n.online else '⚪ ' + _h(n.last_error or '—')}</td>"
-            f"<td><form method=post action=nodes/remove>{self._csrf_field(session)}"
+            f"<tr><td><strong>{_h(n.id)}</strong><br><span class=muted>{_h(n.display_name)}</span></td>"
+            f"<td><code class=key>{_h(n.api_root())}</code></td>"
+            f"<td>{'<span class=\"dot ok\"></span>online' if n.online else '<span class=\"dot idle\"></span>' + _h(n.last_error or '—')}</td>"
+            f"<td><form class=inline-form method=post action=nodes/remove>{self._csrf_field(session)}"
             f"<input type=hidden name=id value='{_h(n.id)}'>"
-            f"<button>Убрать</button></form></td></tr>"
+            f"<button class=danger>{icon('trash')}Убрать</button></form></td></tr>"
             for n in self.store.all())
-        body = ((f"<p class=ok>{_h(note)}</p>" if note else "") +
-                f"<table><tr><th>ID</th><th>Имя</th><th>URL</th><th>Статус</th><th></th></tr>{rows}</table>"
+        if not rows:
+            rows = "<tr><td colspan=4 class=muted>Реестр пуст — добавьте первую ноду ниже.</td></tr>"
+        body = ((f"<p class=ok-text>{_h(note)}</p>" if note else "") +
+                f"<div class=card><table class=grid><tr><th>Нода</th><th>URL</th><th>Статус</th><th></th></tr>{rows}</table></div>"
                 f"<div class=card><h3>Добавить ноду</h3>"
                 f"<form method=post action=nodes/add>{self._csrf_field(session)}"
                 f"ID <input name=id required> URL панели <input name=url size=40 required "
                 f"placeholder='https://IP:9999/путь'><br>Путь <input name=path> "
                 f"Логин <input name=username value=admin> Пароль <input type=password name=password required> "
-                f"Имя <input name=name><button>Добавить</button></form></div>")
-        return self._html(start_response, "Ноды", body)
+                f"Имя <input name=name><button class=primary>{icon('plus')}Добавить</button></form></div>")
+        return self._html(start_response, "Ноды", body, active="nodes")
 
     def _add_node(self, node_id: str, url: str, path: str, username: str,
                   password: str, name: str) -> tuple[Node | None, str]:
@@ -314,7 +380,7 @@ class FleetWeb:
         try:
             nodes, _ = self._pick(node_id)
         except ValueError as exc:
-            return self._html(start_response, "Статус", f"<p class=err>{_h(exc)}</p>")
+            return self._html(start_response, "Статус", f"<p class=err>{_h(exc)}</p>", active="status")
         results = fanout(nodes, lambda c: c.call("overview"),
                          workers=self.workers, timeout=self.timeout, client_cls=self.client_cls)
         self.store.save()
@@ -322,17 +388,20 @@ class FleetWeb:
         for nid, entry in results.items():
             if entry.get("ok"):
                 stats = (entry.get("result") or {}).get("stats") or {}
-                rows += (f"<tr><td>{_h(nid)}</td><td class=ok>online</td>"
-                         f"<td>{_h(stats.get('active', '?'))}/{_h(stats.get('total', '?'))}</td>"
-                         f"<td>{entry.get('latency', 0):.1f}s</td></tr>")
+                rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
+                         f"<td><span class=\"dot ok\"></span><span class=ok-text>online</span></td>"
+                         f"<td>{_h(stats.get('active', '?'))} / {_h(stats.get('total', '?'))}</td>"
+                         f"<td>{entry.get('latency', 0):.1f} c</td></tr>")
             else:
-                rows += (f"<tr><td>{_h(nid)}</td><td class=err>FAIL</td>"
-                         f"<td colspan=2>{_h(entry.get('error', '?'))}</td></tr>")
+                rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
+                         f"<td><span class=\"dot bad\"></span><span class=err>FAIL</span></td>"
+                         f"<td colspan=2 class=muted>{_h(entry.get('error', '?'))}</td></tr>")
         summary = summarize(results)
         return self._html(start_response, "Статус",
-                          f"<p>ok {summary['ok']}/{summary['total']}</p>"
-                          f"<table><tr><th>Нода</th><th>Статус</th><th>Активно/Всего</th><th>Пинг</th></tr>"
-                          f"{rows}</table>")
+                          f"<p class=sub>ok {summary['ok']}/{summary['total']}</p>"
+                          f"<div class=card><table class=grid><tr><th>Нода</th><th>Статус</th><th>Активно / Всего</th><th>Пинг</th></tr>"
+                          f"{rows}</table></div>",
+                          active="status")
 
     # --- user ---
 
@@ -340,41 +409,102 @@ class FleetWeb:
                    found: str = "") -> Iterable[bytes]:
         query = parse_qs(environ.get("QUERY_STRING") or "")
         key = (query.get("key") or [""])[0]
-        out = ""
-        if key:
-            out = self._keys_block(key)
+        nodes = self.store.all()
+        lookup = ""
+        table = "<p class=muted>Реестр пуст — добавьте ноду.</p>"
+        if nodes:
+            results = fanout(nodes, lambda c: c.call("users"),
+                             workers=self.workers, timeout=self.timeout,
+                             client_cls=self.client_cls)
+            self.store.save()
+            if key:
+                lookup = self._keys_block(key, results)
+            elif found:
+                lookup = f"<p class=ok-text>{_h(found)}</p>"
+            table = self._all_users_block(session, results)
         elif found:
-            out = f"<p class=ok>{_h(found)}</p>"
+            lookup = f"<p class=ok-text>{_h(found)}</p>"
         body = (f"<div class=card><h3>Найти ключ</h3><form method=get action=user>"
-                f"<input name=key size=30 value='{_h(key)}'><button>Найти везде</button></form>{out}</div>"
+                f"<input name=key size=30 value='{_h(key)}' placeholder='Ключ пользователя'>"
+                f"<button class=primary>{icon('search')}Найти везде</button></form>{lookup}</div>"
                 f"<div class=card><h3>Создать</h3><form method=post action=user/create>"
                 f"{self._csrf_field(session)}Ключ <input name=password required> "
                 f"Метка <input name=label> Нода <input name=node placeholder='пусто = все'>"
-                f"<button>Создать</button></form></div>"
+                f"<button class=primary>{icon('plus')}Создать</button></form></div>"
                 f"<div class=card><h3>Удалить</h3><form method=post action=user/delete>"
                 f"{self._csrf_field(session)}Ключ <input name=password required> "
                 f"Нода <input name=node placeholder='пусто = все'> "
                 f"<label><input type=checkbox name=confirm value=1 required> подтверждаю</label>"
-                f"<button>Удалить</button></form></div>")
-        return self._html(start_response, "Пользователи", body)
+                f"<button class=danger>{icon('trash')}Удалить</button></form></div>"
+                f"<div class=card><h3>Все пользователи на нодах</h3>{table}</div>")
+        return self._html(start_response, "Пользователи", body, active="user")
 
-    def _keys_block(self, key: str) -> str:
-        nodes = self.store.all()
-        if not nodes:
-            return "<p class=err>Реестр пуст</p>"
-        results = fanout(nodes, lambda c: c.call("users"),
-                         workers=self.workers, timeout=self.timeout, client_cls=self.client_cls)
-        self.store.save()
+    def _keys_block(self, key: str, results: dict | None = None) -> str:
+        if results is None:
+            nodes = self.store.all()
+            if not nodes:
+                return "<p class=err>Реестр пуст</p>"
+            results = fanout(nodes, lambda c: c.call("users"),
+                             workers=self.workers, timeout=self.timeout,
+                             client_cls=self.client_cls)
+            self.store.save()
         rows = ""
         for nid, entry in results.items():
             if not entry.get("ok"):
-                rows += f"<tr><td>{_h(nid)}</td><td class=err>ошибка ноды</td><td></td></tr>"
+                rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
+                         f"<td><span class=\"dot bad\"></span><span class=err>ошибка ноды</span></td><td></td></tr>")
                 continue
             user = find_user(entry.get("result") or {}, key)
-            rows += (f"<tr><td>{_h(nid)}</td><td class=ok>ЕСТЬ</td>"
-                     f"<td>{_h((user or {}).get('link') or (user or {}).get('url') or '')}</td></tr>"
-                     if user else f"<tr><td>{_h(nid)}</td><td>нет</td><td></td></tr>")
-        return (f"<table><tr><th>Нода</th><th>Ключ {_h(key)}</th><th>Ссылка</th></tr>{rows}</table>")
+            rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
+                     f"<td><span class=\"dot ok\"></span><span class=ok-text>ЕСТЬ</span></td>"
+                     f"<td><code class=key title='{_h((user or {}).get('link') or (user or {}).get('url') or '')}'>"
+                     f"{_h(_short_link((user or {}).get('link') or (user or {}).get('url') or ''))}</code></td></tr>"
+                     if user else f"<tr><td><strong>{_h(nid)}</strong></td>"
+                     f"<td><span class=\"dot idle\"></span>нет</td><td></td></tr>")
+        return (f"<table class=grid><tr><th>Нода</th><th>Ключ {_h(key)}</th><th>Ссылка</th></tr>{rows}</table>")
+
+    def _all_users_block(self, session: dict, results: dict) -> str:
+        parts = []
+        total = 0
+        for nid, entry in results.items():
+            if not entry.get("ok"):
+                parts.append(f"<p><strong>{_h(nid)}</strong>: "
+                             f"<span class=err>ошибка ноды — {_h(entry.get('error', '?'))}</span></p>")
+                continue
+            users = (entry.get("result") or {}).get("users") or []
+            if not isinstance(users, list):
+                users = []
+            total += len(users)
+            rows = ""
+            for user in users:
+                if not isinstance(user, dict):
+                    continue
+                password = str(user.get("password") or "")
+                label = str(user.get("label") or "")
+                link = str(user.get("link") or user.get("url") or "")
+                down = _hum(user.get("down_bytes"))
+                up = _hum(user.get("up_bytes"))
+                online = user.get("connected") or user.get("online")
+                state = ("<span class=\"dot ok\"></span><span class=ok-text>online</span>"
+                         if online else "<span class=\"dot idle\"></span><span class=muted>—</span>")
+                rows += (f"<tr><td><code class=key>{_h(password)}</code>"
+                         + (f"<br><span class=muted>{_h(label)}</span>" if label else "") + "</td>"
+                         f"<td><code class=key title='{_h(link)}'>{_h(_short_link(link))}</code></td>"
+                         f"<td class=muted>↓ {down}<br>↑ {up}</td>"
+                         f"<td>{state}</td>"
+                         f"<td><form class=inline-form method=post action=user/delete>"
+                         f"{self._csrf_field(session)}"
+                         f"<input type=hidden name=password value='{_h(password)}'>"
+                         f"<input type=hidden name=node value='{_h(nid)}'>"
+                         f"<input type=hidden name=confirm value=1>"
+                         f"<button class=danger>{icon('trash')}Удалить</button></form></td></tr>")
+            if not rows:
+                rows = "<tr><td colspan=5 class=muted>нет пользователей</td></tr>"
+            parts.append(f"<h3>{_h(nid)} <span class=muted>({len(users)})</span></h3>"
+                         f"<table class=grid><tr><th>Ключ</th><th>Ссылка</th>"
+                         f"<th>Трафик</th><th></th><th></th></tr>{rows}</table>")
+        head = f"<p class=sub>Всего: {total}</p>" if parts else ""
+        return head + "".join(parts)
 
     def _user_create(self, environ: dict, start_response: Callable, session: dict) -> Iterable[bytes]:
         if not self._csrf_ok(environ, session):
@@ -386,7 +516,7 @@ class FleetWeb:
         try:
             nodes, _ = self._pick(form.get("node", "").strip())
         except ValueError as exc:
-            return self._html(start_response, "Пользователи", f"<p class=err>{_h(exc)}</p>")
+            return self._html(start_response, "Пользователи", f"<p class=err>{_h(exc)}</p>", active="user")
         payload: dict[str, Any] = {"password": key}
         if form.get("label", "").strip():
             payload["label"] = form["label"].strip()
@@ -395,10 +525,11 @@ class FleetWeb:
         self.store.save()
         summary = summarize(results)
         return self._html(start_response, "Пользователи",
-                          f"<p>Создание {_h(key)}: ok {summary['ok']}/{summary['total']}</p>"
-                          + "".join(f"<p class={'ok' if e.get('ok') else 'err'}>{_h(nid)}: "
+                          f"<div class=card><p>Создание {_h(key)}: ok {summary['ok']}/{summary['total']}</p>"
+                          + "".join(f"<p class={'ok-text' if e.get('ok') else 'err'}>{_h(nid)}: "
                                     f"{_h('OK' if e.get('ok') else e.get('error', '?'))}</p>"
-                                    for nid, e in results.items()))
+                                    for nid, e in results.items()) + "</div>",
+                          active="user")
 
     def _user_delete(self, environ: dict, start_response: Callable, session: dict) -> Iterable[bytes]:
         if not self._csrf_ok(environ, session):
@@ -407,7 +538,7 @@ class FleetWeb:
         key = form.get("password", "").strip()
         if not key or not form.get("confirm"):
             return self._html(start_response, "Пользователи",
-                              "<p class=err>Нужен ключ и галочка подтверждения</p>")
+                              "<p class=err>Нужен ключ и галочка подтверждения</p>", active="user")
         node_arg = form.get("node", "").strip()
         try:
             nodes = self.store.all()
@@ -419,16 +550,17 @@ class FleetWeb:
             elif len(nodes) > 1:
                 raise ValueError("Больше одной ноды: укажите ноду или удаляйте через API с everywhere")
         except ValueError as exc:
-            return self._html(start_response, "Пользователи", f"<p class=err>{_h(exc)}</p>")
+            return self._html(start_response, "Пользователи", f"<p class=err>{_h(exc)}</p>", active="user")
         results = fanout(nodes, lambda c: c.call("users/delete", {"password": key}),
                          workers=self.workers, timeout=self.timeout, client_cls=self.client_cls)
         self.store.save()
         summary = summarize(results)
         return self._html(start_response, "Пользователи",
-                          f"<p>Удаление {_h(key)}: ok {summary['ok']}/{summary['total']}</p>"
-                          + "".join(f"<p class={'ok' if e.get('ok') else 'err'}>{_h(nid)}: "
+                          f"<div class=card><p>Удаление {_h(key)}: ok {summary['ok']}/{summary['total']}</p>"
+                          + "".join(f"<p class={'ok-text' if e.get('ok') else 'err'}>{_h(nid)}: "
                                     f"{_h('OK' if e.get('ok') else e.get('error', '?'))}</p>"
-                                    for nid, e in results.items()))
+                                    for nid, e in results.items()) + "</div>",
+                          active="user")
 
     # --- telegram-бот ---
 
@@ -442,7 +574,7 @@ class FleetWeb:
     def _bot_page(self, environ: dict, start_response: Callable, session: dict,
                   note: str = "", is_error: bool = False) -> Iterable[bytes]:
         _, saved = load_settings(self.config_path)
-        cls = "err" if is_error else "ok"
+        cls = "err" if is_error else "ok-text"
         body = ((f"<p class={cls}>{_h(note)}</p>" if note else "") +
                 "<div class=card><h3>Telegram-бот</h3>"
                 f"<form method=post action=bot/save>{self._csrf_field(session)}"
@@ -451,14 +583,14 @@ class FleetWeb:
                 f"Admin ID <input name=admin_ids size=40 value='{_h(','.join(map(str, saved.admin_ids)))}' "
                 f"placeholder='111,222'><br>"
                 f"Poll-таймаут <input name=poll_timeout size=4 value='{saved.poll_timeout}'> сек<br>"
-                f"<button>Сохранить</button></form>"
+                f"<button class=primary>{icon('check')}Сохранить</button></form>"
                 f"<form method=post action=bot/test>{self._csrf_field(session)}"
-                f"<button>Проверить токен (getMe)</button></form>"
-                f"<p>Файл: {_h(self.config_path)}. После смены токена перезапустите "
+                f"<button class=secondary>{icon('search')}Проверить токен (getMe)</button></form>"
+                f"<p class=muted>Файл: {_h(self.config_path)}. После смены токена перезапустите "
                 f"<code>fleet bot</code> — он подхватит настройки из этого файла. "
                 f"CLI-флаги и env ($WDTT_FLEET_BOT_TOKEN, $WDTT_FLEET_ADMINS) "
                 f"имеют приоритет над файлом.</p></div>")
-        return self._html(start_response, "Бот", body)
+        return self._html(start_response, "Бот", body, active="bot")
 
     def _bot_save(self, environ: dict, start_response: Callable, session: dict) -> Iterable[bytes]:
         if not self._csrf_ok(environ, session):

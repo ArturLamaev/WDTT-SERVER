@@ -72,7 +72,12 @@ button { max-width: 100%; cursor: pointer; }
 .brand-mark { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 12px; color: #101410; background: var(--accent); font-weight: 800; font-size: 19px; flex: 0 0 auto; }
 .brand-mark.small { width: 36px; height: 36px; border-radius: 12px; font-size: 19px; }
 nav { display: grid; gap: 4px; }
-.nav-item { border: 0; border-radius: 12px; padding: 10px 14px; background: transparent; color: var(--muted); text-align: left; font-size: 14px; transition: .18s; }
+.nav-item { border: 0; border-radius: 12px; padding: 10px 14px; background: transparent; color: var(--muted); text-align: left; font-size: 14px; transition: .18s; display: flex; align-items: center; gap: 10px; }
+.nav-item svg { width: 17px; height: 17px; flex: none; }
+.theme-toggle .icon-moon { display: none; }
+body.light-theme .theme-toggle .icon-moon { display: inline; }
+body.light-theme .theme-toggle .icon-sun { display: none; }
+.theme-toggle svg { vertical-align: -2px; }
 .nav-item:hover { color: var(--text); background: var(--panel-2); }
 .nav-item.active { color: var(--text); font-weight: 600; background: var(--accent-soft); }
 .sidebar-footer { margin-top: auto; padding: 15px 8px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }

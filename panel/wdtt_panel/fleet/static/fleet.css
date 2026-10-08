@@ -1,0 +1,157 @@
+/* WDTT Fleet: оформление поверх переменных темы нодовой панели.
+ * Подключается после ../static/app.css (@import ниже), поэтому все
+ * var(--bg), var(--panel), var(--accent) и светлая тема + акценты
+ * работают здесь бесплатно, включая выбор из localStorage (wdtt-theme,
+ * wdtt-accent) — общий с панелью ноды.
+ */
+@import url("app.css");
+
+body {
+  margin: 0 auto;
+  max-width: 1024px;
+  padding: 0 16px 48px;
+}
+
+.fleet-top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: .3px;
+}
+.brand small {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+nav.fleet-nav { display: flex; gap: 8px; flex-wrap: wrap; }
+nav.fleet-nav a {
+  text-decoration: none;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+}
+nav.fleet-nav a:hover { border-color: var(--accent); }
+nav.fleet-nav a.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.fleet-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+nav.fleet-nav a { display: inline-flex; align-items: center; }
+nav.fleet-nav a svg { width: 16px; height: 16px; margin-right: 7px; flex: none; }
+button svg { width: 15px; height: 15px; vertical-align: -2px; margin-right: 7px; }
+.theme-btn svg { width: 15px; height: 15px; vertical-align: middle; }
+.theme-btn .icon-moon { display: none; }
+body.light-theme .theme-btn .icon-moon { display: inline; }
+body.light-theme .theme-btn .icon-sun { display: none; }
+.theme-btn {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.accent-dots { display: inline-flex; gap: 6px; }
+.accent-dots button {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.accent-dots button.on { border-color: var(--text); }
+
+.wrap h1 { font-size: 22px; margin: 18px 0 4px; }
+.wrap .sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 14px 0;
+}
+.card h3 { margin: 0 0 10px; font-size: 15px; }
+
+table.grid { border-collapse: collapse; width: 100%; font-size: 14px; }
+table.grid th, table.grid td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+table.grid th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+table.grid tr:last-child td { border-bottom: none; }
+table.grid tr:hover td { background: var(--accent-soft); }
+
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.bad { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.dot.idle { background: var(--faint); }
+
+.ok-text { color: var(--ok); }
+.ok { color: var(--ok); }
+.err-text, .err { color: var(--danger); }
+.muted { color: var(--muted); font-size: 13px; }
+
+input, select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin: 3px 4px 3px 0;
+  font-size: 14px;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+button {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 3px 4px 3px 0;
+}
+button.primary, button[type="submit"] { background: var(--accent); border-color: var(--accent); color: #101210; }
+body.light-theme button.primary, body.light-theme button[type="submit"] { color: #fff; }
+button.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+button.secondary { background: transparent; }
+button:hover { filter: brightness(1.12); }
+.inline-form { display: inline; }
+code.key {
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
+.login-wrap { max-width: 380px; margin: 8vh auto 0; }
+.login-wrap .card { padding: 24px; }
+.login-wrap input { width: 100%; box-sizing: border-box; margin: 4px 0 10px; }
+.login-wrap button { width: 100%; margin-top: 6px; }
