@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.16.0"
+PANEL_VERSION="1.17.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,6 +57,22 @@ WDTT_REF="${WDTT_REF:-v1.4.3}"
 # без загрузки исходников с GitHub. По умолчанию: src/ рядом с панелью ($SCRIPT_DIR/../src).
 WDTT_SOURCE_DIR="${WDTT_SOURCE_DIR:-}"
 GO_VERSION="${GO_VERSION:-1.25.0}"
+# Режим установки: node (VPN-нода + локальная панель) или controller
+# (панель управления флотом для дома: без ядра, только fleet web/bot + nginx).
+# Источники по приоритету: --mode/--mode=, env WDTT_MODE, интерактивный вопрос,
+# иначе node (прежнее поведение).
+WDTT_MODE_ENV_GIVEN=0
+[ -n "${WDTT_MODE:-}" ] && WDTT_MODE_ENV_GIVEN=1
+WDTT_MODE="${WDTT_MODE:-node}"
+MODE_FROM_ARGS=0
+# Внутренний порт fleet web контроллера (слушает 127.0.0.1, наружу — nginx).
+FLEET_LISTEN_PORT="${FLEET_LISTEN_PORT:-8790}"
+FLEET_SERVICE="wdtt-fleet.service"
+FLEET_BOT_SERVICE="wdtt-fleet-bot.service"
+FLEET_STORE_FILE="$PRIVATE_STATE_DIR/fleet-nodes.json"
+FLEET_CONFIG_FILE="$PRIVATE_STATE_DIR/fleet-config.json"
+WDTT_FLEET_BOT_TOKEN="${WDTT_FLEET_BOT_TOKEN:-}"
+WDTT_FLEET_ADMINS="${WDTT_FLEET_ADMINS:-}"
 WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
@@ -262,16 +278,19 @@ validate_inputs() {
   [[ "$PANEL_LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_LISTEN_PORT" -ge 1024 ] && [ "$PANEL_LISTEN_PORT" -le 65535 ] || die "Некорректный PANEL_LISTEN_PORT"
   [ "$PANEL_HTTPS_PORT" != "$PANEL_LISTEN_PORT" ] || die "Внешний и внутренний порты панели должны отличаться"
   [[ "$PANEL_USER" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] || die "Некорректный PANEL_USER"
+  [[ "$FLEET_LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$FLEET_LISTEN_PORT" -ge 1024 ] && [ "$FLEET_LISTEN_PORT" -le 65535 ] || die "Некорректный FLEET_LISTEN_PORT"
+  [ "$PANEL_HTTPS_PORT" != "$FLEET_LISTEN_PORT" ] || die "Внешний порт панели и порт fleet web должны отличаться"
   [[ "$WDTT_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Некорректный WDTT_REPOSITORY"
   [[ "$WDTT_REF" =~ ^[A-Za-z0-9._-]+$ ]] || die "Некорректный WDTT_REF"
   [[ "$GO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Некорректный GO_VERSION"
 }
 
 validate_port_availability() {
-  local listeners
-  listeners="$(ss -ltnp "( sport = :$PANEL_LISTEN_PORT )" 2>/dev/null || true)"
-  if grep -q LISTEN <<<"$listeners" && ! systemctl is-active --quiet "$PANEL_SERVICE"; then
-    die "Внутренний порт $PANEL_LISTEN_PORT уже занят"
+  local listeners backend_port="$PANEL_LISTEN_PORT"
+  [ "$WDTT_MODE" = "controller" ] && backend_port="$FLEET_LISTEN_PORT"
+  listeners="$(ss -ltnp "( sport = :$backend_port )" 2>/dev/null || true)"
+  if grep -q LISTEN <<<"$listeners" && ! systemctl is-active --quiet "$PANEL_SERVICE" && ! systemctl is-active --quiet "$FLEET_SERVICE"; then
+    die "Внутренний порт $backend_port уже занят"
   fi
   listeners="$(ss -ltnp "( sport = :$PANEL_HTTPS_PORT )" 2>/dev/null || true)"
   if grep -q LISTEN <<<"$listeners" && ! grep -qi nginx <<<"$listeners"; then
@@ -1266,7 +1285,7 @@ restart_services() {
   for unit in "$WDTT_SERVICE" "$PANEL_SERVICE" wdtt-app.service; do
     systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
   done
-  for unit in nginx.service "$XRAY_SERVICE" "$XRAY_GATEWAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$LEGACY_CASCADE_SERVICE"; do
+  for unit in nginx.service "$XRAY_SERVICE" "$XRAY_GATEWAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$LEGACY_CASCADE_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE"; do
     if systemctl is-active --quiet "$unit" 2>/dev/null; then
       systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
     fi
@@ -2034,7 +2053,11 @@ os.replace(tmp, path)
 PY
   chown root:wdtt-panel "$CONFIG_FILE"
   chmod 0640 "$CONFIG_FILE"
-  systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить панель после смены пароля"
+  if [ "$(installed_mode)" = "controller" ]; then
+    systemctl restart "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить контроллер после смены пароля"
+  else
+    systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить панель после смены пароля"
+  fi
   log "Пароль входа в панель изменен; все активные сессии завершены"
 }
 
@@ -2094,8 +2117,13 @@ os.replace(tmp, path)
 PY
   chown root:wdtt-panel "$CONFIG_FILE"
   chmod 0640 "$CONFIG_FILE"
-  write_final_nginx
-  systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить панель после смены домена"
+  if [ "$(installed_mode)" = "controller" ]; then
+    write_fleet_nginx
+    systemctl restart "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить контроллер после смены домена"
+  else
+    write_final_nginx
+    systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить панель после смены домена"
+  fi
   log "Домен панели изменен на $PANEL_HOST (TLS: $TLS_MODE)"
 }
 
@@ -2135,8 +2163,9 @@ clean_system_safe() {
 }
 
 status_panel() {
-  local attempt
-  systemctl --no-pager --full status "$PANEL_SERVICE" || true
+  local attempt panel_unit="$PANEL_SERVICE"
+  [ -r "$CONFIG_FILE" ] && [ "$(installed_mode)" = "controller" ] && panel_unit="$FLEET_SERVICE"
+  systemctl --no-pager --full status "$panel_unit" || true
   [ -r "$CONFIG_FILE" ] && python3 - "$CONFIG_FILE" <<'PY'
 import json, sys
 d=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -2188,8 +2217,8 @@ uninstall_panel() {
     panel_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("https_port", ""))' "$CONFIG_FILE" 2>/dev/null || true)"
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
-  systemctl disable --now "$PANEL_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$PANEL_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
+  systemctl disable --now "$PANEL_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service 2>/dev/null || true
+  rm -f "/etc/systemd/system/$PANEL_SERVICE" "/etc/systemd/system/$FLEET_SERVICE" "/etc/systemd/system/$FLEET_BOT_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
   systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
   rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
@@ -2211,6 +2240,10 @@ update_panel() {
   require_root
   resolve_python_bin
   load_panel_config
+  if [ "$(installed_mode)" = "controller" ]; then
+    update_controller
+    return 0
+  fi
   log "Обновление панели до версии $PANEL_VERSION"
   remove_obsolete_fleet_agent
   backup_wdtt_database_before_update
@@ -2232,8 +2265,348 @@ update_panel() {
   status_panel
 }
 
+# ---------------------------------------------------------------------------
+# Режим установки node|controller (--mode, WDTT_MODE, вопрос, иначе node)
+# ---------------------------------------------------------------------------
+parse_mode_arg() {
+  FILTERED_ARGS=()
+  local next_is_mode=0 a
+  for a in "$@"; do
+    if [ "$next_is_mode" = "1" ]; then
+      WDTT_MODE="$a"; MODE_FROM_ARGS=1; next_is_mode=0; continue
+    fi
+    case "$a" in
+      --mode=*) WDTT_MODE="${a#--mode=}"; MODE_FROM_ARGS=1 ;;
+      --mode) next_is_mode=1 ;;
+      *) FILTERED_ARGS+=("$a") ;;
+    esac
+  done
+  if [ "$next_is_mode" = "1" ]; then
+    die "--mode требует значение: node или controller"
+  fi
+}
+
+validate_mode() {
+  case "$WDTT_MODE" in
+    node|controller) ;;
+    *) die "--mode должен быть node или controller (получено: $WDTT_MODE)" ;;
+  esac
+}
+
+ask_install_mode() {
+  local ans=""
+  cat > /dev/tty <<'EOF'
+
+Что устанавливаем?
+  1) Нода — VPN-сервер WDTT + локальная панель (публичный сервер)
+  2) Панель управления — контроллер флота для дома (без VPN-ядра: веб, бот, API)
+EOF
+  printf 'Выбор [1]: ' > /dev/tty
+  IFS= read -r ans </dev/tty || true
+  case "${ans:-1}" in
+    1) WDTT_MODE="node" ;;
+    2) WDTT_MODE="controller" ;;
+    *) die "Неизвестный вариант: $ans" ;;
+  esac
+  log "Режим установки: $WDTT_MODE"
+}
+
+resolve_install_mode() {
+  validate_mode
+  [ "$MODE_FROM_ARGS" = "1" ] && return 0
+  [ "$WDTT_MODE_ENV_GIVEN" = "1" ] && return 0
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    ask_install_mode
+    validate_mode
+    return 0
+  fi
+  WDTT_MODE="node"
+}
+
+installed_mode() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("mode", "node"))' "$CONFIG_FILE" 2>/dev/null || echo node
+}
+
+# ---------------------------------------------------------------------------
+# Контроллер флота (режим controller): без ядра WDTT, только
+# fleet web + fleet bot за тем же nginx. Авторизация и URL — те же
+# PANEL_USER/PANEL_PASSWORD/PANEL_PATH, внутренний порт — FLEET_LISTEN_PORT.
+# ---------------------------------------------------------------------------
+prepare_controller_secrets() {
+  [ -n "$PANEL_PASSWORD" ] || PANEL_PASSWORD="$(random_password)"
+  [ "${#PANEL_PASSWORD}" -ge 12 ] || die "PANEL_PASSWORD должен содержать не менее 12 символов"
+  [ -n "$PANEL_PATH" ] || PANEL_PATH="$(random_token 18)"
+  PANEL_PATH="/${PANEL_PATH#/}"
+  PANEL_PATH="${PANEL_PATH%/}/"
+  [[ "$PANEL_PATH" =~ ^/[A-Za-z0-9_-]{16,80}/$ ]] || die "PANEL_PATH должен быть случайным путем из 16-80 символов"
+  SESSION_SECRET="$(random_token 48)"
+}
+
+write_fleet_config() {
+  PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$FLEET_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" "$FLEET_STORE_FILE" "$FLEET_CONFIG_FILE" <<'PY'
+import json, os, sys
+(path, version, username, password_hash, session_secret, base_path, public_host,
+ https_port, fleet_listen_port, certificate_path, tls_mode, certificate_email,
+ fleet_store, fleet_config) = sys.argv[1:]
+data = {
+    "version": version,
+    "mode": "controller",
+    "username": username,
+    "password_hash": password_hash,
+    "session_secret": session_secret,
+    "base_path": base_path,
+    "public_host": public_host,
+    "https_port": int(https_port),
+    "listen_host": "127.0.0.1",
+    "listen_port": 8787,
+    "fleet_listen_port": int(fleet_listen_port),
+    "fleet_store": fleet_store,
+    "fleet_config": fleet_config,
+    "certificate_path": certificate_path,
+    "tls_mode": tls_mode,
+    "certificate_email": certificate_email,
+}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  chown root:wdtt-panel "$CONFIG_FILE"
+  chmod 0640 "$CONFIG_FILE"
+}
+
+seed_fleet_bot_settings() {
+  [ -n "$WDTT_FLEET_BOT_TOKEN" ] || [ -n "$WDTT_FLEET_ADMINS" ] || return 0
+  PYTHONPATH="$INSTALL_DIR" WDTT_FLEET_STORE="$FLEET_STORE_FILE" WDTT_FLEET_CONFIG="$FLEET_CONFIG_FILE" \
+    python3 - "$WDTT_FLEET_BOT_TOKEN" "$WDTT_FLEET_ADMINS" <<'PY'
+import sys
+from wdtt_panel.fleet.settings import FleetSettings, load_settings, parse_admins, save_settings
+_, saved = load_settings()
+token, admins_raw = sys.argv[1:]
+if token.strip():
+    saved.bot_token = token.strip()
+parsed = parse_admins(admins_raw)
+if parsed:
+    saved.admin_ids = parsed
+save_settings(saved)
+PY
+  log "Настройки Telegram-бота контроллера сохранены в $FLEET_CONFIG_FILE"
+}
+
+fleet_bot_token_available() {
+  [ -n "$WDTT_FLEET_BOT_TOKEN" ] && return 0
+  PYTHONPATH="$INSTALL_DIR" WDTT_FLEET_STORE="$FLEET_STORE_FILE" WDTT_FLEET_CONFIG="$FLEET_CONFIG_FILE" \
+    python3 -c 'import sys; from wdtt_panel.fleet.settings import load_settings; _, s = load_settings(); sys.exit(0 if s.bot_token else 1)' 2>/dev/null
+}
+
+write_fleet_service() {
+  cat > "/etc/systemd/system/$FLEET_SERVICE" <<EOF
+[Unit]
+Description=WDTT Fleet Controller Web
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=$INSTALL_DIR
+Environment=PYTHONPATH=$INSTALL_DIR
+Environment=WDTT_FLEET_STORE=$FLEET_STORE_FILE
+Environment=WDTT_FLEET_CONFIG=$FLEET_CONFIG_FILE
+ExecStart=$PYTHON3_BIN -m wdtt_panel.fleet web --config $CONFIG_FILE
+Restart=on-failure
+RestartSec=3
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1
+}
+
+write_fleet_bot_service() {
+  cat > "/etc/systemd/system/$FLEET_BOT_SERVICE" <<EOF
+[Unit]
+Description=WDTT Fleet Controller Telegram Bot
+After=network.target $FLEET_SERVICE
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=$INSTALL_DIR
+Environment=PYTHONPATH=$INSTALL_DIR
+Environment=WDTT_FLEET_STORE=$FLEET_STORE_FILE
+Environment=WDTT_FLEET_CONFIG=$FLEET_CONFIG_FILE
+ExecStart=$PYTHON3_BIN -m wdtt_panel.fleet bot
+Restart=on-failure
+RestartSec=10
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  if fleet_bot_token_available; then
+    systemctl enable --now "$FLEET_BOT_SERVICE" >>"$LOG_FILE" 2>&1
+    log "Telegram-бот контроллера запущен"
+  else
+    log "Токен бота не задан: задайте его на странице «Бот» панели или WDTT_FLEET_BOT_TOKEN, затем systemctl enable --now $FLEET_BOT_SERVICE"
+  fi
+}
+
+write_fleet_nginx() {
+  HTTP_BLOCK=""
+  HSTS_HEADER=""
+  HTTP_ENABLED=0
+  if [ "$TLS_MODE" = "letsencrypt" ]; then
+    HSTS_HEADER='    add_header Strict-Transport-Security "max-age=31536000" always;'
+  fi
+  if port_80_available_for_nginx; then
+    HTTP_ENABLED=1
+    HTTP_BLOCK="server {
+    listen 80;
+    listen [::]:80;
+    server_name $PANEL_HOST;
+    location ^~ /.well-known/acme-challenge/ { root $STATE_DIR/acme; }
+    location / { return 302 https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH; }
+}"
+  fi
+  cat > "$NGINX_FILE" <<EOF
+$HTTP_BLOCK
+server {
+    listen $PANEL_HTTPS_PORT ssl;
+    listen [::]:$PANEL_HTTPS_PORT ssl;
+    server_name $PANEL_HOST;
+
+    ssl_certificate $CERTIFICATE_PATH;
+    ssl_certificate_key $PRIVATE_KEY_PATH;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:WDTTTLS:10m;
+$HSTS_HEADER
+
+    location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
+    location ^~ $PANEL_PATH {
+        proxy_pass http://127.0.0.1:$FLEET_LISTEN_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 75s;
+        client_max_body_size 90m;
+    }
+    location / { return 404; }
+}
+EOF
+  nginx -t >>"$LOG_FILE" 2>&1 || die "Ошибка конфигурации Nginx, см. $LOG_FILE"
+  systemctl enable --now nginx >>"$LOG_FILE" 2>&1
+  systemctl reload nginx >>"$LOG_FILE" 2>&1
+}
+
+install_controller() {
+  detect_os
+  install_packages
+  ensure_modern_python
+  if [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+  validate_inputs
+  validate_port_availability
+  discover_host
+  prepare_controller_secrets
+  install_panel_files
+  remove_obsolete_fleet_agent
+
+  if request_certificate; then
+    log "Получен публично доверенный сертификат Let's Encrypt"
+  else
+    log "Let's Encrypt недоступен, создается автоматический self-signed сертификат"
+    create_self_signed_certificate
+  fi
+
+  write_fleet_config
+  seed_fleet_bot_settings
+  write_fleet_service
+  write_fleet_bot_service
+  write_fleet_nginx
+  write_renew_timer
+  open_firewall
+  systemctl restart "$FLEET_SERVICE"
+
+  printf '\n'
+  log "Установка контроллера завершена (ядро WDTT не ставится в этом режиме)"
+  printf 'URL: https://%s:%s%s\n' "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_PATH"
+  printf 'Login: %s\n' "$PANEL_USER"
+  printf 'Password: %s\n' "$PANEL_PASSWORD"
+  printf 'TLS: %s\n' "$TLS_MODE"
+  printf 'Ноды добавляются на странице «Ноды» или: fleet add --id ... --url ...\n'
+  if fleet_bot_token_available && systemctl is-active --quiet "$FLEET_BOT_SERVICE"; then
+    printf 'Telegram-бот: запущен\n'
+  else
+    printf 'Telegram-бот: задайте токен на странице «Бот» панели, затем systemctl enable --now %s\n' "$FLEET_BOT_SERVICE"
+  fi
+  printf 'Install log: %s\n' "$LOG_FILE"
+}
+
+update_controller() {
+  log "Обновление контроллера до версии $PANEL_VERSION"
+  remove_obsolete_fleet_agent
+  backup_panel_config_before_update
+  install_panel_files
+  update_controller_config_metadata
+  write_fleet_service
+  write_fleet_bot_service
+  write_fleet_nginx
+  write_renew_timer
+  systemctl restart "$FLEET_SERVICE"
+  if systemctl is-enabled --quiet "$FLEET_BOT_SERVICE" 2>/dev/null; then
+    systemctl restart "$FLEET_BOT_SERVICE" >>"$LOG_FILE" 2>&1 || true
+  fi
+  log "Контроллер обновлен; адрес, пароль, сертификаты и реестр нод сохранены"
+  status_panel
+}
+
+update_controller_config_metadata() {
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "${CERTIFICATE_PATH:-}" "${TLS_MODE:-}" "${PANEL_EMAIL:-}" <<'PY'
+import json, os, sys
+path, version, certificate_path, tls_mode, certificate_email = sys.argv[1:]
+data = json.load(open(path, encoding="utf-8"))
+data["version"] = version
+data["mode"] = "controller"
+data.setdefault("fleet_listen_port", 8790)
+data.setdefault("listen_host", "127.0.0.1")
+if certificate_path:
+    data["certificate_path"] = certificate_path
+if tls_mode:
+    data["tls_mode"] = tls_mode
+if certificate_email:
+    data["certificate_email"] = certificate_email
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  chown root:wdtt-panel "$CONFIG_FILE"
+  chmod 0640 "$CONFIG_FILE"
+}
+
 install_panel() {
   require_root
+  resolve_install_mode
+  if [ "$WDTT_MODE" = "controller" ]; then
+    install_controller
+    return 0
+  fi
   detect_os
   install_packages
   ensure_modern_python
@@ -2278,6 +2651,10 @@ install_panel() {
   printf 'Install log: %s\n' "$LOG_FILE"
 }
 
+# --mode/--mode= вынимаем из аргументов до диспетча (остальное едет дальше как было).
+parse_mode_arg "$@"
+set -- "${FILTERED_ARGS[@]}"
+
 case "${1:-install}" in
   install|--install|-i) install_panel ;;
   update|--update) update_panel ;;
@@ -2291,5 +2668,5 @@ case "${1:-install}" in
   install-xray-runtime) install_xray_runtime ;;
   install-warp-runtime) install_warp_runtime ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]" ;;
+  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions] [--mode node|controller]" ;;
 esac

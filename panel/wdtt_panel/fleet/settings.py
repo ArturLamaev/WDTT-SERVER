@@ -96,6 +96,43 @@ def parse_admins(raw: str) -> list[int]:
     return sorted({int(n) for n in re.findall(r"\d+", raw or "")})
 
 
+def load_controller_config(path: str | Path) -> dict:
+    """Настройки веб-панели контроллера из config.json установщика.
+
+    Возвращает dict с ключами: username, password_hash, secret,
+    listen_host, listen_port, base_path, store_path, config_file.
+    Бросает ValueError при отсутствии файла/ключей.
+    """
+    file = Path(path).expanduser()
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Не читается конфиг контроллера {file}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Конфиг контроллера {file}: корень должен быть объектом")
+    if str(data.get("mode") or "node") != "controller":
+        raise ValueError(f"Конфиг {file}: это не контроллер (mode != controller)")
+    required = ("username", "password_hash", "session_secret")
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        raise ValueError(f"Конфиг {file}: нет ключей: {', '.join(missing)}")
+    try:
+        port = int(data.get("fleet_listen_port") or 8790)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Конфиг {file}: плохой fleet_listen_port") from exc
+    return {
+        "username": str(data["username"]),
+        "password_hash": str(data["password_hash"]),
+        "secret": str(data["session_secret"]),
+        "listen_host": str(data.get("listen_host") or "127.0.0.1"),
+        "listen_port": port,
+        "base_path": str(data.get("base_path") or "/"),
+        "store_path": str(data.get("fleet_store") or ""),
+        "store_config_path": str(data.get("fleet_config") or ""),
+        "config_file": str(file),
+    }
+
+
 def resolve_bot_config(cli_token: str = "", cli_admins: list[str] | None = None,
                        config_path: Path | None = None) -> tuple[str, list[int], str, Path]:
     """(token, admins, источник, путь_к_файлу). Источник: cli|env|file."""

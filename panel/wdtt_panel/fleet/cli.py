@@ -306,29 +306,45 @@ def cmd_bot(args: argparse.Namespace) -> int:
 
 
 def cmd_web(args: argparse.Namespace) -> int:
+    from .settings import load_controller_config
     from .web import serve
 
-    password = args.password or os.environ.get("WDTT_FLEET_PASSWORD", "")
-    if password is None:
-        password = ""
-    if not password and sys.stdin.isatty():
-        password = getpass.getpass("Пароль веб-панели контроллера: ")
-    if len(password) < 12:
-        _emit("Пароль веб-панели: минимум 12 символов (--password или $WDTT_FLEET_PASSWORD)", False)
-        return EXIT_FAIL
     username = args.username or os.environ.get("WDTT_FLEET_USER", "admin")
+    password = args.password or os.environ.get("WDTT_FLEET_PASSWORD", "")
     secret = os.environ.get("WDTT_FLEET_SECRET", "") or secrets.token_urlsafe(32)
+    listen, port, base = args.listen, args.port, args.path
+    password_hash = ""
+    if args.config:
+        try:
+            cfg = load_controller_config(args.config)
+        except ValueError as exc:
+            _emit(str(exc), False)
+            return EXIT_FAIL
+        username, password_hash, secret = cfg["username"], cfg["password_hash"], cfg["secret"]
+        listen, port, base = cfg["listen_host"], cfg["listen_port"], cfg["base_path"]
+        for key, env in (("store_path", "WDTT_FLEET_STORE"),
+                         ("store_config_path", "WDTT_FLEET_CONFIG")):
+            if cfg[key] and not os.environ.get(env):
+                os.environ[env] = cfg[key]
+    else:
+        if password is None:
+            password = ""
+        if not password and sys.stdin.isatty():
+            password = getpass.getpass("Пароль веб-панели контроллера: ")
+        if len(password) < 12:
+            _emit("Пароль веб-панели: минимум 12 символов (--password или $WDTT_FLEET_PASSWORD)", False)
+            return EXIT_FAIL
+        try:
+            password_hash = hash_password(password)
+        except ValueError as exc:
+            _emit(str(exc), False)
+            return EXIT_FAIL
+    print(f"Fleet web: http://{listen}:{port}/ (Ctrl+C — стоп)")
     try:
-        password_hash = hash_password(password)
-    except ValueError as exc:
-        _emit(str(exc), False)
-        return EXIT_FAIL
-    print(f"Fleet web: http://{args.listen}:{args.port}/ (Ctrl+C — стоп)")
-    try:
-        serve(_open_store(args), args.listen, args.port, username,
-              password_hash, secret, base=args.path)
+        serve(_open_store(args), listen, port, username,
+              password_hash, secret, base=base)
     except OSError as exc:
-        _emit(f"Не могу слушать {args.listen}:{args.port}: {exc}", False)
+        _emit(f"Не могу слушать {listen}:{port}: {exc}", False)
         return EXIT_FAIL
     except KeyboardInterrupt:
         print("Остановлен.")
@@ -406,6 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.add_argument("--path", default="/", help="Базовый путь (по умолчанию корень)")
     p_web.add_argument("--username", default="", help="Логин (иначе $WDTT_FLEET_USER или admin)")
     p_web.add_argument("--password", default="", help="Пароль, мин. 12 символов (иначе $WDTT_FLEET_PASSWORD)")
+    p_web.add_argument("--config", default="", help="Конфиг контроллера из установщика (/etc/wdtt-panel/config.json): логин/хеш/секрет/порт берутся из него")
     p_web.set_defaults(func=cmd_web)
 
     return parser

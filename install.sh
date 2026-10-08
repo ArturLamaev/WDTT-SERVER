@@ -22,11 +22,15 @@
 #     копией в /var/lib/wdtt-uninstall-backup-<ts>.tar.gz; -y/--yes без запроса.
 #
 # Использование:
-#   sudo ./install.sh [--non-interactive] [--domain panel.example.com] [--ip A.B.C.D]
+#   sudo ./install.sh [--mode node|controller] [--non-interactive] [--domain panel.example.com] [--ip A.B.C.D]
 #                     [--user admin] [--password '...'] [--email '...']
 #                     [--https-port 9999] [--path /secret] [--wdtt-password '...']
 #                     [--telegram-token '123:...' --telegram-admin-id 123456]
 #   sudo ./install.sh status | update | renew-cert | change-password | clean-system | uninstall
+#
+# Режим выбирается вопросом при старте, флагом --mode (node|controller) или
+# env WDTT_MODE. Нода = VPN + локальная панель; контроллер = панель управления
+# флотом для дома (без ядра, только fleet web/bot + nginx, наружу один порт).
 # =============================================================================
 set -Eeuo pipefail
 
@@ -34,9 +38,48 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 KERNEL_DIR="$ROOT_DIR/src/proxy-turn-vk-android-1.4.3"
 PANEL_INSTALL="$ROOT_DIR/panel/install.sh"
 PANEL_CONFIG_FILE="/etc/wdtt-panel/config.json"
+WDTT_MODE_ENV_GIVEN=0
+[ -n "${WDTT_MODE:-}" ] && WDTT_MODE_ENV_GIVEN=1
+WDTT_MODE="${WDTT_MODE:-node}"
 
 info() { printf '[wdtt-server] %s\n' "$*"; }
 die()  { printf '[wdtt-server] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Режим node|controller: --mode/--mode=, env WDTT_MODE, вопрос на tty, иначе node.
+resolve_root_mode() {
+  local a next_is_mode=0 given="$WDTT_MODE_ENV_GIVEN"
+  for a in "$@"; do
+    if [ "$next_is_mode" = "1" ]; then WDTT_MODE="$a"; given=1; next_is_mode=0; continue; fi
+    case "$a" in
+      --mode=*) WDTT_MODE="${a#--mode=}"; given=1 ;;
+      --mode) next_is_mode=1 ;;
+    esac
+  done
+  [ "$next_is_mode" = "1" ] && die "--mode требует значение: node или controller"
+  WDTT_MODE="${WDTT_MODE:-node}"
+  case "$WDTT_MODE" in
+    node|controller) ;;
+    *) die "--mode должен быть node или controller (получено: $WDTT_MODE)" ;;
+  esac
+  if [ "$given" = "0" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    local ans=""
+    cat > /dev/tty <<'EOF'
+
+Что устанавливаем?
+  1) Нода — VPN-сервер WDTT + локальная панель (публичный сервер)
+  2) Панель управления — контроллер флота для дома (без VPN-ядра: веб, бот, API)
+EOF
+    printf 'Выбор [1]: ' > /dev/tty
+    IFS= read -r ans </dev/tty || true
+    case "${ans:-1}" in
+      1) WDTT_MODE="node" ;;
+      2) WDTT_MODE="controller" ;;
+      *) die "Неизвестный вариант: $ans" ;;
+    esac
+  fi
+  export WDTT_MODE
+  info "Режим установки: $WDTT_MODE"
+}
 
 require_local_sources() {
   [ -f "$KERNEL_DIR/server/main.go" ] || die "Локальный форк ядра не найден: $KERNEL_DIR (проверьте целостность репозитория)"
@@ -211,7 +254,15 @@ validate_installation() {
     info "ERROR: пользователь wdtt-panel не создан — установка не завершена!"
     broken=1
   fi
-  if [ -e /usr/local/bin/wdtt-server ]; then
+  if [ "${WDTT_MODE:-node}" = "controller" ]; then
+    if systemctl is-active --quiet wdtt-fleet 2>/dev/null; then
+      info "OK: контроллер флота запущен (wdtt-fleet.service)"
+    else
+      info "ERROR: wdtt-fleet.service не запущен — установка не завершена!"
+      broken=1
+    fi
+    info "Ядро WDTT в режиме контроллера не ставится (так и должно быть)"
+  elif [ -e /usr/local/bin/wdtt-server ]; then
     info "OK: ядро WDTT развёрнуто (/usr/local/bin/wdtt-server)"
   else
     info "WARN: /usr/local/bin/wdtt-server отсутствует (возможно INSTALL_WDTT=no)"
@@ -235,7 +286,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'systemctl restart wdtt.service 2>/dev/null || true; systemctl restart wdtt-panel.service 2>/dev/null || true; systemctl restart wdtt-app.service 2>/dev/null || true'
+ExecStart=/bin/bash -c 'systemctl restart wdtt.service 2>/dev/null || true; systemctl restart wdtt-panel.service 2>/dev/null || true; systemctl restart wdtt-app.service 2>/dev/null || true; systemctl restart wdtt-fleet.service 2>/dev/null || true; systemctl restart wdtt-fleet-bot.service 2>/dev/null || true'
 EOF
 
   cat > /etc/systemd/system/wdtt-auto-restart.timer <<'EOF'
@@ -264,6 +315,24 @@ EOF
 }
 
 print_final_notes() {
+  if [ "${WDTT_MODE:-node}" = "controller" ]; then
+    echo ""
+    echo "======================================================"
+    echo "[OK] Контроллер флота установлен!"
+    echo ""
+    echo "Проверь статус:"
+    echo "  systemctl status wdtt-fleet"
+    echo "  systemctl status wdtt-fleet-bot"
+    echo ""
+    echo "Логи:"
+    echo "  journalctl -u wdtt-fleet -f"
+    echo "  /var/log/wdtt-panel-install.log"
+    echo ""
+    echo "Ноды добавляются на странице «Ноды» панели или командой:"
+    echo "  fleet add --id ... --url https://IP:9999/путь"
+    echo "======================================================"
+    return 0
+  fi
   echo ""
   echo "======================================================"
   echo "[OK] Установка WDTT-SERVER завершена!"
@@ -359,6 +428,7 @@ main() {
   require_root "$@"
   case "${1:-install}" in
     install|--install|-i)
+      resolve_root_mode "$@"
       require_local_sources
       check_fork_limits
       local upgrade=0
@@ -392,7 +462,7 @@ main() {
         upgrade_existing_install "$@"
         validate_installation || true
       else
-        bash "$PANEL_INSTALL" "$@"
+        bash "$PANEL_INSTALL" "$@" --mode "$WDTT_MODE"
         validate_installation
       fi
       setup_auto_restart
@@ -417,7 +487,7 @@ main() {
         main "$@"
         return 0
       fi
-      die "Использование: $0 [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]"
+      die "Использование: $0 [--mode node|controller] [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]"
       ;;
   esac
 }

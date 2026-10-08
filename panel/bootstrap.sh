@@ -26,6 +26,7 @@ Install options:
   --wdtt-password PWD Main WDTT password for a clean server
   --telegram-token T  Telegram Bot Token for WDTT bot
   --telegram-admin-id ID Telegram Admin chat ID for WDTT bot
+  --mode MODE         node (VPN-сервер + панель) или controller (панель управления флотом)
   --non-interactive   Do not ask questions; generate missing values
 
 Change-password options:
@@ -197,7 +198,30 @@ prompt_install_options() {
   [ "${NON_INTERACTIVE:-0}" = "1" ] && return 0
   [ -r /dev/tty ] && [ -w /dev/tty ] || return 0
 
-  if [ -z "${PANEL_HOST:-}" ]; then
+  if [ -z "${WDTT_MODE:-}" ]; then
+    cat >/dev/tty <<'EOF'
+
+Что устанавливаем?
+  1) Нода — VPN-сервер WDTT + локальная панель (публичный сервер)
+  2) Панель управления — контроллер флота для дома (без VPN-ядра: веб, бот, API)
+EOF
+    printf 'Выберите вариант [1]: ' >/dev/tty
+    IFS= read -r install_mode </dev/tty || true
+    case "${install_mode:-1}" in
+      1) WDTT_MODE="node" ;;
+      2) WDTT_MODE="controller" ;;
+      *) echo 'Неизвестный вариант.' >/dev/tty; exit 2 ;;
+    esac
+  fi
+  case "${WDTT_MODE:-node}" in
+    node|controller) ;;
+    *) echo 'WDTT_MODE должен быть node или controller.' >/dev/tty; exit 2 ;;
+  esac
+  if [ "${WDTT_MODE:-node}" = "controller" ]; then
+    if [ -z "${PANEL_HOST:-}" ]; then
+      PANEL_HOST="$(prompt_value 'Домен или адрес контроллера (Enter = авто-IP)')"
+    fi
+  fi
     cat >/dev/tty <<'EOF'
 
 Адрес панели:
@@ -227,6 +251,7 @@ EOF
     IFS= read -r -s PANEL_PASSWORD </dev/tty || true
     printf '\n' >/dev/tty
   fi
+  if [ "${WDTT_MODE:-node}" != "controller" ]; then
   if [ -z "${INSTALL_WDTT:-}" ]; then
     cat >/dev/tty <<'EOF'
 
@@ -242,6 +267,7 @@ EOF
     prompt_wdtt_main_password
   fi
   prompt_telegram_settings
+  fi
 }
 
 while [ "$#" -gt 0 ]; do
@@ -258,6 +284,8 @@ while [ "$#" -gt 0 ]; do
     --wdtt-password) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_MAIN_PASSWORD="$2"; shift 2 ;;
     --telegram-token) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_TELEGRAM_BOT_TOKEN="$2"; shift 2 ;;
     --telegram-admin-id) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_TELEGRAM_ADMIN_ID="$2"; shift 2 ;;
+    --mode) [ "$#" -ge 2 ] || { usage; exit 2; }; WDTT_MODE="$2"; shift 2 ;;
+    --mode=*) WDTT_MODE="${1#--mode=}"; shift ;;
     --version) [ "$#" -ge 2 ] || { usage; exit 2; }; ROLLBACK_VERSION="$2"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -292,6 +320,7 @@ run_action() {
   [ "$ACTION" != "clean-logs" ] || ACTION="clean-system"
   if [ "$ACTION" = "install" ]; then
     prompt_install_options
+    if [ "${WDTT_MODE:-node}" != "controller" ]; then
     normalize_wdtt_main_password
     wdtt_main_password_is_valid || {
       echo 'WDTT_MAIN_PASSWORD: 12-64 символа A-Z, a-z, 0-9, точка, _, ~ или -; без пробелов и двоеточия' >&2
@@ -301,6 +330,7 @@ run_action() {
       echo 'Telegram: укажите оба значения, Bot Token в формате 123456:ABC... и числовой Admin ID' >&2
       return 2
     }
+    fi
   elif [ "$ACTION" = "change-password" ]; then
     prompt_password_change
   elif [ "$ACTION" = "rollback" ]; then
@@ -314,6 +344,7 @@ run_action() {
   export PANEL_EMAIL="${PANEL_EMAIL:-}"
   export PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-9999}"
   export PANEL_PATH="${PANEL_PATH:-}"
+  export WDTT_MODE="${WDTT_MODE:-node}"
   export INSTALL_WDTT="${INSTALL_WDTT:-auto}"
   export WDTT_MAIN_PASSWORD="${WDTT_MAIN_PASSWORD:-}"
   export WDTT_TELEGRAM_BOT_TOKEN="${WDTT_TELEGRAM_BOT_TOKEN:-}"
