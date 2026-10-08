@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
+  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, historyPoints: [], xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
 
   let panelVersionTimer = null;
 
@@ -59,6 +59,8 @@
       catch (_) { /* Browser storage can be disabled. */ }
     }
     renderAccent();
+    // Графики перекрашиваются сразу, из кэша точек (без запроса к API).
+    if (Array.isArray(state.historyPoints)) drawCharts(state.historyPoints);
   }
 
   function restoreAccent() {
@@ -83,6 +85,7 @@
     if (name === "logs") loadLogs();
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
     if (name === "wdtt") loadWdttSettings();
+    if (name === "overview" && Array.isArray(state.historyPoints)) drawCharts(state.historyPoints);
     if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); loadPanelVersion(); }
   }
 
@@ -374,9 +377,22 @@
 
   async function loadHistory() {
     const history = await api("history");
-    const points = history.points || [];
+    state.historyPoints = history.points || [];
+    drawCharts(state.historyPoints);
+  }
+
+  // Рисуем графики только когда вкладка «Обзор» видима и канвас имеет размер:
+  // иначе скрытый канвас рисуется в минимальный 600px и CSS растягивает его
+  // (размытие при возврате на вкладку). Перерисовка — при активации вкладки,
+  // смене акцента/темы и по поллу.
+  function drawCharts(points) {
+    const tab = $("#tab-dashboard");
+    if (!tab || !tab.classList.contains("active")) return false;
+    const conns = $("#conns-chart");
+    if (!conns || conns.getBoundingClientRect().width < 40) return false;
     drawConnsChart(points);
     drawSpeedChart(points);
+    return true;
   }
 
   function setupCanvas(id, height) {
@@ -1824,6 +1840,7 @@
       try { localStorage.setItem("wdtt-theme", document.body.classList.contains("light-theme") ? "light" : "dark"); }
       catch (_) { /* Browser storage can be disabled. */ }
       renderTheme();
+      if (Array.isArray(state.historyPoints)) drawCharts(state.historyPoints);
     });
     const accentPicker = $("#accent-picker");
     if (accentPicker) accentPicker.addEventListener("click", (event) => {
