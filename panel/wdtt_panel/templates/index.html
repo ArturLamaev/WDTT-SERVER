@@ -49,12 +49,20 @@
         <article class="metric-card"><p>Оперативная память</p><strong id="memory-load">0%</strong><small id="memory-detail">0 / 0</small></article>
         <article class="metric-card"><p>Диск</p><strong id="disk-load">0%</strong><small id="disk-detail">0 / 0</small></article>
       </div>
-      <div class="two-column">
+      <div class="charts-grid">
         <article class="panel-card">
-          <div class="section-head"><div><p class="eyebrow">24 HOURS</p><h2>Активность</h2></div></div>
-          <canvas id="activity-chart" width="900" height="280"></canvas>
+          <div class="section-head"><div><p class="eyebrow">24 HOURS</p><h2>Подключения</h2></div></div>
+          <canvas id="conns-chart" width="900" height="220"></canvas>
+          <div class="chart-legend"><span class="chart-legend-down">в сети</span><span class="chart-legend-up">всего</span></div>
         </article>
-        <article class="panel-card health-card">
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">24 HOURS</p><h2>Скорость трафика</h2></div></div>
+          <canvas id="speed-chart" width="900" height="220"></canvas>
+          <div class="chart-legend"><span class="chart-legend-down">входящая, Мбит/с</span><span class="chart-legend-up">исходящая, Мбит/с</span></div>
+        </article>
+      </div>
+      <div class="two-column charts-grid">
+        <article class="panel-card health-card wide">
           <div class="section-head"><div><p class="eyebrow">HEALTH CHECK</p><h2>Диагностика</h2></div></div>
           <div id="health-list" class="health-list"></div>
         </article>

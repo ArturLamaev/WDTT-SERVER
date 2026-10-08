@@ -374,42 +374,87 @@
 
   async function loadHistory() {
     const history = await api("history");
-    drawChart(history.points || []);
+    const points = history.points || [];
+    drawConnsChart(points);
+    drawSpeedChart(points);
   }
 
-  function drawChart(points) {
-    const canvas = $("#activity-chart");
+  function setupCanvas(id, height) {
+    const canvas = $(id);
     const ratio = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     canvas.width = Math.max(600, rect.width * ratio);
-    canvas.height = 280 * ratio;
+    canvas.height = height * ratio;
     const ctx = canvas.getContext("2d");
     ctx.scale(ratio, ratio);
-    const width = canvas.width / ratio, height = 280;
-    ctx.clearRect(0, 0, width, height);
-    ctx.strokeStyle = "#1f2b3c"; ctx.lineWidth = 1;
-    for (let y = 30; y < height; y += 52) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
-    if (!points.length) {
-      ctx.fillStyle = "#718198"; ctx.font = "12px sans-serif"; ctx.fillText("История появится после нескольких обновлений", 18, 34); return;
-    }
-    const values = points.map((item) => Number(item[1] || 0));
-    const max = Math.max(4, ...values);
+    ctx.clearRect(0, 0, canvas.width / ratio, height);
+    return [ctx, canvas.width / ratio, height];
+  }
+
+  function drawGrid(ctx, width, height) {
+    ctx.strokeStyle = "#2e2c25"; ctx.lineWidth = 1;
+    [0.25, 0.5, 0.75].forEach((f) => { const y = height * f; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); });
+  }
+
+  function traceLine(ctx, X, Y, values) {
+    ctx.beginPath();
+    values.forEach((v, i) => { i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)); });
+  }
+
+  function strokeSolid(ctx, X, Y, values, color, width) {
+    traceLine(ctx, X, Y, values);
+    ctx.strokeStyle = color; ctx.lineWidth = width || 2; ctx.lineCap = "round"; ctx.stroke();
+  }
+
+  function strokeDashed(ctx, X, Y, values, color) {
+    traceLine(ctx, X, Y, values);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.lineCap = "round"; ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  function fillArea(ctx, X, Y, values, width, height) {
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "rgba(244,63,94,.3)"); gradient.addColorStop(1, "rgba(244,63,94,0)");
-    ctx.beginPath();
-    points.forEach((item, index) => {
-      const x = points.length === 1 ? width / 2 : index * (width / (points.length - 1));
-      const y = height - 28 - (Number(item[1] || 0) / max) * (height - 52);
-      index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    });
+    gradient.addColorStop(0, "rgba(127,181,166,.3)"); gradient.addColorStop(1, "rgba(127,181,166,0)");
+    traceLine(ctx, X, Y, values);
     ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
-    ctx.beginPath();
-    points.forEach((item, index) => {
-      const x = points.length === 1 ? width / 2 : index * (width / (points.length - 1));
-      const y = height - 28 - (Number(item[1] || 0) / max) * (height - 52);
-      index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+
+  function drawConnsChart(points) {
+    // Формат точек: [captured_at, active, total, up_gb, down_gb, users, devices].
+    const [ctx, width, height] = setupCanvas("#conns-chart", 220);
+    drawGrid(ctx, width, height);
+    if (points.length < 2) {
+      ctx.fillStyle = "#6b665b"; ctx.font = "12px sans-serif"; ctx.fillText("История появится после нескольких обновлений", 18, 34); return;
+    }
+    const active = points.map((item) => Number(item[1] || 0));
+    const total = points.map((item) => Number(item[2] || 0));
+    const max = Math.max(4, ...active, ...total);
+    const X = (i) => i * (width / (points.length - 1));
+    const Y = (v) => height - 14 - (v / max) * (height - 28);
+    fillArea(ctx, X, Y, active, width, height);
+    strokeSolid(ctx, X, Y, active, "#7fb5a6", 2);
+    strokeDashed(ctx, X, Y, total, "#8a8474");
+  }
+
+  function drawSpeedChart(points) {
+    // Скорость в Мбит/с — производная счётчиков ГБ по времени; сброс счётчика даёт 0.
+    const [ctx, width, height] = setupCanvas("#speed-chart", 220);
+    drawGrid(ctx, width, height);
+    if (points.length < 2) {
+      ctx.fillStyle = "#6b665b"; ctx.font = "12px sans-serif"; ctx.fillText("История появится после нескольких обновлений", 18, 34); return;
+    }
+    const rate = (idx) => points.map((item, i) => {
+      if (!i) return 0;
+      const dt = Number(points[i][0] || 0) - Number(points[i - 1][0] || 0);
+      const dg = Number(item[idx] || 0) - Number(points[i - 1][idx] || 0);
+      return dt > 0 && dg > 0 ? (dg * 8000) / dt : 0;
     });
-    ctx.strokeStyle = "#f43f5e"; ctx.lineWidth = 2; ctx.stroke();
+    const down = rate(4), up = rate(3);
+    const max = Math.max(1, ...down, ...up);
+    const X = (i) => i * (width / (points.length - 1));
+    const Y = (v) => height - 14 - (v / max) * (height - 28);
+    fillArea(ctx, X, Y, down, width, height);
+    strokeSolid(ctx, X, Y, down, "#7fb5a6", 2);
+    strokeDashed(ctx, X, Y, up, "#8a8474");
   }
 
   async function loadUsers() {
