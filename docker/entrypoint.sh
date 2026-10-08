@@ -333,6 +333,19 @@ else
 fi
 
 # ── 8. финальный nginx-конфиг ────────────────────────────────────────────────
+# Путь и порты берём из фактического config.json (volume), а не из окружения:
+# при рестартах PANEL_PATH в .env может отличаться от сохранённого —
+# иначе nginx и панель разъедутся и будет 404.
+NGINX_VARS="$(python3 - /etc/wdtt-panel/config.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+print(f"PANEL_PATH={d.get('base_path', '/')}")
+print(f"PANEL_HTTPS_PORT={int(d.get('https_port', 9999))}")
+print(f"PANEL_LISTEN_PORT={int(d.get('listen_port', 8787))}")
+PY
+)" || die "Не удалось прочитать config.json для nginx"
+eval "$NGINX_VARS"
+export PANEL_PATH PANEL_HTTPS_PORT PANEL_LISTEN_PORT
 /usr/local/sbin/wdtt-gen-nginx-conf
 
 # ── 9. рантаймы xray/wgcf ────────────────────────────────────────────────────
