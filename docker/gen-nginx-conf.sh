@@ -28,6 +28,7 @@ export PANEL_PATH PANEL_PATH_TRIM PANEL_HTTPS_PORT PANEL_LISTEN_PORT
 export CERTIFICATE_PATH PRIVATE_KEY_PATH TLS_MODE HSTS_HEADER
 
 python3 - "$TMPL" "$OUT" <<'PY'
+import re
 import sys
 from pathlib import Path
 import os
@@ -46,7 +47,9 @@ values = {
 }
 for key, value in values.items():
     text = text.replace("@@" + key + "@@", value)
-leftover = [line.strip() for line in text.splitlines() if "@@" in line]
+# Ловим только настоящие незаменённые плейсхолдеры вида @@ИМЯ@@,
+# а не случайные @@ в комментариях.
+leftover = sorted(set(re.findall(r"@@[A-Za-z_][A-Za-z0-9_]*@@", text)))
 if leftover:
     raise SystemExit(f"В шаблоне остались незаменённые плейсхолдеры: {leftover[:3]}")
 Path(output_path).write_text(text, encoding="utf-8")
