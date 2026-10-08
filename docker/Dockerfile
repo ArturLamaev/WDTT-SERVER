@@ -24,13 +24,18 @@ RUN apt-get update \
 
 WORKDIR /workspace
 
-# Замороженный форк ядра qWDTT v1.4.3 + патч «расширение панели»
+# Замороженный форк ядра qWDTT v1.4.3 + патч «расширение панели».
+# Патчу нужны соседние файлы скрипта (wdtt_server_extension.go — шаблон,
+# wdtt_server_extension_test.go): он читает их через Path(__file__).with_name().
 COPY src/proxy-turn-vk-android-1.4.3 ./wdtt
-COPY panel/wdtt_panel/wdtt_server_patch.py ./wdtt_server_patch.py
+COPY panel/wdtt_panel/wdtt_server_patch.py \
+     panel/wdtt_panel/wdtt_server_extension.go \
+     panel/wdtt_panel/wdtt_server_extension_test.go \
+     ./build-tools/
 
 # Накладываем расширение панели: метки Telegram, трафик/активность юзеров,
 # квоты, runtime-тюнабели (маркер wdtt-panel-extension-v10).
-RUN python3 /workspace/wdtt_server_patch.py /workspace/wdtt
+RUN python3 /workspace/build-tools/wdtt_server_patch.py /workspace/wdtt
 
 WORKDIR /workspace/wdtt/server
 ENV CGO_ENABLED=0 GOFLAGS=-mod=mod GOCACHE=/root/.cache/go-build

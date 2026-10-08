@@ -11,6 +11,13 @@
 - новый функционал/фича → минор (`+0.1`), например `1.0.0 → 1.1.0`;
 - мажорная обнова → мажор (`+1.0`), например `1.0.0 → 2.0.0`.
 
+## 1.12.1
+
+Фикс сборки Docker-образа: в build-стадию ядра не были скопированы соседние
+файлы патча (`wdtt_server_extension.go`, `wdtt_server_extension_test.go`),
+которые `wdtt_server_patch.py` читает через `Path(__file__).with_name(...)` —
+сборка падала с `No such file or directory: wdtt_server_extension.go`.
+
 ## 1.12.0
 
 Docker Compose поддержка (`docker/`): всё-в-одном образ на Ubuntu 24.04
