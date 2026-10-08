@@ -99,8 +99,23 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 docker compose logs -f wdtt                 # логи всего стека
 docker compose exec wdtt wdtt-change-password 'Новый-пароль-мин-12'
 docker compose exec wdtt wdtt-healthcheck && echo OK
-docker compose down && docker compose up -d --build   # обновление образа
 ```
+
+## Обновление
+
+Кнопок «Проверить/Обновить» в веб-панели под Docker нет — вместо них плашка
+с этой же инструкцией. Код панели примонтирован из репозитория хоста
+(`../panel/wdtt_panel:/opt/wdtt-panel/wdtt_panel`, rw), поэтому:
+
+```bash
+cd docker
+git -C .. pull                          # новый код панели/фронта
+docker compose restart wdtt             # только Python-код панели: перезапуск подхватывает
+docker compose down && docker compose up -d --build   # ядро Go, пакеты, Dockerfile
+```
+
+Данные (пользователи, конфиг, сертификаты) живут в named volumes и переживают
+оба варианта. Не используйте `down -v` — он снесёт volumes.
 
 Бэкап данных:
 

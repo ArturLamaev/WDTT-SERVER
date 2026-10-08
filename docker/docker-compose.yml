@@ -33,6 +33,11 @@ services:
         required: false
     environment:
       TZ: ${TZ:-UTC}
+      # Панель работает из примонтированного кода репозитория (см. volumes ниже):
+      # обновление Python-кода = git pull на хосте + restart, без пересборки.
+      WDTT_DOCKER: "1"
+      # Код примонтирован read-only — запрещаем запись __pycache__ рядом с ним.
+      PYTHONDONTWRITEBYTECODE: "1"
 
     ports:
       # Панель (HTTPS, секретный путь) — основной порт входа
@@ -56,6 +61,12 @@ services:
       - wdtt-panel-state:/var/lib/wdtt-panel      # sqlite-состояние панели
       - wdtt-panel-private:/var/lib/wdtt-panel-private   # xray, warp, бэкапы
       - wdtt-letsencrypt:/etc/letsencrypt         # сертификаты Let's Encrypt
+      # Код панели из репозитория поверх запечённого в образ: обновление
+      # Python-кода (панель, fleet, фронт) = git pull на хосте +
+      # `docker compose restart wdtt`. Пересборка (`up -d --build`) нужна
+      # только для Go-ядра и системных пакетов. Монт rw: рантайм пишет
+      # только в volumes, __pycache__/ *.pyc прикрыты .gitignore.
+      - ../panel/wdtt_panel:/opt/wdtt-panel/wdtt_panel
       # Свой сид VK-хешей вместо вшитого в образ:
       # - ../userdata:/opt/userdata:ro
 

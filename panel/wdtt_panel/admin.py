@@ -1880,6 +1880,9 @@ def panel_version(payload: dict[str, Any]) -> dict[str, Any]:
         "state": str(status.get("state") or "unknown"),
         "message": str(status.get("message") or ""),
         "checked_at": checked_at,
+        # Docker: код примонтирован/запечён в образ, кнопочного самообновления
+        # нет — фронт показывает плашку «обновитесь через compose».
+        "docker": os.environ.get("WDTT_DOCKER", "") not in ("", "0", "false", "no"),
     }
 
 

@@ -1200,9 +1200,18 @@
   function renderPanelVersion(result) {
     const info = $("#panel-version-info");
     const updateButton = $("#update-panel");
+    const checkButton = $("#check-panel-update");
     const current = result.current || PANEL_VERSION;
     const latest = result.latest || "";
     const rows = [`<div class="detail-row"><span>Установлена</span><strong>v${escapeHtml(current)}</strong></div>`];
+    if (result.docker) {
+      rows.push('<div class="detail-row"><span>Обновление</span><strong>Docker: панель — git pull на хосте + docker compose restart wdtt; ядро — docker compose up -d --build</strong></div>');
+      info.innerHTML = rows.join("");
+      updateButton.hidden = true;
+      if (checkButton) checkButton.hidden = true;
+      $("#panel-version-pill").textContent = `v${current}`;
+      return;
+    }
     if (latest) rows.push(`<div class="detail-row"><span>В репозитории</span><strong>v${escapeHtml(latest)}</strong></div>`);
     if (result.state === "running" || result.state === "checking") {
       rows.push('<div class="detail-row"><span>Проверка</span><strong>выполняется…</strong></div>');
@@ -1246,6 +1255,7 @@
       return;
     }
     renderPanelVersion(result);
+    if (result.docker) return; // в Docker кнопочного самообновления нет — не дёргаем check
     if (!autoCheck) return;
     const busy = result.state === "running" || result.state === "checking";
     const stale = !result.checked_at || (Math.floor(Date.now() / 1000) - Number(result.checked_at)) > 600;

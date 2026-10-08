@@ -24,6 +24,8 @@ export WDTT_PANEL_STATE=/var/lib/wdtt-panel/panel.db
 export WDTT_PANEL_SEED_HASHES=/etc/wdtt-panel/vk-hash.txt
 export WDTT_PANEL_ADMIN=/usr/local/bin/wdtt-panel-admin
 export WDTT_SKIP_SYSTEMD=1
+# Метка Docker для панели (плашка самообновления): из compose едет WDTT_DOCKER=1.
+export WDTT_DOCKER="${WDTT_DOCKER:-0}"
 export XRAY_LOCATION_ASSET="${WDTT_XRAY_ASSETS:-/var/lib/wdtt-panel-private/xray-assets}"
 : "${AUTO_RESTART_HOURS:=6}"
 
