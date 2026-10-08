@@ -391,57 +391,123 @@
     return [ctx, canvas.width / ratio, height];
   }
 
-  function drawGrid(ctx, width, height) {
-    ctx.strokeStyle = "#2e2c25"; ctx.lineWidth = 1;
-    [0.25, 0.5, 0.75].forEach((f) => { const y = height * f; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); });
+  function chartColors() {
+    const css = getComputedStyle(document.body);
+    const pick = (name, fallback) => (css.getPropertyValue(name) || "").trim() || fallback;
+    return { accent: pick("--accent", "#7fb5a6"), line: pick("--line", "#2e2c25"), muted: pick("--muted", "#a39d8f"), faint: pick("--faint", "#6b665b") };
   }
 
-  function traceLine(ctx, X, Y, values) {
+  function withAlpha(color, alpha) {
+    if (color[0] === "#") {
+      const hex = color.slice(1);
+      const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex.slice(0, 6);
+      const n = parseInt(full, 16);
+      return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+    }
+    const m = color.match(/rgba?\(([^)]+)\)/);
+    if (m) { const p = m[1].split(",").map((s) => parseFloat(s)); return `rgba(${p[0]}, ${p[1]}, ${p[2]}, ${alpha})`; }
+    return color;
+  }
+
+  // Максимум шкалы «красивый»: четыре деления ряда 1/1.5/2/2.5/3/4/5/6/8/10 × 10^k.
+  function niceMax(value) {
+    const target = Math.max(1e-9, value) / 4;
+    const pow = Math.pow(10, Math.floor(Math.log10(target)));
+    const steps = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+    const step = steps.find((s) => s * pow >= target - 1e-9) || 10;
+    return step * pow * 4;
+  }
+
+  // Оси: горизонтали с подписями min→max слева, вертикали с временем снизу.
+  function drawChartFrame(ctx, width, height, points, max, colors, unit) {
+    const pad = { left: 46, right: 12, top: 14, bottom: 24 };
+    const x0 = pad.left, x1 = width - pad.right;
+    const y0 = pad.top, y1 = height - pad.bottom;
+    const X = (i) => x0 + (points.length > 1 ? (i / (points.length - 1)) * (x1 - x0) : (x1 - x0) / 2);
+    const Y = (v) => y1 - (v / max) * (y1 - y0);
+    const step = max / 4;
+    const label = step < 0.5 ? (v) => v.toFixed(2) : step < 1 ? (v) => v.toFixed(1) : (v) => String(Math.round(v));
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (let f = 0; f <= 4; f++) {
+      const v = (max * f) / 4;
+      const y = Y(v);
+      ctx.strokeStyle = colors.line; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.fillStyle = (f === 0 || f === 4) ? colors.muted : colors.faint;
+      ctx.fillText(label(v), x0 - 7, y);
+    }
+    if (points.length > 1) {
+      ctx.textAlign = "center"; ctx.textBaseline = "top";
+      [0, 0.25, 0.5, 0.75, 1].forEach((f) => {
+        const i = Math.round(f * (points.length - 1));
+        const x = X(i);
+        ctx.strokeStyle = colors.line;
+        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+        const stamp = Number(points[i][0] || 0);
+        if (stamp) {
+          ctx.textAlign = f === 0 ? "left" : f === 1 ? "right" : "center";
+          ctx.fillStyle = colors.faint;
+          ctx.fillText(new Date(stamp * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }), f === 0 ? x0 : f === 1 ? x1 : x, y1 + 6);
+        }
+      });
+    }
+    if (unit) {
+      ctx.textAlign = "left"; ctx.textBaseline = "top";
+      ctx.fillStyle = colors.faint;
+      ctx.fillText(unit, 2, 1);
+    }
+    return { X, Y, x0, x1, y0, y1 };
+  }
+
+  function traceLine(ctx, scale, values) {
     ctx.beginPath();
-    values.forEach((v, i) => { i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)); });
+    values.forEach((v, i) => { i ? ctx.lineTo(scale.X(i), scale.Y(v)) : ctx.moveTo(scale.X(i), scale.Y(v)); });
   }
 
-  function strokeSolid(ctx, X, Y, values, color, width) {
-    traceLine(ctx, X, Y, values);
+  function strokeSolid(ctx, scale, values, color, width) {
+    traceLine(ctx, scale, values);
     ctx.strokeStyle = color; ctx.lineWidth = width || 2; ctx.lineCap = "round"; ctx.stroke();
   }
 
-  function strokeDashed(ctx, X, Y, values, color) {
-    traceLine(ctx, X, Y, values);
+  function strokeDashed(ctx, scale, values, color) {
+    traceLine(ctx, scale, values);
     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.lineCap = "round"; ctx.stroke(); ctx.setLineDash([]);
   }
 
-  function fillArea(ctx, X, Y, values, width, height) {
-    const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "rgba(127,181,166,.3)"); gradient.addColorStop(1, "rgba(127,181,166,0)");
-    traceLine(ctx, X, Y, values);
-    ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
+  function fillArea(ctx, scale, values, colors) {
+    const gradient = ctx.createLinearGradient(0, scale.y0, 0, scale.y1);
+    gradient.addColorStop(0, withAlpha(colors.accent, .3)); gradient.addColorStop(1, withAlpha(colors.accent, 0));
+    traceLine(ctx, scale, values);
+    ctx.lineTo(scale.x1, scale.y1); ctx.lineTo(scale.x0, scale.y1); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
+  }
+
+  function chartPlaceholder(ctx, width, height, points, max, colors) {
+    const scale = drawChartFrame(ctx, width, height, points, max, colors, "");
+    ctx.fillStyle = colors.faint; ctx.font = "12px sans-serif";
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.fillText("История появится после нескольких обновлений", scale.x0 + 8, scale.y0 + 6);
   }
 
   function drawConnsChart(points) {
     // Формат точек: [captured_at, active, total, up_gb, down_gb, users, devices].
     const [ctx, width, height] = setupCanvas("#conns-chart", 220);
-    drawGrid(ctx, width, height);
-    if (points.length < 2) {
-      ctx.fillStyle = "#6b665b"; ctx.font = "12px sans-serif"; ctx.fillText("История появится после нескольких обновлений", 18, 34); return;
-    }
+    const colors = chartColors();
+    if (points.length < 2) { chartPlaceholder(ctx, width, height, [], 4, colors); return; }
     const active = points.map((item) => Number(item[1] || 0));
     const total = points.map((item) => Number(item[2] || 0));
-    const max = Math.max(4, ...active, ...total);
-    const X = (i) => i * (width / (points.length - 1));
-    const Y = (v) => height - 14 - (v / max) * (height - 28);
-    fillArea(ctx, X, Y, active, width, height);
-    strokeSolid(ctx, X, Y, active, "#7fb5a6", 2);
-    strokeDashed(ctx, X, Y, total, "#8a8474");
+    const max = niceMax(Math.max(4, ...active, ...total));
+    const scale = drawChartFrame(ctx, width, height, points, max, colors, "шт.");
+    fillArea(ctx, scale, active, colors);
+    strokeSolid(ctx, scale, active, colors.accent, 2);
+    strokeDashed(ctx, scale, total, colors.muted);
   }
 
   function drawSpeedChart(points) {
     // Скорость в Мбит/с — производная счётчиков ГБ по времени; сброс счётчика даёт 0.
     const [ctx, width, height] = setupCanvas("#speed-chart", 220);
-    drawGrid(ctx, width, height);
-    if (points.length < 2) {
-      ctx.fillStyle = "#6b665b"; ctx.font = "12px sans-serif"; ctx.fillText("История появится после нескольких обновлений", 18, 34); return;
-    }
+    const colors = chartColors();
+    if (points.length < 2) { chartPlaceholder(ctx, width, height, [], 4, colors); return; }
     const rate = (idx) => points.map((item, i) => {
       if (!i) return 0;
       const dt = Number(points[i][0] || 0) - Number(points[i - 1][0] || 0);
@@ -449,12 +515,11 @@
       return dt > 0 && dg > 0 ? (dg * 8000) / dt : 0;
     });
     const down = rate(4), up = rate(3);
-    const max = Math.max(1, ...down, ...up);
-    const X = (i) => i * (width / (points.length - 1));
-    const Y = (v) => height - 14 - (v / max) * (height - 28);
-    fillArea(ctx, X, Y, down, width, height);
-    strokeSolid(ctx, X, Y, down, "#7fb5a6", 2);
-    strokeDashed(ctx, X, Y, up, "#8a8474");
+    const max = niceMax(Math.max(1, ...down, ...up));
+    const scale = drawChartFrame(ctx, width, height, points, max, colors, "Мбит/с");
+    fillArea(ctx, scale, down, colors);
+    strokeSolid(ctx, scale, down, colors.accent, 2);
+    strokeDashed(ctx, scale, up, colors.muted);
   }
 
   async function loadUsers() {
