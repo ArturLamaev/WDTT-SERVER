@@ -24,6 +24,8 @@ if [ "$TLS_MODE" = "letsencrypt" ]; then
 else
   HSTS_HEADER=""
 fi
+export PANEL_PATH PANEL_PATH_TRIM PANEL_HTTPS_PORT PANEL_LISTEN_PORT
+export CERTIFICATE_PATH PRIVATE_KEY_PATH TLS_MODE HSTS_HEADER
 
 python3 - "$TMPL" "$OUT" <<'PY'
 import sys
@@ -50,8 +52,5 @@ if leftover:
 Path(output_path).write_text(text, encoding="utf-8")
 print(f"nginx conf записан: {output_path}")
 PY
-
-export PANEL_PATH PANEL_PATH_TRIM PANEL_HTTPS_PORT PANEL_LISTEN_PORT
-export CERTIFICATE_PATH PRIVATE_KEY_PATH TLS_MODE
 
 nginx -t
