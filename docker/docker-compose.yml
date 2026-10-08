@@ -1,0 +1,84 @@
+# =============================================================================
+# WDTT-SERVER — docker compose.
+#
+# Быстрый старт:
+#   cd docker
+#   cp .env.example .env        # впишите пароли/домен
+#   docker compose up -d --build
+#   docker compose logs -f      # здесь появятся сгенерированные пароли
+#
+# Требования к хосту:
+#   * Linux с поддержкой /dev/net/tun (VPS-ядро с модулем tun)
+#   * контейнеру даны привилегии NET_ADMIN/NET_RAW (см. ниже)
+#   * опубликованные порты: 9999 (панель), 80 (ACME/редирект),
+#     56000/udp+tcp (DTLS/API), 56001/udp (WireGuard) — откройте их и в фаерволе VPS.
+#
+# Если Docker-хост не отдаёт /dev/net/tun — раскомментируйте `privileged: true`
+# (проще всего на большинстве «облачных» докер-хостингов).
+# =============================================================================
+name: wdtt-server
+
+services:
+  wdtt:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BASE_IMAGE: ${WDTT_BASE_IMAGE:-ubuntu:24.04}   # или debian:13
+    image: wdtt-server:local
+    container_name: wdtt-server
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-UTC}
+
+    ports:
+      # Панель (HTTPS, секретный путь) — основной порт входа
+      - "${PANEL_HTTPS_PORT:-9999}:${PANEL_HTTPS_PORT:-9999}"
+      # HTTP — ACME-проверка Let's Encrypt и редирект на HTTPS
+      - "80:80"
+      # Ядро WDTT
+      - "${WDTT_DTLS_PORT:-56000}:${WDTT_DTLS_PORT:-56000}/udp"   # DTLS-туннель
+      - "${WDTT_DTLS_PORT:-56000}:${WDTT_DTLS_PORT:-56000}/tcp"   # API ядра
+      - "${WDTT_WG_PORT:-56001}:${WDTT_WG_PORT:-56001}/udp"       # WireGuard
+      # Admin API ядра (56002) НАРУЖУ НЕ ОТКРЫВАЙТЕ — он нужен только
+      # самой панели/приложению на локальной петле:
+      # - "${WDTT_ADMIN_PORT:-56002}:${WDTT_ADMIN_PORT:-56002}"
+      # Экспериментальные порты ядра (включаются переменными WDTT_DIRECT_PORT/WDTT_RAW_PORT):
+      # - "${WDTT_DIRECT_PORT:-9000}:${WDTT_DIRECT_PORT:-9000}/udp"
+      # - "${WDTT_RAW_PORT:-9001}:${WDTT_RAW_PORT:-9001}/udp"
+
+    volumes:
+      - wdtt-data:/etc/wdtt                       # passwords.json, секреты ядра
+      - wdtt-panel-config:/etc/wdtt-panel         # config.json, самоподписанный TLS
+      - wdtt-panel-state:/var/lib/wdtt-panel      # sqlite-состояние панели
+      - wdtt-panel-private:/var/lib/wdtt-panel-private   # xray, warp, бэкапы
+      - wdtt-letsencrypt:/etc/letsencrypt         # сертификаты Let's Encrypt
+      # Свой сид VK-хешей вместо вшитого в образ:
+      # - ../userdata:/opt/userdata:ro
+
+    cap_add:
+      - NET_ADMIN      # создание wdtt0 (TUN), iptables/NAT, sysctl
+      - NET_RAW        # raw-сокеты (режимы DTLS/raw)
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: 1
+      net.ipv6.conf.all.forwarding: 1
+    tmpfs:
+      - /run
+      - /tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  wdtt-data: {}
+  wdtt-panel-config: {}
+  wdtt-panel-state: {}
+  wdtt-panel-private: {}
+  wdtt-letsencrypt: {}

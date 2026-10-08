@@ -1,0 +1,9 @@
+.git
+.gitignore
+.dockerignore
+.pytest_cache
+__pycache__
+*.pyc
+*.log
+env/
+bin/
