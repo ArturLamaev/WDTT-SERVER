@@ -17,7 +17,7 @@ import hmac
 import html
 import json
 from typing import Any, Callable, Iterable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from http import cookies as http_cookies
 from wsgiref.simple_server import make_server
 
@@ -65,6 +65,38 @@ def _short_link(link: str, limit: int = 26) -> str:
     return link if len(link) <= limit else link[:limit] + "…"
 
 
+def _node_host(node: Node) -> str:
+    """Хост VPN ноды: хост её панельного URL (обычно тот же публичный IP/домен)."""
+    try:
+        return urlsplit(node.base_url).hostname or node.base_url
+    except ValueError:
+        return node.base_url
+
+
+def _user_link(node: Node, user: dict) -> str:
+    """Ссылка подключения как в нодовой панели: wdtt://host:p1:p2:p3:key:hashes."""
+    password = str(user.get("password") or "")
+    if password:
+        parts = [p.strip() for p in str(user.get("ports") or "56000,56001,9000").split(",")]
+        parts += ["56000", "56001", "9000"]
+        return (f"wdtt://{_node_host(node)}:{parts[0]}:{parts[1]}:{parts[2]}"
+                f":{password}:{user.get('vk_hash') or ''}")
+    for field in ("link", "url"):
+        if user.get(field):
+            return str(user[field])
+    personal = str(user.get("personal_url") or "")
+    if personal:
+        return node.api_root() + personal.lstrip("/")
+    return ""
+
+
+def _copy_button(link: str) -> str:
+    if not link:
+        return "<span class=muted>—</span>"
+    return (f"<code class=key title='{_h(link)}'>{_h(_short_link(link))}</code> "
+            f"<button class=secondary data-copy='{_h(link)}'>{icon('copy')}Скопировать</button>")
+
+
 def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
     dots = "".join(
         f"<button title='{_h(name)}' data-a='{_h(name)}' style='background:{_h(color)}'"
@@ -103,7 +135,18 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
             f"function fleetAccent(a){{document.body.dataset.accent=a;"
             f"try{{localStorage.setItem('wdtt-accent',a);}}catch(e){{}}"
             f"document.querySelectorAll('.accent-dots button').forEach(function(b)"
-            f"{{b.classList.toggle('on',b.dataset.a===a);}});}}</script></body></html>")
+            f"{{b.classList.toggle('on',b.dataset.a===a);}});}}"
+            f"document.addEventListener('click',function(e){{var b=e.target.closest('[data-copy]');"
+            f"if(!b)return;var t=b.getAttribute('data-copy');"
+            f"function done(){{var o=b.innerHTML;b.innerHTML='Скопировано';"
+            f"setTimeout(function(){{b.innerHTML=o;}},1500);}}"
+            f"if(navigator.clipboard&&navigator.clipboard.writeText)"
+            f"{{navigator.clipboard.writeText(t).then(done,function(){{fallback();}});}}"
+            f"else fallback();"
+            f"function fallback(){{var ta=document.createElement('textarea');ta.value=t;"
+            f"document.body.appendChild(ta);ta.select();"
+            f"try{{document.execCommand('copy');done();}}catch(_c){{}}ta.remove();}}}});"
+            f"</script></body></html>")
 
 
 class FleetWeb:
@@ -410,6 +453,7 @@ class FleetWeb:
         query = parse_qs(environ.get("QUERY_STRING") or "")
         key = (query.get("key") or [""])[0]
         nodes = self.store.all()
+        by_id = {n.id: n for n in nodes}
         lookup = ""
         table = "<p class=muted>Реестр пуст — добавьте ноду.</p>"
         if nodes:
@@ -418,10 +462,10 @@ class FleetWeb:
                              client_cls=self.client_cls)
             self.store.save()
             if key:
-                lookup = self._keys_block(key, results)
+                lookup = self._keys_block(by_id, key, results)
             elif found:
                 lookup = f"<p class=ok-text>{_h(found)}</p>"
-            table = self._all_users_block(session, results)
+            table = self._all_users_block(by_id, session, results)
         elif found:
             lookup = f"<p class=ok-text>{_h(found)}</p>"
         body = (f"<div class=card><h3>Найти ключ</h3><form method=get action=user>"
@@ -439,11 +483,12 @@ class FleetWeb:
                 f"<div class=card><h3>Все пользователи на нодах</h3>{table}</div>")
         return self._html(start_response, "Пользователи", body, active="user")
 
-    def _keys_block(self, key: str, results: dict | None = None) -> str:
+    def _keys_block(self, by_id: dict, key: str, results: dict | None = None) -> str:
         if results is None:
             nodes = self.store.all()
             if not nodes:
                 return "<p class=err>Реестр пуст</p>"
+            by_id = {n.id: n for n in nodes}
             results = fanout(nodes, lambda c: c.call("users"),
                              workers=self.workers, timeout=self.timeout,
                              client_cls=self.client_cls)
@@ -455,15 +500,19 @@ class FleetWeb:
                          f"<td><span class=\"dot bad\"></span><span class=err>ошибка ноды</span></td><td></td></tr>")
                 continue
             user = find_user(entry.get("result") or {}, key)
+            if user:
+                node = by_id.get(nid)
+                cell = _copy_button(_user_link(node, user)) if node else "<span class=muted>—</span>"
+            else:
+                cell = ""
             rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
                      f"<td><span class=\"dot ok\"></span><span class=ok-text>ЕСТЬ</span></td>"
-                     f"<td><code class=key title='{_h((user or {}).get('link') or (user or {}).get('url') or '')}'>"
-                     f"{_h(_short_link((user or {}).get('link') or (user or {}).get('url') or ''))}</code></td></tr>"
+                     f"<td>{cell}</td></tr>"
                      if user else f"<tr><td><strong>{_h(nid)}</strong></td>"
                      f"<td><span class=\"dot idle\"></span>нет</td><td></td></tr>")
         return (f"<table class=grid><tr><th>Нода</th><th>Ключ {_h(key)}</th><th>Ссылка</th></tr>{rows}</table>")
 
-    def _all_users_block(self, session: dict, results: dict) -> str:
+    def _all_users_block(self, by_id: dict, session: dict, results: dict) -> str:
         parts = []
         total = 0
         for nid, entry in results.items():
@@ -475,13 +524,14 @@ class FleetWeb:
             if not isinstance(users, list):
                 users = []
             total += len(users)
+            node = by_id.get(nid)
             rows = ""
             for user in users:
                 if not isinstance(user, dict):
                     continue
                 password = str(user.get("password") or "")
                 label = str(user.get("label") or "")
-                link = str(user.get("link") or user.get("url") or "")
+                link = _user_link(node, user) if node else ""
                 down = _hum(user.get("down_bytes"))
                 up = _hum(user.get("up_bytes"))
                 online = user.get("connected") or user.get("online")
@@ -489,7 +539,7 @@ class FleetWeb:
                          if online else "<span class=\"dot idle\"></span><span class=muted>—</span>")
                 rows += (f"<tr><td><code class=key>{_h(password)}</code>"
                          + (f"<br><span class=muted>{_h(label)}</span>" if label else "") + "</td>"
-                         f"<td><code class=key title='{_h(link)}'>{_h(_short_link(link))}</code></td>"
+                         f"<td>{_copy_button(link)}</td>"
                          f"<td class=muted>↓ {down}<br>↑ {up}</td>"
                          f"<td>{state}</td>"
                          f"<td><form class=inline-form method=post action=user/delete>"

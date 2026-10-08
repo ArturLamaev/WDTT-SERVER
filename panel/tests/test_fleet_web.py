@@ -35,7 +35,11 @@ class StubClient:
         if route == "overview":
             return {"stats": {"active": 1, "total": 2}}
         if route == "users":
-            return {"users": [{"password": "KEY1", "link": "vk://KEY1"}], "total": 1}
+            return {"users": [{"password": "KEY1", "link": "vk://KEY1",
+                               "ports": "56000,56001,9000",
+                               "vk_hash": "aa,bb",
+                               "down_bytes": 1536, "up_bytes": 512,
+                               "connected": True}], "total": 1}
         if route == "users/create":
             return {"password": (payload or {}).get("password")}
         if route == "users/delete":
@@ -273,6 +277,14 @@ class FleetWebTests(unittest.TestCase):
         self.assertIn("wdtt-accent", body)
         self.assertIn('class=active', body)
 
+    def test_user_link_builder(self):
+        from wdtt_panel.fleet.web import _user_link
+        node = Node(id="n", base_url="https://9.9.9.9:9999", password="p")
+        link = _user_link(node, {"password": "K", "ports": "1,2,3", "vk_hash": "h"})
+        self.assertEqual(link, "wdtt://9.9.9.9:1:2:3:K:h")
+        link = _user_link(node, {"password": "K2"})
+        self.assertTrue(link.startswith("wdtt://9.9.9.9:56000:56001:9000:K2:"))
+
     def test_user_page_lists_all_users(self):
         b = self.browser()
         self.login(b)
@@ -284,6 +296,11 @@ class FleetWebTests(unittest.TestCase):
         self.assertIn("user/delete", body)
         self.assertIn("name=confirm", body)
         self.assertIn("Всего: 2", body)
+        # wdtt-ссылка строится из password/ports/vk_hash + хост ноды, с кнопкой копирования
+        self.assertIn("wdtt://x:56000:56001:9000:KEY1:aa,bb", body)
+        self.assertIn("Скопировать", body)
+        self.assertIn("data-copy", body)
+        self.assertIn("1.5 КБ", body)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ FLEET_CSS = (ROOT / "wdtt_panel" / "fleet" / "static" / "fleet.css").read_text(e
 class IconsTests(unittest.TestCase):
     def test_fleet_icon_set(self):
         for name in ("server", "activity", "users", "robot", "plus",
-                     "trash", "search", "check", "sun", "moon"):
+                     "trash", "search", "check", "copy", "sun", "moon"):
             svg = icon(name)
             self.assertIn("<svg", svg, name)
             self.assertIn("<path", svg, name)
