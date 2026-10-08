@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.18.1"
+PANEL_VERSION="1.18.2"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -93,6 +93,15 @@ sys_timeout() {
     timeout "$limit" "$@" 2>/dev/null || true
   else
     "$@" 2>/dev/null || true
+  fi
+}
+# То же, но честный код возврата (нужен циклам чистки фаервола: break по ошибке).
+with_timeout() {
+  local limit="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$limit" "$@"
+  else
+    "$@"
   fi
 }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
@@ -1039,7 +1048,13 @@ EOF
     chmod 0440 "$SUDOERS_FILE"
     visudo -cf "$SUDOERS_FILE" >>"$LOG_FILE"
   fi
-  install_vk_hash_seed
+  if [ "$WDTT_MODE" = "controller" ] || [ "$(installed_mode)" = "controller" ]; then
+    # Контроллер юзеров локально не создаёт: VK-хеши добиваются библиотекой
+    # ноды при users/create — местный сид не нужен.
+    log "Режим контроллера: сид VK-хешей пропускаю (хеши живут на нодах)"
+  else
+    install_vk_hash_seed
+  fi
 }
 
 # WDTT-SERVER: запоминает каталог git-репозитория для веб-обновления, чтобы
@@ -1727,10 +1742,10 @@ EOF
 # пробуем с комментарием, при неудаче — без него, иначе порт молча остаётся закрыт.
 ufw_allow() {
   local spec="$1" comment="$2"
-  if ufw allow "$spec" comment "$comment" >/dev/null 2>&1; then
+  if with_timeout 60 ufw allow "$spec" comment "$comment" >/dev/null 2>&1; then
     return 0
   fi
-  ufw allow "$spec" >/dev/null 2>&1 || log "WARN: ufw не открыл $spec"
+  with_timeout 60 ufw allow "$spec" >/dev/null 2>&1 || log "WARN: ufw не открыл $spec"
 }
 
 open_acme_firewall() {
@@ -2201,21 +2216,30 @@ PY
 }
 
 remove_firewall_rule() {
-  local port="$1" proto="${2:-tcp}"
+  local port="$1" proto="${2:-tcp}" attempts=0
   [ -n "$port" ] || return 0
   case "$proto" in tcp|udp) ;; *) return 0 ;; esac
   if command_exists ufw; then
-    while ufw --force delete allow "$port/$proto" >/dev/null 2>&1; do :; done
+    # ufw переписывает весь ruleset на каждый вызов: при завалах дубликатов
+    # это минуты на проход, а на битой системе ufw может висеть — режем и то,
+    # и другое: 60 с на вызов, не больше 10 проходов на порт.
+    while [ "$attempts" -lt 10 ]; do
+      attempts=$((attempts + 1))
+      with_timeout 60 ufw --force delete allow "$port/$proto" >/dev/null 2>&1 || break
+    done
   fi
   if command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
-    firewall-cmd --permanent --remove-port="$port/$proto" >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
+    with_timeout 60 firewall-cmd --permanent --remove-port="$port/$proto" >/dev/null 2>&1 || true
+    with_timeout 60 firewall-cmd --reload >/dev/null 2>&1 || true
   fi
   if command_exists iptables; then
     local comment
     for comment in WDTT_PANEL WDTT_MANAGED WDTT_MIRRORED; do
-      while iptables -C INPUT -p "$proto" --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null; do
-        iptables -D INPUT -p "$proto" --dport "$port" -m comment --comment "$comment" -j ACCEPT || break
+      attempts=0
+      while [ "$attempts" -lt 50 ]; do
+        attempts=$((attempts + 1))
+        with_timeout 30 iptables -C INPUT -p "$proto" --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null || break
+        with_timeout 30 iptables -D INPUT -p "$proto" --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null || break
       done
     done
   fi

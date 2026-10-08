@@ -123,6 +123,28 @@ class InstallModeSwitchTests(unittest.TestCase):
         self.assertIn("sys_timeout 180 systemctl disable --now", script)
         self.assertIn("sys_timeout 60 systemctl daemon-reload", script)
 
+    def test_controller_validation_skips_node_sudoers_check(self):
+        root = (ROOT.parent / "install.sh").read_text(encoding="utf-8")
+        start = root.index("validate_installation() {")
+        block = root[start:root.index("setup_auto_restart()", start)]
+        self.assertIn('контроллер работает от root, sudoers/admin-helper ему не нужны', block)
+
+    def test_firewall_cleanup_is_bounded(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("with_timeout()", script)
+        # ufw: 60 с на вызов, максимум 10 проходов — зависший ufw больше
+        # не вешает снос, завалы дубликатов чистятся ограниченно.
+        self.assertIn('while [ "$attempts" -lt 10 ]', script)
+        self.assertIn('with_timeout 60 ufw --force delete allow "$port/$proto"', script)
+        self.assertIn('with_timeout 60 ufw allow "$spec" comment "$comment"', script)
+        self.assertIn('while [ "$attempts" -lt 50 ]', script)
+
+    def test_controller_skips_vk_hash_seed(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        # Сид остаётся в install_panel_files (это проверяет другой тест),
+        # но в режиме контроллера пропускается: хеши живут на нодах.
+        self.assertIn('Режим контроллера: сид VK-хешей пропускаю', script)
+
 
 if __name__ == "__main__":
     unittest.main()

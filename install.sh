@@ -251,7 +251,9 @@ validate_installation() {
       broken=1
     fi
   done
-  if [ -f /etc/sudoers.d/wdtt-panel ]; then
+  if [ "${WDTT_MODE:-node}" = "controller" ]; then
+    info "OK: контроллер работает от root, sudoers/admin-helper ему не нужны"
+  elif [ -f /etc/sudoers.d/wdtt-panel ]; then
     if visudo -cf /etc/sudoers.d/wdtt-panel 2>/dev/null; then
       info "OK: sudoers панели валиден"
     else
