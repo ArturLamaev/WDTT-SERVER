@@ -363,6 +363,24 @@ class FleetWebTests(unittest.TestCase):
             finally:
                 fleet_web.PANEL_SELF_UPDATE_COMMAND = old
 
+    def test_system_page_shows_update_log_tail(self):
+        import tempfile
+        from pathlib import Path as _Path
+        from wdtt_panel.fleet import web as fleet_web
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _Path(tmp) / "self-update.log"
+            fake.write_text("line1\ncheck: ok 1.2.3\n", encoding="utf-8")
+            old = fleet_web.UPDATE_LOG_FILE
+            fleet_web.UPDATE_LOG_FILE = fake
+            try:
+                b = self.browser()
+                self.login(b)
+                _, _, body = b.get("/system")
+                self.assertIn("Лог обновления", body)
+                self.assertIn("check: ok 1.2.3", body)
+            finally:
+                fleet_web.UPDATE_LOG_FILE = old
+
     def test_system_spawn_without_wrapper_reports_error(self):
         from wdtt_panel.fleet import web as fleet_web
         old = fleet_web.PANEL_SELF_UPDATE_COMMAND

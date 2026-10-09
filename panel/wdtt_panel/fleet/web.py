@@ -16,6 +16,7 @@ from __future__ import annotations
 import hmac
 import html
 import json
+import os
 import subprocess
 import time
 from typing import Any, Callable, Iterable
@@ -37,6 +38,9 @@ from pathlib import Path
 
 SESSION_COOKIE = "fleet_session"
 SESSION_TTL = 43_200
+UPDATE_LOG_FILE = Path(os.environ.get(
+    "WDTT_PANEL_SELF_UPDATE_LOG", "/var/log/wdtt-panel-self-update.log"))
+UPDATE_LOG_TAIL = 20
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 NODE_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -754,6 +758,14 @@ class FleetWeb:
             return {}
         return data if isinstance(data, dict) else {}
 
+    @staticmethod
+    def _update_log_tail() -> str:
+        try:
+            lines = UPDATE_LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        return "\n".join(lines[-UPDATE_LOG_TAIL:])
+
     def _system_page(self, environ: dict, start_response: Callable, session: dict,
                      note: str = "", is_error: bool = False) -> Iterable[bytes]:
         status = self._update_status()
@@ -779,6 +791,9 @@ class FleetWeb:
             buttons = ("<p class=err>Обёртка обновления не найдена "
                        f"({_h(PANEL_SELF_UPDATE_COMMAND)}). Обновитесь вручную: "
                        "<code>bash install.sh update</code> на контроллере.</p>")
+        log_tail = self._update_log_tail()
+        log_html = (f"<h3>Лог обновления</h3><pre>{_h(log_tail)}</pre>" if log_tail
+                    else "<p class=muted>Лог обновления пока пуст.</p>")
         nodes = self.store.all()
         versions = "<p class=muted>Реестр пуст — добавьте ноду.</p>"
         if nodes:
@@ -810,7 +825,7 @@ class FleetWeb:
                  f"<p class=muted>Проверка и обновление выполняются той же обёрткой, "
                  f"что у нодовой панели (git fetch/reset + <code>install.sh update</code> + "
                  f"перезапуск служб). Обновление занимает минуту-две, страница сама не "
-                 f"перезагружается — обновите её после.</p></div>"
+                 f"перезагружается — обновите её после.</p>{log_html}</div>"
                  f"<div class=card><h3>Версии нод</h3>{versions}</div>"))
         return self._html(start_response, "Система", body, active="system")
 
@@ -821,6 +836,11 @@ class FleetWeb:
         if not PANEL_SELF_UPDATE_COMMAND.is_file():
             return self._system_page(environ, start_response, session,
                                       note="Обёртка обновления не найдена — обновитесь вручную.",
+                                      is_error=True)
+        if not os.access(str(PANEL_SELF_UPDATE_COMMAND), os.X_OK):
+            return self._system_page(environ, start_response, session,
+                                      note=f"Обёртка {PANEL_SELF_UPDATE_COMMAND} не запускается "
+                                           f"(нет бита +x) — обновитесь вручную.",
                                       is_error=True)
         try:
             subprocess.Popen([str(PANEL_SELF_UPDATE_COMMAND), mode],
