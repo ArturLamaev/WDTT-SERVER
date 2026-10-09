@@ -34,6 +34,8 @@ class StubClient:
     def call(self, route, payload=None):
         if route == "overview":
             return {"stats": {"active": 1, "total": 2}}
+        if route == "info":
+            return {"public_host": f"vpn-{self.node.id}.example.com"}
         if route == "users":
             return {"users": [{"password": "KEY1", "link": "vk://KEY1",
                                "ports": "56000,56001,9000",
@@ -278,12 +280,25 @@ class FleetWebTests(unittest.TestCase):
         self.assertIn('class=active', body)
 
     def test_user_link_builder(self):
-        from wdtt_panel.fleet.web import _user_link
+        from wdtt_panel.fleet.web import _server_host, _user_link
         node = Node(id="n", base_url="https://9.9.9.9:9999", password="p")
         link = _user_link(node, {"password": "K", "ports": "1,2,3", "vk_hash": "h"})
         self.assertEqual(link, "wdtt://9.9.9.9:1:2:3:K:h")
         link = _user_link(node, {"password": "K2"})
         self.assertTrue(link.startswith("wdtt://9.9.9.9:56000:56001:9000:K2:"))
+
+    def test_server_host_prefers_public_host(self):
+        from wdtt_panel.fleet.web import _server_host
+        # в реестре внутренний адрес, а нода через info отдаёт внешний
+        node = Node(id="n", base_url="https://100.66.0.6:9999", password="p")
+        infos = {"n": {"ok": True, "result": {"public_host": "203.0.113.7"}}}
+        self.assertEqual(_server_host(node, infos), "203.0.113.7")
+        # нет info / пустой public_host — fallback на хост панели
+        self.assertEqual(_server_host(node, {}), "100.66.0.6")
+        self.assertEqual(
+            _server_host(node, {"n": {"ok": False, "error": "down"}}), "100.66.0.6")
+        self.assertEqual(
+            _server_host(node, {"n": {"ok": True, "result": {}}}), "100.66.0.6")
 
     def test_user_page_lists_all_users(self):
         b = self.browser()
@@ -296,8 +311,10 @@ class FleetWebTests(unittest.TestCase):
         self.assertIn("user/delete", body)
         self.assertIn("name=confirm", body)
         self.assertIn("Всего: 2", body)
-        # wdtt-ссылка строится из password/ports/vk_hash + хост ноды, с кнопкой копирования
-        self.assertIn("wdtt://x:56000:56001:9000:KEY1:aa,bb", body)
+        # wdtt-ссылка строится с внешним хостом из info ноды (не панельный URL),
+        # с кнопкой копирования
+        self.assertIn("wdtt://vpn-n1.example.com:56000:56001:9000:KEY1:aa,bb", body)
+        self.assertNotIn("wdtt://x:", body)
         self.assertIn("Скопировать", body)
         self.assertIn("data-copy", body)
         self.assertIn("1.5 КБ", body)

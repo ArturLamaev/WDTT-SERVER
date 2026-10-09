@@ -66,20 +66,35 @@ def _short_link(link: str, limit: int = 26) -> str:
 
 
 def _node_host(node: Node) -> str:
-    """Хост VPN ноды: хост её панельного URL (обычно тот же публичный IP/домен)."""
+    """Хост панельного URL ноды (может быть внутренним — только fallback)."""
     try:
         return urlsplit(node.base_url).hostname or node.base_url
     except ValueError:
         return node.base_url
 
 
-def _user_link(node: Node, user: dict) -> str:
+def _server_host(node: Node, infos: dict | None = None) -> str:
+    """Внешний адрес VPN ноды: ``public_host`` из её ``GET info``.
+
+    В реестре может лежать внутренний адрес (tailnet/VPN), а клиенту
+    нужна ссылка на внешний — нода сама знает свой ``public_host``
+    из конфига установки. Нет info/пустой — fallback на хост панели.
+    """
+    if infos:
+        result = (infos.get(node.id) or {}).get("result") or {}
+        public = str(result.get("public_host") or "").strip()
+        if public:
+            return public
+    return _node_host(node)
+
+
+def _user_link(node: Node, user: dict, server_host: str | None = None) -> str:
     """Ссылка подключения как в нодовой панели: wdtt://host:p1:p2:p3:key:hashes."""
     password = str(user.get("password") or "")
     if password:
         parts = [p.strip() for p in str(user.get("ports") or "56000,56001,9000").split(",")]
         parts += ["56000", "56001", "9000"]
-        return (f"wdtt://{_node_host(node)}:{parts[0]}:{parts[1]}:{parts[2]}"
+        return (f"wdtt://{server_host or _node_host(node)}:{parts[0]}:{parts[1]}:{parts[2]}"
                 f":{password}:{user.get('vk_hash') or ''}")
     for field in ("link", "url"):
         if user.get(field):
@@ -460,12 +475,16 @@ class FleetWeb:
             results = fanout(nodes, lambda c: c.call("users"),
                              workers=self.workers, timeout=self.timeout,
                              client_cls=self.client_cls)
+            infos = fanout(nodes, lambda c: c.call("info"),
+                           workers=self.workers, timeout=self.timeout,
+                           client_cls=self.client_cls)
             self.store.save()
+            hosts = {n.id: _server_host(n, infos) for n in nodes}
             if key:
-                lookup = self._keys_block(by_id, key, results)
+                lookup = self._keys_block(by_id, key, results, hosts)
             elif found:
                 lookup = f"<p class=ok-text>{_h(found)}</p>"
-            table = self._all_users_block(by_id, session, results)
+            table = self._all_users_block(by_id, session, results, hosts)
         elif found:
             lookup = f"<p class=ok-text>{_h(found)}</p>"
         body = (f"<div class=card><h3>Найти ключ</h3><form method=get action=user>"
@@ -483,7 +502,8 @@ class FleetWeb:
                 f"<div class=card><h3>Все пользователи на нодах</h3>{table}</div>")
         return self._html(start_response, "Пользователи", body, active="user")
 
-    def _keys_block(self, by_id: dict, key: str, results: dict | None = None) -> str:
+    def _keys_block(self, by_id: dict, key: str, results: dict | None = None,
+                    hosts: dict | None = None) -> str:
         if results is None:
             nodes = self.store.all()
             if not nodes:
@@ -492,7 +512,12 @@ class FleetWeb:
             results = fanout(nodes, lambda c: c.call("users"),
                              workers=self.workers, timeout=self.timeout,
                              client_cls=self.client_cls)
+            infos = fanout(nodes, lambda c: c.call("info"),
+                           workers=self.workers, timeout=self.timeout,
+                           client_cls=self.client_cls)
             self.store.save()
+            hosts = {n.id: _server_host(n, infos) for n in nodes}
+        hosts = hosts or {}
         rows = ""
         for nid, entry in results.items():
             if not entry.get("ok"):
@@ -502,7 +527,8 @@ class FleetWeb:
             user = find_user(entry.get("result") or {}, key)
             if user:
                 node = by_id.get(nid)
-                cell = _copy_button(_user_link(node, user)) if node else "<span class=muted>—</span>"
+                link = _user_link(node, user, hosts.get(nid)) if node else ""
+                cell = _copy_button(link) if node else "<span class=muted>—</span>"
             else:
                 cell = ""
             rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
@@ -512,9 +538,11 @@ class FleetWeb:
                      f"<td><span class=\"dot idle\"></span>нет</td><td></td></tr>")
         return (f"<table class=grid><tr><th>Нода</th><th>Ключ {_h(key)}</th><th>Ссылка</th></tr>{rows}</table>")
 
-    def _all_users_block(self, by_id: dict, session: dict, results: dict) -> str:
+    def _all_users_block(self, by_id: dict, session: dict, results: dict,
+                           hosts: dict | None = None) -> str:
         parts = []
         total = 0
+        hosts = hosts or {}
         for nid, entry in results.items():
             if not entry.get("ok"):
                 parts.append(f"<p><strong>{_h(nid)}</strong>: "
@@ -531,7 +559,7 @@ class FleetWeb:
                     continue
                 password = str(user.get("password") or "")
                 label = str(user.get("label") or "")
-                link = _user_link(node, user) if node else ""
+                link = _user_link(node, user, hosts.get(nid)) if node else ""
                 down = _hum(user.get("down_bytes"))
                 up = _hum(user.get("up_bytes"))
                 online = user.get("connected") or user.get("online")
