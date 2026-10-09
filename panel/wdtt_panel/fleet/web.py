@@ -557,10 +557,12 @@ class FleetWeb:
     def _all_users_block(self, by_id: dict, session: dict, results: dict,
                            hosts: dict | None = None) -> str:
         hosts = hosts or {}
-        # Группы: один ключ на нескольких нодах (или один ник без ключа) —
-        # одна карточка, одна кнопка «Скопировать все».
-        groups: dict[str, dict] = {}
-        order: list[str] = []
+        # Группы: один ключ на нескольких нодах, один ник без ключа, а также
+        # разные ключи с общим ником — одна карточка, одна кнопка
+        # «Скопировать все». Связность — через общий ключ ИЛИ общий ник
+        # (union-find), так что цепочки вида «ключ A + ник X» / «ключ B + ник X»
+        # тоже сливаются. Удаление при этом всегда точечное: ключ + нода.
+        items: list[tuple[str, dict, str]] = []
         failed: list[str] = []
         for nid, entry in results.items():
             if not entry.get("ok"):
@@ -574,45 +576,87 @@ class FleetWeb:
             for user in users:
                 if not isinstance(user, dict):
                     continue
+                if not str(user.get("password") or "") and not str(user.get("label") or ""):
+                    continue
+                items.append((nid, user,
+                              _user_link(node, user, hosts.get(nid)) if node else ""))
+        parent = list(range(len(items)))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i: int, j: int) -> None:
+            parent[find(i)] = find(j)
+
+        seen_key: dict[str, int] = {}
+        seen_label: dict[str, int] = {}
+        for i, (_, user, _) in enumerate(items):
+            password = str(user.get("password") or "")
+            label = str(user.get("label") or "")
+            if password:
+                if password in seen_key:
+                    union(i, seen_key[password])
+                else:
+                    seen_key[password] = i
+            if label:
+                if label in seen_label:
+                    union(i, seen_label[label])
+                else:
+                    seen_label[label] = i
+        groups: dict[int, list[int]] = {}
+        order: list[int] = []
+        for i in range(len(items)):
+            root = find(i)
+            if root not in groups:
+                groups[root] = []
+                order.append(root)
+            groups[root].append(i)
+        parts = list(failed)
+        total = len(items)
+        for root in order:
+            members = groups[root]
+            passwords: list[str] = []
+            labels: list[str] = []
+            nids: list[str] = []
+            links: list[str] = []
+            for i in members:
+                nid, user, link = items[i]
                 password = str(user.get("password") or "")
                 label = str(user.get("label") or "")
-                gkey = password or f"ник:{label}"
-                if not gkey or gkey == "ник:":
-                    continue
-                group = groups.get(gkey)
-                if group is None:
-                    group = groups[gkey] = {"password": password, "labels": [],
-                                            "seen_labels": set(), "items": []}
-                    order.append(gkey)
-                if label and label not in group["seen_labels"]:
-                    group["seen_labels"].add(label)
-                    group["labels"].append(label)
-                group["items"].append((nid, user,
-                                       _user_link(node, user, hosts.get(nid)) if node else ""))
-        parts = list(failed)
-        total = sum(len(groups[g]["items"]) for g in order)
-        for gkey in order:
-            group = groups[gkey]
-            title = group["password"] or f"ник {group['labels'][0] if group['labels'] else '?'}"
-            labels_html = (f" <span class=muted>({'; '.join(_h(label) for label in group['labels'])})</span>"
-                           if group["labels"] and group["password"] else "")
-            nids = sorted({nid for nid, _, _ in group["items"]})
-            links = [link for _, _, link in group["items"] if link]
+                if password and password not in passwords:
+                    passwords.append(password)
+                if label and label not in labels:
+                    labels.append(label)
+                if nid not in nids:
+                    nids.append(nid)
+                if link:
+                    links.append(link)
+            title = " + ".join(passwords) if passwords else f"ник {labels[0] if labels else '?'}"
+            labels_html = (f" <span class=muted>({'; '.join(_h(label) for label in labels)})</span>"
+                           if labels and passwords else "")
             copy_all = ""
             if links:
                 blob = "\n".join(links)
                 copy_all = (f" <button class=secondary data-copy='{_h(blob)}'>"
                             f"{icon('copy')}Скопировать все ({len(links)})</button>")
+            multi_key = len(passwords) > 1
             rows = ""
-            for nid, user, link in group["items"]:
+            for i in members:
+                nid, user, link = items[i]
                 password = str(user.get("password") or "")
+                label = str(user.get("label") or "")
                 down = _hum(user.get("down_bytes"))
                 up = _hum(user.get("up_bytes"))
                 online = user.get("connected") or user.get("online")
                 state = ("<span class=\"dot ok\"></span><span class=ok-text>online</span>"
                          if online else "<span class=\"dot idle\"></span><span class=muted>—</span>")
-                rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
-                         + (f"<td><code class=key>{_h(password)}</code></td>" if not group["password"] else "")
+                key_cell = (f"<td><code class=key>{_h(password)}</code>"
+                            + (f"<br><span class=muted>{_h(label)}</span>" if label and multi_key else "")
+                            + "</td>")
+                rows += (f"<tr><td><strong>{_h(nid)}</strong></td>{key_cell}"
                          + f"<td>{_copy_button(link)}</td>"
                          f"<td class=muted>↓ {down}<br>↑ {up}</td>"
                          f"<td>{state}</td>"
@@ -622,9 +666,8 @@ class FleetWeb:
                          f"<input type=hidden name=node value='{_h(nid)}'>"
                          f"<input type=hidden name=confirm value=1>"
                          f"<button class=danger>{icon('trash')}Удалить</button></form></td></tr>")
-            cols = ("<tr><th>Нода</th><th>Ссылка</th><th>Трафик</th><th></th><th></th></tr>"
-                    if group["password"] else
-                    "<tr><th>Нода</th><th>Ключ</th><th>Ссылка</th><th>Трафик</th><th></th><th></th></tr>")
+            cols = ("<tr><th>Нода</th><th>Ключ</th><th>Ссылка</th>"
+                    "<th>Трафик</th><th></th><th></th></tr>")
             parts.append(f"<h3><code class=key>{_h(title)}</code>{labels_html} "
                          f"<span class=muted>· {', '.join(_h(n) for n in nids)}</span>{copy_all}</h3>"
                          f"<table class=grid>{cols}{rows}</table>")

@@ -301,6 +301,30 @@ class FleetWebTests(unittest.TestCase):
         self.assertEqual(
             _server_host(node, {"n": {"ok": True, "result": {}}}), "100.66.0.6")
 
+    def test_users_merge_by_shared_label(self):
+        app = FleetWeb(self.store, "admin", hash_password(PASSWORD), secret="test-secret-123")
+        n1 = Node(id="n1", base_url="http://x", password="secret")
+        n2 = Node(id="n2", base_url="http://y", password="secret")
+        results = {
+            "n1": {"ok": True, "result": {"users": [
+                {"password": "KEY-A", "label": "volodia", "ports": "1,2,3", "vk_hash": "h"}]}},
+            "n2": {"ok": True, "result": {"users": [
+                {"password": "KEY-B", "label": "volodia", "ports": "1,2,3", "vk_hash": "h"},
+                {"password": "KEY-C", "label": "other"}]}},
+        }
+        body = app._all_users_block(
+            {"n1": n1, "n2": n2}, {},
+            results, {"n1": "ext1.example", "n2": "ext2.example"})
+        # разные ключи с общим ником — одна карточка, одна кнопка на обе ссылки
+        self.assertIn("KEY-A + KEY-B", body)
+        self.assertIn("Скопировать все (2)", body)
+        self.assertIn("wdtt://ext1.example:1:2:3:KEY-A:h", body)
+        self.assertIn("wdtt://ext2.example:1:2:3:KEY-B:h", body)
+        # чужой ник — отдельная карточка
+        self.assertIn("KEY-C", body)
+        self.assertNotIn("Скопировать все (3)", body)
+        self.assertIn("Всего: 3", body)
+
     def test_user_page_lists_all_users(self):
         b = self.browser()
         self.login(b)
