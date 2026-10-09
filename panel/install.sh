@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.20.2"
+PANEL_VERSION="1.21.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -2577,6 +2577,8 @@ install_controller() {
   write_fleet_bot_service
   write_fleet_nginx
   write_renew_timer
+  record_source_repo
+  write_self_update_wrapper
   open_firewall
   systemctl restart "$FLEET_SERVICE"
 
@@ -2605,6 +2607,8 @@ update_controller() {
   write_fleet_bot_service
   write_fleet_nginx
   write_renew_timer
+  record_source_repo
+  write_self_update_wrapper
   systemctl restart "$FLEET_SERVICE"
   if systemctl is-enabled --quiet "$FLEET_BOT_SERVICE" 2>/dev/null; then
     systemctl restart "$FLEET_BOT_SERVICE" >>"$LOG_FILE" 2>&1 || true

@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="1.20.2"', installer)
-        self.assertIn('__version__ = "1.20.2"', package)
-        self.assertIn("Текущая версия: 1.20.2", readme)
+        self.assertIn('PANEL_VERSION="1.21.0"', installer)
+        self.assertIn('__version__ = "1.21.0"', package)
+        self.assertIn("Текущая версия: 1.21.0", readme)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
@@ -506,6 +506,27 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("self-update-status.json", script)
         self.assertIn("WDTT_SELF_UPDATE_RELOCATED", script)
         self.assertIn("mktemp", script)
+
+    def test_controller_wires_self_update_wrapper(self):
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        install = script[script.index("install_controller() {"):script.index("update_controller() {")]
+        update = script[script.index("update_controller() {"):script.index("update_controller_config_metadata() {")]
+        for body in (install, update):
+            self.assertIn("record_source_repo", body)
+            self.assertIn("write_self_update_wrapper", body)
+
+    def test_fleet_web_exposes_system_controls(self):
+        web = (ROOT / "wdtt_panel" / "fleet" / "web.py").read_text(encoding="utf-8")
+        self.assertIn('("system", "Система", "settings")', web)
+        self.assertIn("system/check", web)
+        self.assertIn("system/update", web)
+        self.assertIn("PANEL_SELF_UPDATE_COMMAND", web)
+        self.assertIn("PANEL_UPDATE_STATUS_FILE", web)
+        self.assertIn("Версии нод", web)
+        self.assertIn("Скопировать все", web)
+        icons = (ROOT / "wdtt_panel" / "fleet" / "icons.py").read_text(encoding="utf-8")
+        self.assertIn('"settings"', icons)
+        self.assertIn('"refresh"', icons)
 
     def test_root_installer_exposes_restart(self):
         script = (ROOT.parent / "install.sh").read_text(encoding="utf-8")

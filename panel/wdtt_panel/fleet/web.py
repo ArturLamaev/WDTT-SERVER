@@ -16,11 +16,15 @@ from __future__ import annotations
 import hmac
 import html
 import json
+import subprocess
+import time
 from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs, urlsplit
 from http import cookies as http_cookies
 from wsgiref.simple_server import make_server
 
+from .. import __version__ as PANEL_VERSION
+from ..admin import PANEL_SELF_UPDATE_COMMAND, PANEL_UPDATE_STATUS_FILE
 from .bot import TelegramAPI
 from .client import NodeClient, find_user
 from .fanout import fanout, fanout_route, summarize
@@ -120,14 +124,16 @@ def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
     nav_html = ""
     if nav:
         links = (("nodes", "Ноды", "server"), ("status", "Статус", "activity"),
-                 ("user", "Пользователи", "users"), ("bot", "Бот", "robot"))
+                 ("user", "Пользователи", "users"), ("bot", "Бот", "robot"),
+                 ("system", "Система", "settings"))
         items = "".join(
             f"<a href={_h(name)}{' class=active' if name == active else ''}>"
             f"{icon(icon_name)}{_h(label)}</a>"
             for name, label, icon_name in links)
         nav_html = (
             f"<header class=fleet-top><div class=brand>WDTT Fleet"
-            f"<small>панель управления нодами</small></div>"
+            f"<small>панель управления нодами</small>"
+            f"<span class=ver>v{_h(PANEL_VERSION)}</span></div>"
             f"<nav class=fleet-nav>{items}</nav>"
             f"<div class=fleet-tools><span class=accent-dots>{dots}</span>"
             f"<button class=theme-btn onclick='fleetTheme()'>"
@@ -236,6 +242,12 @@ class FleetWeb:
             return self._bot_save(environ, start_response, session)
         if relative == "bot/test" and method == "POST":
             return self._bot_test(environ, start_response, session)
+        if relative == "system" and method == "GET":
+            return self._system_page(environ, start_response, session)
+        if relative == "system/check" and method == "POST":
+            return self._system_spawn(environ, start_response, session, "check")
+        if relative == "system/update" and method == "POST":
+            return self._system_spawn(environ, start_response, session, "update")
         return self._text(start_response, "404 Not Found", "Not found")
 
     # --- http helpers ---
@@ -540,34 +552,64 @@ class FleetWeb:
 
     def _all_users_block(self, by_id: dict, session: dict, results: dict,
                            hosts: dict | None = None) -> str:
-        parts = []
-        total = 0
         hosts = hosts or {}
+        # Группы: один ключ на нескольких нодах (или один ник без ключа) —
+        # одна карточка, одна кнопка «Скопировать все».
+        groups: dict[str, dict] = {}
+        order: list[str] = []
+        failed: list[str] = []
         for nid, entry in results.items():
             if not entry.get("ok"):
-                parts.append(f"<p><strong>{_h(nid)}</strong>: "
-                             f"<span class=err>ошибка ноды — {_h(entry.get('error', '?'))}</span></p>")
+                failed.append(f"<p><strong>{_h(nid)}</strong>: "
+                              f"<span class=err>ошибка ноды — {_h(entry.get('error', '?'))}</span></p>")
                 continue
             users = (entry.get("result") or {}).get("users") or []
             if not isinstance(users, list):
                 users = []
-            total += len(users)
             node = by_id.get(nid)
-            rows = ""
             for user in users:
                 if not isinstance(user, dict):
                     continue
                 password = str(user.get("password") or "")
                 label = str(user.get("label") or "")
-                link = _user_link(node, user, hosts.get(nid)) if node else ""
+                gkey = password or f"ник:{label}"
+                if not gkey or gkey == "ник:":
+                    continue
+                group = groups.get(gkey)
+                if group is None:
+                    group = groups[gkey] = {"password": password, "labels": [],
+                                            "seen_labels": set(), "items": []}
+                    order.append(gkey)
+                if label and label not in group["seen_labels"]:
+                    group["seen_labels"].add(label)
+                    group["labels"].append(label)
+                group["items"].append((nid, user,
+                                       _user_link(node, user, hosts.get(nid)) if node else ""))
+        parts = list(failed)
+        total = sum(len(groups[g]["items"]) for g in order)
+        for gkey in order:
+            group = groups[gkey]
+            title = group["password"] or f"ник {group['labels'][0] if group['labels'] else '?'}"
+            labels_html = (f" <span class=muted>({'; '.join(_h(label) for label in group['labels'])})</span>"
+                           if group["labels"] and group["password"] else "")
+            nids = sorted({nid for nid, _, _ in group["items"]})
+            links = [link for _, _, link in group["items"] if link]
+            copy_all = ""
+            if links:
+                blob = "\n".join(links)
+                copy_all = (f" <button class=secondary data-copy='{_h(blob)}'>"
+                            f"{icon('copy')}Скопировать все ({len(links)})</button>")
+            rows = ""
+            for nid, user, link in group["items"]:
+                password = str(user.get("password") or "")
                 down = _hum(user.get("down_bytes"))
                 up = _hum(user.get("up_bytes"))
                 online = user.get("connected") or user.get("online")
                 state = ("<span class=\"dot ok\"></span><span class=ok-text>online</span>"
                          if online else "<span class=\"dot idle\"></span><span class=muted>—</span>")
-                rows += (f"<tr><td><code class=key>{_h(password)}</code>"
-                         + (f"<br><span class=muted>{_h(label)}</span>" if label else "") + "</td>"
-                         f"<td>{_copy_button(link)}</td>"
+                rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
+                         + (f"<td><code class=key>{_h(password)}</code></td>" if not group["password"] else "")
+                         + f"<td>{_copy_button(link)}</td>"
                          f"<td class=muted>↓ {down}<br>↑ {up}</td>"
                          f"<td>{state}</td>"
                          f"<td><form class=inline-form method=post action=user/delete>"
@@ -576,12 +618,15 @@ class FleetWeb:
                          f"<input type=hidden name=node value='{_h(nid)}'>"
                          f"<input type=hidden name=confirm value=1>"
                          f"<button class=danger>{icon('trash')}Удалить</button></form></td></tr>")
-            if not rows:
-                rows = "<tr><td colspan=5 class=muted>нет пользователей</td></tr>"
-            parts.append(f"<h3>{_h(nid)} <span class=muted>({len(users)})</span></h3>"
-                         f"<table class=grid><tr><th>Ключ</th><th>Ссылка</th>"
-                         f"<th>Трафик</th><th></th><th></th></tr>{rows}</table>")
-        head = f"<p class=sub>Всего: {total}</p>" if parts else ""
+            cols = ("<tr><th>Нода</th><th>Ссылка</th><th>Трафик</th><th></th><th></th></tr>"
+                    if group["password"] else
+                    "<tr><th>Нода</th><th>Ключ</th><th>Ссылка</th><th>Трафик</th><th></th><th></th></tr>")
+            parts.append(f"<h3><code class=key>{_h(title)}</code>{labels_html} "
+                         f"<span class=muted>· {', '.join(_h(n) for n in nids)}</span>{copy_all}</h3>"
+                         f"<table class=grid>{cols}{rows}</table>")
+        if not parts:
+            return "<p class=muted>Нет пользователей ни на одной ноде.</p>"
+        head = f"<p class=sub>Всего: {total}</p>"
         return head + "".join(parts)
 
     def _user_create(self, environ: dict, start_response: Callable, session: dict) -> Iterable[bytes]:
@@ -698,6 +743,97 @@ class FleetWeb:
         except (OSError, ValueError) as exc:
             return self._bot_page(environ, start_response, session,
                                   note=f"Токен не работает: {exc}", is_error=True)
+
+    # --- система: версия контроллера, обновление, версии нод ---
+
+    @staticmethod
+    def _update_status() -> dict:
+        try:
+            data = json.loads(PANEL_UPDATE_STATUS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _system_page(self, environ: dict, start_response: Callable, session: dict,
+                     note: str = "", is_error: bool = False) -> Iterable[bytes]:
+        status = self._update_status()
+        cls = "err" if is_error else "ok-text"
+        state = str(status.get("state") or "не проверялось")
+        latest = str(status.get("latest") or "—")
+        try:
+            checked_at = int(status.get("checked_at") or 0)
+            checked = time.strftime("%d.%m.%Y %H:%M", time.localtime(checked_at)) if checked_at else "—"
+        except (TypeError, ValueError):
+            checked = "—"
+        message = str(status.get("message") or "")
+        avail = status.get("update_available") and latest
+        avail_html = (f"<p class=ok-text>Доступна v{_h(latest)} — жмите «Обновить».</p>" if avail
+                      else "<p class=muted>Обновлений нет (или проверка ещё не запускалась).</p>")
+        wrapper_ok = PANEL_SELF_UPDATE_COMMAND.is_file()
+        buttons = (
+            f"<form method=post action=system/check>{self._csrf_field(session)}"
+            f"<button class=secondary>{icon('search')}Проверить обновления</button></form>"
+            f"<form method=post action=system/update>{self._csrf_field(session)}"
+            f"<button class=primary>{icon('refresh')}Обновить контроллер</button></form>")
+        if not wrapper_ok:
+            buttons = ("<p class=err>Обёртка обновления не найдена "
+                       f"({_h(PANEL_SELF_UPDATE_COMMAND)}). Обновитесь вручную: "
+                       "<code>bash install.sh update</code> на контроллере.</p>")
+        nodes = self.store.all()
+        versions = "<p class=muted>Реестр пуст — добавьте ноду.</p>"
+        if nodes:
+            infos = fanout(nodes, lambda c: c.call("info"),
+                           workers=self.workers, timeout=self.timeout,
+                           client_cls=self.client_cls)
+            self.store.save()
+            rows = ""
+            for nid, entry in infos.items():
+                if entry.get("ok"):
+                    result = entry.get("result") or {}
+                    rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
+                             f"<td><span class=\"dot ok\"></span><span class=ok-text>online</span></td>"
+                             f"<td>v{_h(result.get('panel_version') or '?')}</td>"
+                             f"<td><code class=key>{_h(result.get('public_host') or '—')}</code></td></tr>")
+                else:
+                    rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
+                             f"<td><span class=\"dot bad\"></span><span class=err>FAIL</span></td>"
+                             f"<td colspan=2 class=muted>{_h(entry.get('error', '?'))}</td></tr>")
+            versions = (f"<table class=grid><tr><th>Нода</th><th>Статус</th>"
+                        f"<th>Версия панели</th><th>Внешний адрес</th></tr>{rows}</table>")
+        body = (((f"<p class={cls}>{_h(note)}</p>" if note else "") +
+                 f"<div class=card><h3>Контроллер</h3>"
+                 f"<p>Версия: <strong>v{_h(PANEL_VERSION)}</strong></p>"
+                 f"<p class=sub>Проверка: {_h(state)} · доступно: {_h(latest)} · "
+                 f"проверено: {_h(checked)}"
+                 + (f" · {_h(message)}" if message else "") + "</p>"
+                 f"{avail_html}{buttons}"
+                 f"<p class=muted>Проверка и обновление выполняются той же обёрткой, "
+                 f"что у нодовой панели (git fetch/reset + <code>install.sh update</code> + "
+                 f"перезапуск служб). Обновление занимает минуту-две, страница сама не "
+                 f"перезагружается — обновите её после.</p></div>"
+                 f"<div class=card><h3>Версии нод</h3>{versions}</div>"))
+        return self._html(start_response, "Система", body, active="system")
+
+    def _system_spawn(self, environ: dict, start_response: Callable, session: dict,
+                      mode: str) -> Iterable[bytes]:
+        if not self._csrf_ok(environ, session):
+            return self._text(start_response, "403 Forbidden", "CSRF-проверка не пройдена")
+        if not PANEL_SELF_UPDATE_COMMAND.is_file():
+            return self._system_page(environ, start_response, session,
+                                      note="Обёртка обновления не найдена — обновитесь вручную.",
+                                      is_error=True)
+        try:
+            subprocess.Popen([str(PANEL_SELF_UPDATE_COMMAND), mode],
+                             stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError as exc:
+            return self._system_page(environ, start_response, session,
+                                      note=f"Не запустилось: {exc}", is_error=True)
+        action = "Проверка запущена" if mode == "check" else "Обновление запущено"
+        return self._system_page(environ, start_response, session,
+                                 note=f"{action} — обновите страницу через полминуты.")
 
     # --- json api ---
 

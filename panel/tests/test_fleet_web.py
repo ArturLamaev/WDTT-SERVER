@@ -35,7 +35,8 @@ class StubClient:
         if route == "overview":
             return {"stats": {"active": 1, "total": 2}}
         if route == "info":
-            return {"public_host": f"vpn-{self.node.id}.example.com"}
+            return {"public_host": f"vpn-{self.node.id}.example.com",
+                    "panel_version": "1.2.3"}
         if route == "users":
             return {"users": [{"password": "KEY1", "link": "vk://KEY1",
                                "ports": "56000,56001,9000",
@@ -305,7 +306,7 @@ class FleetWebTests(unittest.TestCase):
         self.login(b)
         code, _, body = b.get("/user")
         self.assertEqual(code, 200)
-        # агрегат по нодам: секции со счётчиками, ключи, кнопки удаления
+        # агрегат по нодам: группировки, ключи, кнопки удаления
         self.assertIn("Все пользователи на нодах", body)
         self.assertIn("KEY1", body)
         self.assertIn("user/delete", body)
@@ -318,6 +319,62 @@ class FleetWebTests(unittest.TestCase):
         self.assertIn("Скопировать", body)
         self.assertIn("data-copy", body)
         self.assertIn("1.5 КБ", body)
+        # один ключ на двух нодах — одна группа и одна кнопка «Скопировать все»
+        self.assertIn("Скопировать все (2)", body)
+
+    def test_system_page_shows_versions(self):
+        from wdtt_panel import __version__
+        b = self.browser()
+        self.login(b)
+        code, _, body = b.get("/system")
+        self.assertEqual(code, 200)
+        self.assertIn("Система", body)
+        self.assertIn(f"v{__version__}", body)
+        # кнопки обновления — или честный фолбэк, если обёртки нет (как на Windows)
+        self.assertTrue("Проверить обновления" in body
+                        or "Обёртка обновления не найдена" in body)
+        self.assertIn("Версии нод", body)
+        self.assertIn("1.2.3", body)
+        self.assertIn("vpn-n1.example.com", body)
+
+    def test_nav_has_version_and_system(self):
+        from wdtt_panel import __version__
+        b = self.browser()
+        self.login(b)
+        _, _, body = b.get("/nodes")
+        self.assertIn(f"v{__version__}", body)
+        self.assertIn("Система", body)
+
+    def test_system_page_shows_update_buttons_when_wrapper_present(self):
+        import tempfile
+        from pathlib import Path as _Path
+        from wdtt_panel.fleet import web as fleet_web
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = _Path(tmp) / "wdtt-panel-self-update"
+            fake.write_text("#!/bin/sh\n", encoding="utf-8")
+            old = fleet_web.PANEL_SELF_UPDATE_COMMAND
+            fleet_web.PANEL_SELF_UPDATE_COMMAND = fake
+            try:
+                b = self.browser()
+                self.login(b)
+                _, _, body = b.get("/system")
+                self.assertIn("Проверить обновления", body)
+                self.assertIn("Обновить контроллер", body)
+            finally:
+                fleet_web.PANEL_SELF_UPDATE_COMMAND = old
+
+    def test_system_spawn_without_wrapper_reports_error(self):
+        from wdtt_panel.fleet import web as fleet_web
+        old = fleet_web.PANEL_SELF_UPDATE_COMMAND
+        fleet_web.PANEL_SELF_UPDATE_COMMAND = old.parent / "нет-такого-файла"
+        try:
+            b = self.browser()
+            self.login(b)
+            _, _, body = b.post_form(
+                "/system/check", {"csrf": self.csrf(b)})
+            self.assertIn("Обёртка обновления не найдена", body)
+        finally:
+            fleet_web.PANEL_SELF_UPDATE_COMMAND = old
 
 
 if __name__ == "__main__":
