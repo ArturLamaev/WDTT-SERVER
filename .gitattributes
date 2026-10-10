@@ -1,0 +1,8 @@
+# Единые окончания строк: LF везде.
+# Без этого checkout на Windows (core.autocrlf=true) даёт CRLF,
+# на котором ломается sed в docker/entrypoint.sh
+# (чтение __version__ для PANEL_VERSION) и shell-скрипты.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

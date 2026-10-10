@@ -457,6 +457,7 @@ class Panel:
             payload["tls_mode"] = str(self.config.get("tls_mode") or "unknown")
             payload["public_host"] = str(self.config.get("public_host") or "")
             payload["https_port"] = int(self.config.get("https_port") or 443)
+            payload["base_path"] = str(self.config.get("base_path") or "/")
         if action == "logs":
             query = parse_qs(str(environ.get("QUERY_STRING") or ""))
             payload["limit"] = query.get("limit", [300])[0]
