@@ -353,7 +353,7 @@
     $("#disk-load").textContent = `${Number(disk.percent || 0).toFixed(1)}%`;
     $("#disk-detail").textContent = `${formatBytes(disk.used)} / ${formatBytes(disk.total)}`;
     $("#health-list").innerHTML = [
-      healthRow("systemd unit", service.exists, service.exists ? "найден" : "не найден"),
+      healthRow(service.docker ? "runtime (docker)" : "systemd unit", service.exists, service.exists ? "найден" : "не найден"),
       healthRow("wdtt-server", service.binary, service.binary ? "установлен" : "отсутствует"),
       healthRow("IPv4 forwarding", String(service.ip_forward) === "1", String(service.ip_forward) === "1" ? "включен" : "выключен"),
     ].join("");

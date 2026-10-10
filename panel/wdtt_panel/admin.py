@@ -261,6 +261,74 @@ def service_action(action: str) -> dict[str, Any]:
     return {"action": action, "active": service_active()}
 
 
+def is_docker() -> bool:
+    return os.environ.get("WDTT_DOCKER") == "1"
+
+
+def docker_wdtt_process_running() -> bool:
+    """Жив ли wdtt-server в контейнере: тот же критерий, что в healthcheck.sh."""
+    try:
+        result = run(["pidof", "wdtt-server"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and bool((result.stdout or "").strip())
+
+
+def docker_panel_https_ok(port: int, base_path: str) -> bool:
+    """Отвечает ли панель по HTTPS через локальный nginx (как healthcheck.sh)."""
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return False
+    path = str(base_path or "/")
+    if not path.startswith("/"):
+        path = "/" + path
+    if not 1 <= port <= 65535:
+        return False
+    try:
+        context = ssl._create_unverified_context()
+        with socket.create_connection(("127.0.0.1", port), timeout=4) as raw:
+            raw.settimeout(4)
+            with context.wrap_socket(raw) as tls:
+                tls.sendall(
+                    ("GET {} HTTP/1.0\r\nHost: 127.0.0.1\r\n"
+                     "Connection: close\r\n\r\n").format(path).encode("ascii")
+                )
+                data = b""
+                while len(data) < 8192:
+                    try:
+                        chunk = tls.recv(1024)
+                    except socket.timeout:
+                        break
+                    if not chunk:
+                        break
+                    data += chunk
+    except OSError:
+        return False
+    status_line = data.decode("latin-1", "replace").split("\r\n", 1)[0]
+    parts = status_line.split(" ")
+    return len(parts) >= 2 and parts[1] in {"200", "302", "303"}
+
+
+def docker_service_active(port: int, base_path: str) -> bool:
+    """Критерий 'WDTT активен' в Docker: процесс ядра + отвечающая панель."""
+    return docker_wdtt_process_running() and docker_panel_https_ok(port, base_path)
+
+
+def read_ip_forward() -> str:
+    """Состояние IPv4 forwarding: sysctl, fallback — /proc (работает и в Docker)."""
+    try:
+        forward = run(["sysctl", "-n", "net.ipv4.ip_forward"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        forward = None
+    if forward is not None and forward.returncode == 0:
+        return forward.stdout.strip() or "unknown"
+    try:
+        return Path("/proc/sys/net/ipv4/ip_forward").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def normalize_telegram_admin_id(value: str) -> str:
     value = (value or "").strip()
     if value and not re.fullmatch(r"-?[0-9]{1,20}", value):
@@ -2385,9 +2453,12 @@ def memory_usage() -> dict[str, Any]:
 
 def local_tls_status(host: str, port: int) -> dict[str, Any]:
     result: dict[str, Any] = {"local_tls_ok": False, "listening": False, "error": ""}
-    if SKIP_SYSTEMD or not host or not port:
+    if not host or not port:
         return result
-    listener = run(["ss", "-ltn", f"sport = :{port}"], timeout=10)
+    try:
+        listener = run(["ss", "-ltn", f"sport = :{port}"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return result
     result["listening"] = listener.returncode == 0 and "LISTEN" in listener.stdout
     try:
         context = ssl._create_unverified_context()
@@ -4441,11 +4512,20 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
         if device.get("connected")
     )
     stats = read_stats()
-    ip_forward = "unknown"
-    if not SKIP_SYSTEMD:
-        forward = run(["sysctl", "-n", "net.ipv4.ip_forward"])
-        if forward.returncode == 0:
-            ip_forward = forward.stdout.strip()
+    if SKIP_SYSTEMD:
+        # В Docker systemd нет: liveness определяем как healthcheck
+        # (процесс ядра + отвечающая панель), наличие — по бинарнику.
+        # service_active()/service_exists() осознанно не трогаем: от них
+        # зависит путь записи БД (mutate_database) — это чинит PR-B.
+        wdtt_active = docker_service_active(
+            int(payload.get("https_port") or 443),
+            str(payload.get("base_path") or "/"),
+        )
+        runtime_present = Path("/usr/local/bin/wdtt-server").is_file()
+    else:
+        wdtt_active = service_active()
+        runtime_present = service_exists()
+    ip_forward = read_ip_forward()
     disk = shutil.disk_usage("/")
     disk_percent = round(disk.used * 100 / disk.total, 1) if disk.total else 0.0
     certificate = certificate_info(str(payload.get("certificate_path") or ""))
@@ -4459,8 +4539,9 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
     certificate.update(local_tls_status(certificate["host"], certificate["port"]))
     return {
         "service": {
-            "exists": service_exists(),
-            "active": service_active(),
+            "exists": runtime_present,
+            "active": wdtt_active,
+            "docker": is_docker(),
             "ip_forward": ip_forward,
             "binary": Path("/usr/local/bin/wdtt-server").is_file(),
         },
