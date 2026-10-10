@@ -190,6 +190,62 @@ PY
 fi
 chmod 0640 /etc/wdtt-panel/config.json
 
+# ── 4b. синхронизация .env → config.json (.env каноничен) ─────────────────────
+# Кнопка «Привязать домен» в панели тоже пишет сюда же, но .env на хосте
+# ей недоступен — поэтому при рестарте расхождения забираем из .env,
+# а панель просит оператора продублировать домен в docker/.env.
+# Порты/путь из volume НЕ тянем молча: несовпадение nginx↔панель давало 404.
+SYNC_PATH="/${PANEL_PATH#/}"
+SYNC_PATH="${SYNC_PATH%/}/"
+export SYNC_PATH
+if python3 - "/etc/wdtt-panel/config.json" <<'PY'; then
+import json, os, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+want = {
+    "public_host": os.environ["PANEL_HOST"],
+    "base_path": os.environ["SYNC_PATH"],
+    "https_port": int(os.environ["PANEL_HTTPS_PORT"]),
+    "listen_port": int(os.environ["PANEL_LISTEN_PORT"]),
+}
+raise SystemExit(0 if all(data.get(k) == v for k, v in want.items()) else 1)
+PY
+  SYNC_NEEDED=0
+else
+  SYNC_NEEDED=1
+fi
+if [ "$SYNC_NEEDED" = "1" ]; then
+  PANEL_PATH="$SYNC_PATH"
+  [[ "$PANEL_PATH" =~ ^/[A-Za-z0-9_-]{16,80}/$ ]] || die "PANEL_PATH должен быть случайным путём из 16-80 символов"
+  [[ "$PANEL_HTTPS_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_HTTPS_PORT" -ge 1 ] && [ "$PANEL_HTTPS_PORT" -le 65535 ] \
+    || die "Некорректный PANEL_HTTPS_PORT"
+  [[ "$PANEL_LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_LISTEN_PORT" -ge 1024 ] && [ "$PANEL_LISTEN_PORT" -le 65535 ] \
+    || die "Некорректный PANEL_LISTEN_PORT"
+  mkdir -p /var/lib/wdtt-panel-private/config-backups
+  cp -a /etc/wdtt-panel/config.json "/var/lib/wdtt-panel-private/config-backups/config-$(date +%Y%m%d-%H%M%S).json"
+  ls -1t /var/lib/wdtt-panel-private/config-backups/config-*.json 2>/dev/null | tail -n +21 | xargs -r rm -f
+  export SYNC_PANEL_PATH="$PANEL_PATH" SYNC_PANEL_EMAIL="${PANEL_EMAIL:-}"
+  python3 - "/etc/wdtt-panel/config.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["public_host"] = os.environ["PANEL_HOST"]
+data["base_path"] = os.environ["SYNC_PANEL_PATH"]
+data["https_port"] = int(os.environ["PANEL_HTTPS_PORT"])
+data["listen_port"] = int(os.environ["PANEL_LISTEN_PORT"])
+if os.environ.get("SYNC_PANEL_EMAIL"):
+    data["certificate_email"] = os.environ["SYNC_PANEL_EMAIL"]
+tmp = path + ".tmp"
+json.dump(data, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+open(tmp, "a", encoding="utf-8").write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+print("config.json синхронизирован с .env (бэкап в config-backups)")
+PY
+  unset SYNC_PANEL_PATH SYNC_PANEL_EMAIL
+  chmod 0640 /etc/wdtt-panel/config.json
+fi
+unset SYNC_PATH
+
 # ── 5. сид VK-хешей ──────────────────────────────────────────────────────────
 if [ -f /opt/userdata/vk-hash.txt ] && [ ! -s /etc/wdtt-panel/vk-hash.txt ]; then
   install -m 0600 /opt/userdata/vk-hash.txt /etc/wdtt-panel/vk-hash.txt
@@ -341,11 +397,15 @@ PY
 else
   if [ ! -s /etc/wdtt-panel/tls/fullchain.pem ] || [ ! -s /etc/wdtt-panel/tls/privkey.pem ]; then
     issue_self_signed
-  else
+  elif openssl x509 -in /etc/wdtt-panel/tls/fullchain.pem -noout -ext subjectAltName 2>/dev/null \
+      | grep -qE "(DNS|IP Address):${PANEL_HOST}\$"; then
     CERTIFICATE_PATH="/etc/wdtt-panel/tls/fullchain.pem"
     PRIVATE_KEY_PATH="/etc/wdtt-panel/tls/privkey.pem"
     export CERTIFICATE_PATH PRIVATE_KEY_PATH
     log "Использую существующий TLS из volume"
+  else
+    log "SAN сертификата не совпадает с $PANEL_HOST — перевыпускаю self-signed"
+    issue_self_signed
   fi
 fi
 
