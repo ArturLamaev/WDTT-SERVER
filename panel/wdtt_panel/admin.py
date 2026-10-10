@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import sqlite3
 import ssl
@@ -356,6 +357,43 @@ def wdtt_listener_open(port: int) -> bool:
     return listener.returncode == 0 and "UNCONN" in listener.stdout
 
 
+def docker_wdtt_pid() -> int | None:
+    """PID ядра в контейнере: pidof, fallback — pid-файл супервизора."""
+    try:
+        result = run(["pidof", "wdtt-server"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        result = None
+    if result is not None and result.returncode == 0:
+        for token in (result.stdout or "").split():
+            try:
+                return int(token)
+            except ValueError:
+                continue
+    try:
+        return int(Path("/run/wdtt/wdtt.pid").read_text(encoding="utf-8").strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def reload_docker_kernel() -> bool:
+    """Перезагрузить БД ядра без разрыва туннелей (SIGHUP → reloadDB).
+
+    Best-effort: неудача не роняет операцию панели — файл уже записан
+    и подхватится при следующем рестарте ядра.
+    """
+    sighup = getattr(signal, "SIGHUP", None)
+    pid = docker_wdtt_pid()
+    if sighup is None or pid is None:
+        print("[wdtt-panel] WARN: ядро wdtt-server не найдено, SIGHUP пропущен", flush=True)
+        return False
+    try:
+        os.kill(pid, sighup)
+    except (OSError, ValueError) as exc:
+        print(f"[wdtt-panel] WARN: SIGHUP ядру (pid {pid}) не доставлен: {exc}", flush=True)
+        return False
+    return True
+
+
 def normalize_telegram_admin_id(value: str) -> str:
     value = (value or "").strip()
     if value and not re.fullmatch(r"-?[0-9]{1,20}", value):
@@ -637,6 +675,10 @@ def mutate_database(label: str, mutator: Callable[[dict[str, Any]], Any], backup
             create_backup(label)
         result = mutator(data)
         save_database(data)
+        if SKIP_SYSTEMD:
+            # Ядро держит БД в памяти и раз в 60с пишет её на диск (saveDB):
+            # без перезагрузки оно затреёт только что записанный файл.
+            reload_docker_kernel()
     except Exception:
         if was_active:
             service_action("start")
