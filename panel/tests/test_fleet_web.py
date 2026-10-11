@@ -265,11 +265,21 @@ class FleetWebTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("@import", body)
         self.assertIn("var(--bg)", body)
+        self.assertIn(".table-scroll", body)
+        self.assertIn("@media", body)
         code, _, node_css = b.get("/static/app.css")
         self.assertEqual(code, 200)
         self.assertIn("--accent", node_css)
         code, _, _ = b.get("/static/../secret.py")
         self.assertEqual(code, 404)
+
+    def test_tables_scroll_inside_cards_on_narrow_screens(self):
+        b = self.browser()
+        self.login(b)
+        for path in ("/nodes", "/status", "/system", "/user"):
+            _, _, body = b.get(path)
+            self.assertIn("table-scroll", body, path)
+            self.assertIn("table class=grid", body, path)
 
     def test_theme_wiring(self):
         b = self.browser()

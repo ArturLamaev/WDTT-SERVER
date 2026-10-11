@@ -215,6 +215,7 @@ body.light-theme .user-actions-popover button { color: #2b2620; background: #faf
 .system-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 .detail-list, .backup-list { display: grid; gap: 10px; }
 .detail-row, .backup-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+.detail-row > *, .backup-row > * { min-width: 0; overflow-wrap: anywhere; }
 .detail-row strong { color: var(--text); }
 .backup-row button { flex: 0 0 auto; }
 .backup-schedule { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 4px 0 16px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(20, 19, 16, .5); }
@@ -302,7 +303,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(3px); }
 .login-form button.primary, .login-form button[type="submit"] { width: 100%; margin-top: 10px; }
 .form-error { min-height: 18px; margin: 0; color: var(--danger); font-size: 12px; }
 .form-error:empty { display: none; }
-@media (max-width: 1150px) { .hero-grid { grid-template-columns: 1fr 1fr; } .hero-card { grid-column: 1 / -1; } .two-column { grid-template-columns: 1fr; } .route-rule { grid-template-columns: 32px 1fr 1.5fr; } .route-rule .route-target, .route-rule .row-actions { grid-column: span 1; } .geofile-form { grid-template-columns: 1fr 1fr; } #tab-logs .section-head { flex-wrap: wrap; } #tab-logs .inline-actions { flex-basis: 100%; } }
+@media (max-width: 1150px) { .hero-grid { grid-template-columns: 1fr 1fr; } .hero-card { grid-column: 1 / -1; } .two-column { grid-template-columns: 1fr; } .route-rule { grid-template-columns: 32px 1fr 1.5fr; } .route-rule .route-target, .route-rule .row-actions { grid-column: span 1; } .geofile-form { grid-template-columns: 1fr 1fr; } #tab-logs .section-head { flex-wrap: wrap; } #tab-logs .inline-actions { flex-basis: 100%; } .backup-schedule { flex-wrap: wrap; } .backup-schedule-controls { width: 100%; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); } .backup-schedule-controls button { grid-column: 1 / -1; } }
 @media (max-width: 760px) {
   :root { --sidebar: 0px; }
   body { min-width: 0; }

@@ -111,6 +111,10 @@ table.grid th, table.grid td {
   text-align: left;
   vertical-align: middle;
 }
+/* Таблицы шире экрана (ссылки wdtt://, ключи) скроллятся внутри карточки,
+ * а не распирают всю страницу вправо на телефоне. */
+.table-scroll { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
+.table-scroll table.grid { width: max-content; min-width: 100%; }
 table.grid th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
 table.grid tr:last-child td { border-bottom: none; }
 table.grid tr:hover td { background: var(--accent-soft); }
@@ -159,9 +163,31 @@ code.key {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 2px 7px;
+  overflow-wrap: anywhere;
 }
+.card pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.card h3 { line-height: 1.9; overflow-wrap: anywhere; }
 
 .login-wrap { max-width: 380px; margin: 8vh auto 0; }
 .login-wrap .card { padding: 24px; }
 .login-wrap input { width: 100%; box-sizing: border-box; margin: 4px 0 10px; }
 .login-wrap button { width: 100%; margin-top: 6px; }
+
+/* Узкие экраны: телефон и вертикальный монитор. */
+@media (max-width: 640px) {
+  body { padding: 0 10px 40px; }
+  .fleet-top { gap: 10px; padding: 10px 0; }
+  .wrap h1 { font-size: 19px; }
+  .card { padding: 12px; }
+  .table-scroll { margin: 0 -12px; padding: 0 12px; }
+  table.grid { font-size: 13px; }
+  table.grid th, table.grid td { padding: 7px 8px; }
+  input, select, button { font-size: 16px; }
+  .fleet-tools { margin-left: 0; }
+}

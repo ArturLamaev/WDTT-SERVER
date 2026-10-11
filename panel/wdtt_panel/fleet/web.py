@@ -120,6 +120,12 @@ def _copy_button(link: str) -> str:
             f"<button class=secondary data-copy='{_h(link)}'>{icon('copy')}Скопировать</button>")
 
 
+def _grid(inner: str) -> str:
+    """Таблица в скролл-контейнере: на узком экране едет сама таблица,
+    а не вся страница (карточка и заголовок остаются на месте)."""
+    return f"<div class=table-scroll>{inner}</div>"
+
+
 def _page(title: str, body: str, active: str = "", nav: bool = True) -> str:
     dots = "".join(
         f"<button title='{_h(name)}' data-a='{_h(name)}' style='background:{_h(color)}'"
@@ -389,7 +395,7 @@ class FleetWeb:
         if not rows:
             rows = "<tr><td colspan=4 class=muted>Реестр пуст — добавьте первую ноду ниже.</td></tr>"
         body = ((f"<p class=ok-text>{_h(note)}</p>" if note else "") +
-                f"<div class=card><table class=grid><tr><th>Нода</th><th>URL</th><th>Статус</th><th></th></tr>{rows}</table></div>"
+                f"<div class=card>{_grid(f'<table class=grid><tr><th>Нода</th><th>URL</th><th>Статус</th><th></th></tr>{rows}</table>')}</div>"
                 f"<div class=card><h3>Добавить ноду</h3>"
                 f"<form method=post action=nodes/add>{self._csrf_field(session)}"
                 f"ID <input name=id required> URL панели <input name=url size=40 required "
@@ -473,8 +479,8 @@ class FleetWeb:
         summary = summarize(results)
         return self._html(start_response, "Статус",
                           f"<p class=sub>ok {summary['ok']}/{summary['total']}</p>"
-                          f"<div class=card><table class=grid><tr><th>Нода</th><th>Статус</th><th>Активно / Всего</th><th>Пинг</th></tr>"
-                          f"{rows}</table></div>",
+                          f"<div class=card>{_grid(f'<table class=grid><tr><th>Нода</th><th>Статус</th><th>Активно / Всего</th><th>Пинг</th></tr>{rows}</table>')}"
+                          f"</div>",
                           active="status")
 
     # --- user ---
@@ -552,7 +558,7 @@ class FleetWeb:
                      f"<td>{cell}</td></tr>"
                      if user else f"<tr><td><strong>{_h(nid)}</strong></td>"
                      f"<td><span class=\"dot idle\"></span>нет</td><td></td></tr>")
-        return (f"<table class=grid><tr><th>Нода</th><th>Ключ {_h(key)}</th><th>Ссылка</th></tr>{rows}</table>")
+        return _grid(f"<table class=grid><tr><th>Нода</th><th>Ключ {_h(key)}</th><th>Ссылка</th></tr>{rows}</table>")
 
     def _all_users_block(self, by_id: dict, session: dict, results: dict,
                            hosts: dict | None = None) -> str:
@@ -670,7 +676,7 @@ class FleetWeb:
                     "<th>Трафик</th><th></th><th></th></tr>")
             parts.append(f"<h3><code class=key>{_h(title)}</code>{labels_html} "
                          f"<span class=muted>· {', '.join(_h(n) for n in nids)}</span>{copy_all}</h3>"
-                         f"<table class=grid>{cols}{rows}</table>")
+                         f"{_grid(f'<table class=grid>{cols}{rows}</table>')}")
         if not parts:
             return "<p class=muted>Нет пользователей ни на одной ноде.</p>"
         head = f"<p class=sub>Всего: {total}</p>"
@@ -856,7 +862,7 @@ class FleetWeb:
                     rows += (f"<tr><td><strong>{_h(nid)}</strong></td>"
                              f"<td><span class=\"dot bad\"></span><span class=err>FAIL</span></td>"
                              f"<td colspan=2 class=muted>{_h(entry.get('error', '?'))}</td></tr>")
-            versions = (f"<table class=grid><tr><th>Нода</th><th>Статус</th>"
+            versions = _grid(f"<table class=grid><tr><th>Нода</th><th>Статус</th>"
                         f"<th>Версия панели</th><th>Внешний адрес</th></tr>{rows}</table>")
         body = (((f"<p class={cls}>{_h(note)}</p>" if note else "") +
                  f"<div class=card><h3>Контроллер</h3>"
