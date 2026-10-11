@@ -74,7 +74,7 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `WDTT_MAIN_PASSWORD` | *(генерируется)* | Главный пароль ядра (12–64 `[A-Za-z0-9._~-]`) |
 | `WDTT_DTLS_PORT` / `WDTT_WG_PORT` / `WDTT_ADMIN_PORT` | `56000/56001/56002` | Порты ядра |
 | `WDTT_DNS` | `1.1.1.1,1.0.0.1` | DNS для клиентов |
-| `WDTT_DIRECT_PORT` / `WDTT_RAW_PORT` | — | Экспериментальные порты ядра |
+| `WDTT_DIRECT_PORT` / `WDTT_RAW_PORT` | `0` | Direct (RTP-obfs без DTLS, клиент: `go_client -notls`) и RAW (без WireGuard, клиент: Android rawtun) листенеры ядра, `0` — выкл. Включаются и во вкладке «WDTT»; мониторинг — строки Direct/RAW UDP в Диагностике. Публикация наружу — раскомментом в compose; на хосте откройте UDP в фаерволе провайдера как `56000/56001` |
 | `WDTT_TAILSCALE_PORT` | `41641` | UDP-порт Tailscale для прямых соединений (действует при раскомментированном маппинге в compose) |
 | `WDTT_TELEGRAM_BOT_TOKEN` / `WDTT_TELEGRAM_ADMIN_ID` | — | Telegram-бот ядра |
 | `TZ` | `UTC` | Часовой пояс |

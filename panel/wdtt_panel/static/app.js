@@ -428,9 +428,19 @@
       healthRow(service.docker ? "runtime (docker)" : "systemd unit", service.exists, service.exists ? "найден" : "не найден"),
       healthRow("wdtt-server", service.binary, service.binary ? "установлен" : "отсутствует"),
       healthRow("IPv4 forwarding", String(service.ip_forward) === "1", String(service.ip_forward) === "1" ? "включен" : "выключен"),
+      ...wdttListenerRows(overview.wdtt || {}),
     ].join("");
     renderCertificate(overview.certificate || {});
     await loadHistory();
+  }
+
+  function wdttListenerRows(wdtt) {
+    const settings = (wdtt && wdtt.settings) || {};
+    const directPort = Number(settings.direct_port || 0), rawPort = Number(settings.raw_port || 0);
+    const rows = [];
+    if (directPort > 0) rows.push(healthRow(`Direct UDP :${directPort}`, Boolean(wdtt.direct_listening), wdtt.direct_listening ? "слушается" : "не слушается"));
+    if (rawPort > 0) rows.push(healthRow(`RAW UDP :${rawPort}`, Boolean(wdtt.raw_listening), wdtt.raw_listening ? "слушается" : "не слушается"));
+    return rows;
   }
 
   function renderCertificate(cert) {
@@ -1466,7 +1476,23 @@
         ? `расширение ${wdtt.extension_marker || ""} активно`
         : "расширение ядра устарело: расширенные параметры применятся после обновления панели";
       $("#wdtt-tunables-note").hidden = current;
+      renderWdttModes(settings, wdtt);
     } catch (error) { toast(error.message, true); }
+  }
+
+  function renderWdttModes(settings, wdtt) {
+    const info = $("#wdtt-modes-info");
+    if (!info) return;
+    const directPort = Number(settings.direct_port || 0), rawPort = Number(settings.raw_port || 0);
+    const parts = [];
+    if (directPort > 0) parts.push(
+      `Direct UDP :${directPort} — ${wdtt.direct_listening ? "слушается" : "не слушается"}. ` +
+      `Клиент: go_client -peer ${PUBLIC_HOST}:${directPort} -password ПАРОЛЬ -vk ХЕШ -notls`);
+    if (rawPort > 0) parts.push(
+      `RAW UDP :${rawPort} — ${wdtt.raw_listening ? "слушается" : "не слушается"}. ` +
+      `Клиент: только Android rawtun.`);
+    if (!parts.length) info.textContent = "Direct и RAW выключены (порты 0): работает только DTLS → WireGuard. Ссылки wdtt:// и телефонное приложение других режимов не знают — direct/raw для go_client.";
+    else info.innerHTML = parts.map(escapeHtml).join("<br>");
   }
 
   async function saveWdttSettings() {

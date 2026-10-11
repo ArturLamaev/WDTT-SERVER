@@ -34,11 +34,13 @@ random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+st
 : "${WDTT_DTLS_PORT:=56000}"
 : "${WDTT_WG_PORT:=56001}"
 : "${WDTT_ADMIN_PORT:=56002}"
+: "${WDTT_DIRECT_PORT:=0}"
+: "${WDTT_RAW_PORT:=0}"
 : "${WDTT_DNS:=1.1.1.1,1.0.0.1}"
 : "${TLS_MODE:=self-signed}"
 : "${WDTT_FETCH_RUNTIME:=1}"
 export PANEL_USER PANEL_HTTPS_PORT PANEL_LISTEN_PORT TLS_MODE
-export WDTT_DTLS_PORT WDTT_WG_PORT WDTT_ADMIN_PORT WDTT_DNS WDTT_FETCH_RUNTIME
+export WDTT_DTLS_PORT WDTT_WG_PORT WDTT_ADMIN_PORT WDTT_DIRECT_PORT WDTT_RAW_PORT WDTT_DNS WDTT_FETCH_RUNTIME
 
 [[ "$PANEL_USER" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] || die "Некорректный PANEL_USER"
 [[ "$PANEL_HTTPS_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_HTTPS_PORT" -ge 1 ] && [ "$PANEL_HTTPS_PORT" -le 65535 ] \
@@ -50,6 +52,11 @@ export WDTT_DTLS_PORT WDTT_WG_PORT WDTT_ADMIN_PORT WDTT_DNS WDTT_FETCH_RUNTIME
 for pair in "WDTT_DTLS_PORT $WDTT_DTLS_PORT" "WDTT_WG_PORT $WDTT_WG_PORT" "WDTT_ADMIN_PORT $WDTT_ADMIN_PORT"; do
   pname="${pair%% *}"; pport="${pair##* }"
   [[ "$pport" =~ ^[0-9]+$ ]] && [ "$pport" -ge 1 ] && [ "$pport" -le 65535 ] || die "Некорректный $pname"
+done
+# Direct/RAW: 0 — выключено (дефолт), иначе 1-65535 (включаются во вкладке «WDTT»)
+for pname in WDTT_DIRECT_PORT WDTT_RAW_PORT; do
+  pport="${!pname}"
+  [[ "$pport" =~ ^[0-9]+$ ]] && [ "$pport" -le 65535 ] || die "Некорректный $pname"
 done
 case "$TLS_MODE" in self-signed|letsencrypt) ;; *) die "TLS_MODE должен быть self-signed или letsencrypt" ;; esac
 
@@ -199,6 +206,16 @@ if command -v iptables >/dev/null 2>&1 && [ -n "$WAN_IFACE" ]; then
     iptables -C INPUT -p "$proto" --dport "$port" -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || \
       iptables -I INPUT -p "$proto" --dport "$port" -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || \
       log "WARN: iptables INPUT $port/$proto не применился"
+  done
+  # Direct/RAW-листенеры ядра: открываем только когда включены (порт ≠ 0).
+  # Публикация наружу — раскомментом строк в compose; NAT подсети raw
+  # (10.70.66.0/16) поднимает само ядро при старте листенера.
+  for extra_port in "$WDTT_DIRECT_PORT" "$WDTT_RAW_PORT"; do
+    if [[ "$extra_port" =~ ^[0-9]+$ ]] && [ "$extra_port" -ge 1 ] && [ "$extra_port" -le 65535 ]; then
+      iptables -C INPUT -p udp --dport "$extra_port" -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -p udp --dport "$extra_port" -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || \
+        log "WARN: iptables INPUT $extra_port/udp не применился"
+    fi
   done
   # WG-порт: только с loopback (панель ходит локально; наружу он не нужен)
   iptables -C INPUT -i lo -p udp --dport "$WDTT_WG_PORT" -m comment --comment WDTT_WG_INTERNAL -j ACCEPT 2>/dev/null || \

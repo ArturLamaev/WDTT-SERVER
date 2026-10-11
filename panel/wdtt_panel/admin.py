@@ -340,6 +340,22 @@ def read_ip_forward() -> str:
         return "unknown"
 
 
+def wdtt_listener_open(port: int) -> bool:
+    """Слушается ли UDP-порт ядра (direct/raw): проверка через ss, без
+    systemd-гейта — работает и в Docker. Порт 0/вне диапазона = выключено."""
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return False
+    if not 1 <= port <= 65535:
+        return False
+    try:
+        listener = run(["ss", "-lun", f"sport = :{port}"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return listener.returncode == 0 and "UNCONN" in listener.stdout
+
+
 def normalize_telegram_admin_id(value: str) -> str:
     value = (value or "").strip()
     if value and not re.fullmatch(r"-?[0-9]{1,20}", value):
@@ -4776,6 +4792,7 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
     ip_forward = read_ip_forward()
     disk = shutil.disk_usage("/")
     disk_percent = round(disk.used * 100 / disk.total, 1) if disk.total else 0.0
+    wdtt_settings = load_wdtt_settings()
     certificate = certificate_info(str(payload.get("certificate_path") or ""))
     certificate.update(
         {
@@ -4808,7 +4825,9 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
         "disk": {"total": disk.total, "used": disk.used, "free": disk.free, "percent": disk_percent},
         "certificate": certificate,
         "wdtt": {
-            "settings": load_wdtt_settings(),
+            "settings": wdtt_settings,
+            "direct_listening": wdtt_listener_open(wdtt_settings.get("direct_port") or 0),
+            "raw_listening": wdtt_listener_open(wdtt_settings.get("raw_port") or 0),
             "extension_current": wdtt_extensions_are_verified(),
             "extension_marker": WDTT_EXTENSION_MARKER,
         },
