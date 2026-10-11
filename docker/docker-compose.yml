@@ -11,7 +11,8 @@
 #   * Linux с поддержкой /dev/net/tun (VPS-ядро с модулем tun)
 #   * контейнеру даны привилегии NET_ADMIN/NET_RAW (см. ниже)
 #   * опубликованные порты: 9999 (панель), 80 (ACME/редирект),
-#     56000/udp+tcp (DTLS/API), 56001/udp (WireGuard) — откройте их и в фаерволе VPS.
+#     56000/udp+tcp (DTLS/API), 56001/udp (WireGuard), 41641/udp (Tailscale
+#     direct — без него только DERP-релеи) — откройте их и в фаерволе VPS.
 #
 # Если Docker-хост не отдаёт /dev/net/tun — раскомментируйте `privileged: true`
 # (проще всего на большинстве «облачных» докер-хостингов).
@@ -48,6 +49,8 @@ services:
       - "${WDTT_DTLS_PORT:-56000}:${WDTT_DTLS_PORT:-56000}/udp"   # DTLS-туннель
       - "${WDTT_DTLS_PORT:-56000}:${WDTT_DTLS_PORT:-56000}/tcp"   # API ядра
       - "${WDTT_WG_PORT:-56001}:${WDTT_WG_PORT:-56001}/udp"       # WireGuard
+      # Tailscale direct-соединения (без него — только DERP-релеи, медленнее)
+      - "${WDTT_TAILSCALE_PORT:-41641}:${WDTT_TAILSCALE_PORT:-41641}/udp"
       # Admin API ядра (56002) НАРУЖУ НЕ ОТКРЫВАЙТЕ — он нужен только
       # самой панели/приложению на локальной петле:
       # - "${WDTT_ADMIN_PORT:-56002}:${WDTT_ADMIN_PORT:-56002}"
@@ -61,6 +64,7 @@ services:
       - wdtt-panel-state:/var/lib/wdtt-panel      # sqlite-состояние панели
       - wdtt-panel-private:/var/lib/wdtt-panel-private   # xray, warp, бэкапы
       - wdtt-letsencrypt:/etc/letsencrypt         # сертификаты Let's Encrypt
+      - tailscale-state:/var/lib/tailscale        # идентичность tailnet (переживает рестарты)
       # Код панели из репозитория поверх запечённого в образ: обновление
       # Python-кода (панель, fleet, фронт) = git pull на хосте +
       # `docker compose restart wdtt`. Пересборка (`up -d --build`) нужна
@@ -93,3 +97,4 @@ volumes:
   wdtt-panel-state: {}
   wdtt-panel-private: {}
   wdtt-letsencrypt: {}
+  tailscale-state: {}

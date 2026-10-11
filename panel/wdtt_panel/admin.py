@@ -118,6 +118,17 @@ XRAY_INSTALL_COMMAND = Path(
 WARP_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_WARP_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
 )
+TAILSCALE_DIR = Path(os.environ.get("WDTT_TAILSCALE_DIR", "/var/lib/wdtt-panel-private/tailscale"))
+TAILSCALE_SETTINGS = Path(
+    os.environ.get("WDTT_TAILSCALE_SETTINGS", "/var/lib/wdtt-panel-private/tailscale-settings.json")
+)
+TAILSCALE_AUTHKEY_FILE = Path(
+    os.environ.get("WDTT_TAILSCALE_AUTHKEY_FILE", "/var/lib/wdtt-panel-private/tailscale/auth-key")
+)
+TAILSCALE_INSTALL_COMMAND = Path(
+    os.environ.get("WDTT_TAILSCALE_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
+)
+TAILSCALED_SERVICE = os.environ.get("WDTT_TAILSCALED_SERVICE", "tailscaled.service")
 XRAY_CASCADE_SETTINGS = Path(
     os.environ.get("WDTT_XRAY_CASCADE_SETTINGS", "/var/lib/wdtt-panel-private/xray-cascade.json")
 )
@@ -1541,6 +1552,10 @@ def backup_full_payload() -> dict[str, Any]:
             "account": read_private_text(WARP_DIR / "wgcf-account.toml"),
             "profile": read_private_text(WARP_DIR / "wgcf-profile.conf"),
         },
+        "tailscale": {
+            "authkey": read_private_text(TAILSCALE_AUTHKEY_FILE),
+            "settings": read_private_json(TAILSCALE_SETTINGS),
+        },
     }
 
 
@@ -1736,6 +1751,13 @@ def validate_full_backup(data: Any) -> dict[str, Any]:
     warp = data.get("warp")
     if not isinstance(settings, dict) or not isinstance(warp, dict):
         raise ValidationError("В backup отсутствуют настройки панели")
+    # Tailscale появился позже WARP: в старых копиях секции нет — это норма.
+    tailscale = data.get("tailscale") or {}
+    if not isinstance(tailscale, dict):
+        raise ValidationError("В backup неверные настройки Tailscale")
+    tailscale_settings = tailscale.get("settings")
+    if tailscale_settings is not None and not isinstance(tailscale_settings, dict):
+        raise ValidationError("В backup неверные настройки Tailscale")
     xray = settings.get("xray")
     xray_cascade = settings.get("xray_cascade")
     legacy_cascade = settings.get("legacy_cascade")
@@ -1761,6 +1783,8 @@ def validate_full_backup(data: Any) -> dict[str, Any]:
         "backup_schedule": normalize_backup_schedule(backup_schedule),
         "warp_account": validate_backup_text(warp.get("account"), "профиль WARP"),
         "warp_profile": validate_backup_text(warp.get("profile"), "профиль WARP"),
+        "tailscale_authkey": validate_backup_text(tailscale.get("authkey"), "ключ Tailscale"),
+        "tailscale_settings": tailscale_settings,
     }
 
 
@@ -1867,6 +1891,10 @@ def restore_backup(payload: dict[str, Any]) -> dict[str, Any]:
         os.chmod(WARP_DIR, 0o700)
         restore_optional_text(WARP_DIR / "wgcf-account.toml", full["warp_account"])
         restore_optional_text(WARP_DIR / "wgcf-profile.conf", full["warp_profile"])
+        TAILSCALE_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(TAILSCALE_DIR, 0o700)
+        restore_optional_text(TAILSCALE_AUTHKEY_FILE, full["tailscale_authkey"])
+        restore_optional_json(TAILSCALE_SETTINGS, full["tailscale_settings"])
         save_backup_schedule(full["backup_schedule"])
         warnings = apply_restored_services(full["xray"], full["xray_cascade"])
     return {"restored": name, "type": kind, "safety_backup": safety_backup, "warnings": warnings}
@@ -4178,6 +4206,219 @@ def ping_warp(payload: dict[str, Any]) -> dict[str, Any]:
         Path(name).unlink(missing_ok=True)
 
 
+def normalize_tailscale_auth_key(value: str) -> str:
+    value = (value or "").strip()
+    if value and not re.fullmatch(r"tskey-auth-[A-Za-z0-9-]{10,200}", value):
+        raise ValidationError("Tailscale Auth Key должен быть в формате tskey-auth-...")
+    return value
+
+
+def mask_tailscale_auth_key(value: str) -> str:
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= 16:
+        return "***"
+    return f"{value[:10]}...{value[-4:]}"
+
+
+def normalize_tailscale_hostname(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
+    if len(value) > 63:
+        value = value[:63].rstrip("-")
+    if value and not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+        raise ValidationError("Имя машины в Tailscale: латиница, цифры и дефис, не длиннее 63 символов")
+    return value
+
+
+def default_tailscale_hostname() -> str:
+    try:
+        local = socket.gethostname().split(".")[0]
+    except OSError:
+        local = ""
+    cleaned = normalize_tailscale_hostname(local)
+    return cleaned or "wdtt-server"
+
+
+def load_tailscale_settings() -> dict[str, Any]:
+    try:
+        raw = TAILSCALE_SETTINGS.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_tailscale_settings(settings: dict[str, Any]) -> None:
+    save_private_json(TAILSCALE_SETTINGS, settings)
+
+
+def tailscale_status_raw() -> dict[str, Any]:
+    """Сырой `tailscale status --json` + признак доступности демона.
+
+    Работает и в Docker (SKIP_SYSTEMD): демон слушает локальный сокет,
+    systemd для опроса не нужен.
+    """
+    if not shutil.which("tailscale"):
+        return {"installed": False, "daemon": False, "online": False, "raw": {}}
+    try:
+        completed = run(["tailscale", "status", "--json"], timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return {"installed": True, "daemon": False, "online": False, "raw": {}}
+    if completed.returncode != 0:
+        return {"installed": True, "daemon": False, "online": False, "raw": {}}
+    try:
+        data = json.loads(completed.stdout)
+    except ValueError:
+        return {"installed": True, "daemon": True, "online": False, "raw": {}}
+    if not isinstance(data, dict):
+        return {"installed": True, "daemon": True, "online": False, "raw": {}}
+    backend = str(data.get("BackendState") or "")
+    self_node = data.get("Self") if isinstance(data.get("Self"), dict) else {}
+    addresses = self_node.get("TailscaleIPs") if isinstance(self_node.get("TailscaleIPs"), list) else []
+    addresses = [str(item) for item in addresses if str(item)]
+    online = bool(addresses or str(self_node.get("DNSName") or "")) and backend in {"", "Running"}
+    return {"installed": True, "daemon": True, "online": online, "raw": data}
+
+
+def tailscale_status(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = tailscale_status_raw()
+    data = raw["raw"] if isinstance(raw["raw"], dict) else {}
+    self_node = data.get("Self") if isinstance(data.get("Self"), dict) else {}
+    settings = load_tailscale_settings()
+    try:
+        stored_key = read_private_text(TAILSCALE_AUTHKEY_FILE) or ""
+    except OSError:
+        stored_key = ""
+    return {
+        "installed": raw["installed"],
+        "daemon": raw["daemon"],
+        "online": raw["online"],
+        "hostname": str(self_node.get("HostName") or settings.get("hostname") or ""),
+        "tailscale_ips": [str(item) for item in (self_node.get("TailscaleIPs") or []) if str(item)],
+        "dns_name": str(self_node.get("DNSName") or ""),
+        "tailnet": str(data.get("MagicDNSSuffix") or ""),
+        "authkey_set": bool(stored_key),
+        "authkey_hint": mask_tailscale_auth_key(stored_key),
+        "accept_dns": bool(settings.get("accept_dns", True)),
+    }
+
+
+def schedule_tailscale_runtime(payload: dict[str, Any]) -> dict[str, Any]:
+    if SKIP_SYSTEMD:
+        return {"scheduled": True, "state": "test"}
+    unit = f"wdtt-tailscale-install-{int(time.time())}"
+    result = run_transient_unit(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(TAILSCALE_INSTALL_COMMAND), "install-tailscale-runtime"],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать установку Tailscale")
+    return {"scheduled": True, "unit": unit}
+
+
+def ensure_tailscaled_running() -> None:
+    """Демон должен отвечать до `tailscale up`: на хосте будим systemd-юнит,
+    в Docker его крутит супервизор — там только проверяем сокет."""
+    if SKIP_SYSTEMD:
+        return
+    if not shutil.which("systemctl"):
+        return
+    run(["systemctl", "enable", "--now", TAILSCALED_SERVICE], timeout=60)
+
+
+def tailscale_connect(payload: dict[str, Any]) -> dict[str, Any]:
+    if not shutil.which("tailscale"):
+        raise ValidationError("Сначала установите компонент Tailscale")
+    try:
+        stored_key = read_private_text(TAILSCALE_AUTHKEY_FILE) or ""
+    except OSError:
+        stored_key = ""
+    auth_key = normalize_tailscale_auth_key(str(payload.get("auth_key") or stored_key))
+    if not auth_key:
+        raise ValidationError("Вставьте Auth Key из admin console Tailscale (reusable, с тегом ephemeral при желании)")
+    settings = load_tailscale_settings()
+    hostname = normalize_tailscale_hostname(
+        str(payload.get("hostname") or settings.get("hostname") or default_tailscale_hostname())
+    ) or default_tailscale_hostname()
+    accept_dns = payload.get("accept_dns", settings.get("accept_dns", True))
+    accept_dns = bool(accept_dns) if isinstance(accept_dns, bool) else str(accept_dns).lower() not in {"0", "false", "no", "off", ""}
+    ensure_tailscaled_running()
+    if not tailscale_status_raw()["daemon"]:
+        raise AdminError("tailscaled не отвечает: на хосте проверьте юнитом tailscaled, в Docker — перезапустите контейнер")
+    # Ключ едет аргументом (виден только root в ps) — файла --auth-key-file у CLI нет.
+    connected = run(
+        ["tailscale", "up", f"--auth-key={auth_key}", f"--hostname={hostname}",
+         f"--accept-dns={'true' if accept_dns else 'false'}"],
+        timeout=90,
+    )
+    if connected.returncode != 0:
+        detail = (connected.stderr or connected.stdout or "").strip()
+        raise AdminError(detail or "Tailscale не принял Auth Key (одноразовый ключ уже использован?)")
+    TAILSCALE_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(TAILSCALE_DIR, 0o700)
+    write_private_text(TAILSCALE_AUTHKEY_FILE, auth_key + "\n")
+    save_tailscale_settings({"hostname": hostname, "accept_dns": accept_dns})
+    return {"connected": True, **tailscale_status({})}
+
+
+def tailscale_disconnect(payload: dict[str, Any]) -> dict[str, Any]:
+    if not shutil.which("tailscale"):
+        raise ValidationError("Сначала установите компонент Tailscale")
+    stopped = run(["tailscale", "down"], timeout=30)
+    if stopped.returncode != 0:
+        raise AdminError((stopped.stderr or stopped.stdout or "").strip() or "Не удалось остановить Tailscale")
+    return {"connected": False, **tailscale_status({})}
+
+
+def tailscale_logout(payload: dict[str, Any]) -> dict[str, Any]:
+    if not shutil.which("tailscale"):
+        raise ValidationError("Сначала установите компонент Tailscale")
+    forgotten = run(["tailscale", "logout"], timeout=30)
+    if forgotten.returncode != 0:
+        raise AdminError((forgotten.stderr or forgotten.stdout or "").strip() or "Не удалось выйти из tailnet")
+    return {"connected": False, **tailscale_status({})}
+
+
+def tailscale_check(payload: dict[str, Any]) -> dict[str, Any]:
+    if not shutil.which("tailscale"):
+        raise ValidationError("Сначала установите компонент Tailscale")
+    if not tailscale_status_raw()["online"]:
+        raise ValidationError("Tailscale не в сети — сначала подключитесь")
+    try:
+        probed = run(["tailscale", "netcheck", "--format=json"], timeout=45)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AdminError(f"Проверка Tailscale не выполнена: {exc}") from exc
+    try:
+        report = json.loads(probed.stdout) if probed.returncode == 0 else {}
+    except ValueError:
+        report = {}
+    if not isinstance(report, dict) or not report:
+        # Старый tailscale без --format=json: подтверждаем фактом сети.
+        current = tailscale_status({})
+        return {"ok": True, "tailscale_ips": current["tailscale_ips"], "dns_name": current["dns_name"], "note": "netcheck без JSON в этой версии"}
+    latencies = report.get("DERPLatency") if isinstance(report.get("DERPLatency"), dict) else {}
+    best_ms: float | None = None
+    for value in latencies.values():
+        try:
+            millis = float(value) * 1000
+        except (TypeError, ValueError):
+            continue
+        best_ms = millis if best_ms is None else min(best_ms, millis)
+    return {
+        "ok": True,
+        "udp": bool(report.get("UDP")),
+        "nearest_derp": str(report.get("NearestDERP") or ""),
+        "latency_ms": round(best_ms, 1) if best_ms is not None else None,
+        **{key: current_value for key, current_value in tailscale_status({}).items()
+           if key in {"tailscale_ips", "dns_name", "hostname"}},
+    }
+
+
 def xray_download_geofile(item: dict[str, Any]) -> dict[str, Any]:
     url = str(item.get("url") or "")
     if not url:
@@ -4617,6 +4858,12 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "warp.create": create_warp,
     "warp.restart": restart_warp,
     "warp.ping": ping_warp,
+    "tailscale.status": tailscale_status,
+    "tailscale.install": schedule_tailscale_runtime,
+    "tailscale.connect": tailscale_connect,
+    "tailscale.disconnect": tailscale_disconnect,
+    "tailscale.logout": tailscale_logout,
+    "tailscale.check": tailscale_check,
     "cascade.status": cascade_status,
     "cascade.save": cascade_save,
     "cascade.restart": cascade_restart,

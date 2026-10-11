@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, historyPoints: [], xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, cascade: null, vkHashes: [], telegram: null };
+  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, historyPoints: [], xray: { inbounds: [], outbounds: [], routing_rules: [], geofiles: [] }, xrayGateway: null, warp: null, tailscale: null, cascade: null, vkHashes: [], telegram: null };
 
   let panelVersionTimer = null;
 
@@ -86,7 +86,7 @@
     if (name === "xray") Promise.all([loadXray(), loadWarp(), loadCascadeRouting()]);
     if (name === "wdtt") loadWdttSettings();
     if (name === "overview" && Array.isArray(state.historyPoints)) drawCharts(state.historyPoints);
-    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); loadPanelVersion(); }
+    if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); loadTailscale(); loadPanelVersion(); }
   }
 
   function restoreActiveTab() {
@@ -319,6 +319,78 @@
     try {
       await api("telegram/test", { method: "POST", body: { message: `WDTT Control Panel ${PANEL_VERSION}: тест Telegram` } });
       toast("Тестовое сообщение отправлено в Telegram");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function renderTailscale(result) {
+    state.tailscale = result;
+    const online = Boolean(result.online);
+    $("#tailscale-status").className = `badge ${online ? "ok" : (result.installed ? "warn" : "bad")}`;
+    $("#tailscale-status").textContent = online ? "в сети" : (result.daemon ? "отключён" : (result.installed ? "демон не отвечает" : "не установлен"));
+    if (result.hostname) $("#tailscale-hostname").value = result.hostname;
+    $("#tailscale-accept-dns").checked = result.accept_dns !== false;
+    if (result.authkey_set) $("#tailscale-auth-key").placeholder = `Сохранён: ${result.authkey_hint}`;
+    const where = [result.dns_name, (result.tailscale_ips || []).join(", ")].filter(Boolean).join(" · ");
+    $("#tailscale-info").textContent = !result.installed
+      ? "Установите компонент, затем вставьте reusable Auth Key из admin console Tailscale и нажмите «Подключить»."
+      : (online ? `В сети: ${where || result.hostname}. Пустой ключ при подключении использует сохранённый.` : "Отключён. Пустой ключ при подключении использует сохранённый.");
+    $("#install-tailscale").textContent = result.installed ? "Tailscale установлен" : "Установить Tailscale";
+  }
+
+  async function loadTailscale() {
+    try { renderTailscale(await api("tailscale")); }
+    catch (error) {
+      $("#tailscale-info").textContent = error.message;
+      $("#tailscale-status").className = "badge bad";
+      $("#tailscale-status").textContent = "ошибка";
+    }
+  }
+
+  async function installTailscale() {
+    const button = $("#install-tailscale"); setBusy(button, true);
+    try { await api("tailscale/install", { method: "POST" }); toast("Установка Tailscale запущена"); setTimeout(loadTailscale, 10000); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function connectTailscale() {
+    const button = $("#connect-tailscale"); setBusy(button, true);
+    try {
+      renderTailscale(await api("tailscale/connect", { method: "POST", body: {
+        auth_key: $("#tailscale-auth-key").value.trim(),
+        hostname: $("#tailscale-hostname").value.trim(),
+        accept_dns: $("#tailscale-accept-dns").checked,
+      }}));
+      $("#tailscale-auth-key").value = "";
+      toast("Tailscale подключён");
+    } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function disconnectTailscale() {
+    const button = $("#disconnect-tailscale"); setBusy(button, true);
+    try { renderTailscale(await api("tailscale/disconnect", { method: "POST" })); toast("Tailscale отключён (вход сохранён)"); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function logoutTailscale() {
+    if (!confirm("Выйти из tailnet? Для повторного входа понадобится Auth Key.")) return;
+    const button = $("#logout-tailscale"); setBusy(button, true);
+    try { renderTailscale(await api("tailscale/logout", { method: "POST" })); toast("Выход из tailnet выполнен"); }
+    catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  async function checkTailscale() {
+    const button = $("#check-tailscale"); setBusy(button, true);
+    try {
+      const result = await api("tailscale/check", { method: "POST" });
+      const latency = (result.latency_ms === null || result.latency_ms === undefined) ? "" : ` за ${result.latency_ms} мс`;
+      const derp = result.nearest_derp ? `, DERP ${result.nearest_derp}` : "";
+      $("#tailscale-info").textContent = `Tailscale в сети${result.udp === false ? " (UDP закрыт — только реле)" : ""}${derp}${latency}.`;
+      toast("Tailscale отвечает");
     } catch (error) { toast(error.message, true); }
     finally { setBusy(button, false); }
   }
@@ -1952,6 +2024,11 @@
     $("#run-autoclean").addEventListener("click", runAutoclean);
     $("#save-telegram").addEventListener("click", saveTelegramSettings);
     $("#test-telegram").addEventListener("click", testTelegramSettings);
+    $("#install-tailscale").addEventListener("click", installTailscale);
+    $("#connect-tailscale").addEventListener("click", connectTailscale);
+    $("#disconnect-tailscale").addEventListener("click", disconnectTailscale);
+    $("#logout-tailscale").addEventListener("click", logoutTailscale);
+    $("#check-tailscale").addEventListener("click", checkTailscale);
     $("#check-panel-update").addEventListener("click", () => checkPanelUpdate(true));
     $("#update-panel").addEventListener("click", updatePanel);
     $("#renew-certificate").addEventListener("click", renewCertificate);

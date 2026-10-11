@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.21.3"
+PANEL_VERSION="1.22.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1564,6 +1564,44 @@ install_warp_runtime() {
   /usr/local/bin/wgcf --version || true
 }
 
+install_tailscale_runtime() {
+  require_root
+  if command -v tailscale >/dev/null 2>&1 && command -v tailscaled >/dev/null 2>&1; then
+    log "Tailscale уже установлен"
+  else
+    [ -r /etc/os-release ] || die "Неизвестный дистрибутив: нет /etc/os-release"
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "${ID:-}" in
+      ubuntu|debian|raspbian) distro="$ID" ;;
+      *) die "Tailscale поддержан для Ubuntu/Debian (получен ID=${ID:-unknown})" ;;
+    esac
+    codename="${VERSION_CODENAME:-}"
+    [ -n "$codename" ] || die "Не удалось определить кодовое имя дистрибутива"
+    machine="$(uname -m)"
+    case "$machine" in
+      x86_64|amd64|aarch64|arm64|armv7l|armhf|i386|i686) ;;
+      *) die "Tailscale не поддержан для архитектуры $machine" ;;
+    esac
+    command -v curl >/dev/null 2>&1 || die "Для установки Tailscale требуется curl"
+    log "Установка Tailscale ($distro $codename, $machine)"
+    install -d -m 0755 /usr/share/keyrings
+    curl -fsSL --retry 3 "https://pkgs.tailscale.com/stable/$distro/$codename.noarmor.gpg" \
+      -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+    chmod 0644 /usr/share/keyrings/tailscale-archive-keyring.gpg
+    printf 'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/%s %s main\n' \
+      "$distro" "$codename" > /etc/apt/sources.list.d/tailscale.list
+    apt-get update >>"$LOG_FILE" 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y tailscale >>"$LOG_FILE" 2>&1
+    command -v tailscale >/dev/null 2>&1 || die "Tailscale не установился"
+    log "Tailscale установлен"
+    tailscale version | head -1 || true
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl enable --now tailscaled >>"$LOG_FILE" 2>&1 || log "WARN: tailscaled не стартовал через systemd"
+  fi
+}
+
 write_panel_config() {
   PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
   python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" <<'PY'
@@ -2710,6 +2748,7 @@ case "${1:-install}" in
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-xray-runtime) install_xray_runtime ;;
   install-warp-runtime) install_warp_runtime ;;
+  install-tailscale-runtime) install_tailscale_runtime ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions] [--mode node|controller]" ;;
+  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-xray-runtime|install-warp-runtime|install-tailscale-runtime|enable-wdtt-extensions] [--mode node|controller]" ;;
 esac

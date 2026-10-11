@@ -50,6 +50,7 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `56001` (`WDTT_WG_PORT`) | UDP | WireGuard (только loopback внутри контейнера) |
 | `56001` (`WDTT_WG_PORT`) | UDP | WireGuard ядра. Как и в оригинальном `deploy.sh`, внутри контейнера открыт только с loopback — внешние клиенты ходят через DTLS 56000; проброс оставлен для паритета с bare-metal |
 | `56002` (`WDTT_ADMIN_PORT`) | TCP | Admin API ядра — **наружу не публикуется** (только loopback) |
+| `41641` (`WDTT_TAILSCALE_PORT`) | UDP | Tailscale direct-соединения (без него — только DERP-релеи). Вход в сеть — вкладка «Система» → «Доступ через Tailscale» |
 
 Экспериментальные порты ядра (`WDTT_DIRECT_PORT`, `WDTT_RAW_PORT`) выключены
 по умолчанию; чтобы открыть — задайте переменные и раскомментируйте строки
@@ -74,6 +75,7 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `WDTT_DTLS_PORT` / `WDTT_WG_PORT` / `WDTT_ADMIN_PORT` | `56000/56001/56002` | Порты ядра |
 | `WDTT_DNS` | `1.1.1.1,1.0.0.1` | DNS для клиентов |
 | `WDTT_DIRECT_PORT` / `WDTT_RAW_PORT` | — | Экспериментальные порты ядра |
+| `WDTT_TAILSCALE_PORT` | `41641` | UDP-порт Tailscale для прямых соединений |
 | `WDTT_TELEGRAM_BOT_TOKEN` / `WDTT_TELEGRAM_ADMIN_ID` | — | Telegram-бот ядра |
 | `TZ` | `UTC` | Часовой пояс |
 | `AUTO_RESTART_HOURS` | `6` | Авто-рестарт ядра+панели, `0` — выкл. (аналог `wdtt-auto-restart.timer`) |
@@ -89,6 +91,7 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `wdtt-panel-state` | `/var/lib/wdtt-panel` — sqlite-состояние панели |
 | `wdtt-panel-private` | `/var/lib/wdtt-panel-private` — Xray/WARP/бэкапы/расписания |
 | `wdtt-letsencrypt` | `/etc/letsencrypt` — сертификаты LE |
+| `tailscale-state` | `/var/lib/tailscale` — идентичность в tailnet (переживает рестарты) |
 
 Свой сид VK-хешей вместо вшитого в образ: раскомментируйте монтирование
 `../userdata:/opt/userdata:ro` в compose.

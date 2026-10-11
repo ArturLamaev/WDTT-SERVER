@@ -434,6 +434,12 @@ class Panel:
             "warp/recreate": "warp.create",
             "warp/restart": "warp.restart",
             "warp/ping": "warp.ping",
+            "tailscale": "tailscale.status",
+            "tailscale/install": "tailscale.install",
+            "tailscale/connect": "tailscale.connect",
+            "tailscale/disconnect": "tailscale.disconnect",
+            "tailscale/logout": "tailscale.logout",
+            "tailscale/check": "tailscale.check",
             "cascade": "cascade.status",
             "cascade/save": "cascade.save",
             "cascade/restart": "cascade.restart",
@@ -448,7 +454,7 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "cascade.status", "wdtt.settings"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "xray.status", "warp.status", "tailscale.status", "cascade.status", "wdtt.settings"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
         if method == "POST" and action in {"overview", "users.list", "backups.list"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
@@ -525,7 +531,7 @@ class Panel:
                 input=request,
                 text=True,
                 capture_output=True,
-                timeout=240 if action.startswith(("xray.", "warp.", "cascade.")) else 60,
+                timeout=240 if action.startswith(("xray.", "warp.", "cascade.", "tailscale.")) else 60,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "error": f"Root-helper недоступен: {exc}"}

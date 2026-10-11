@@ -3,6 +3,7 @@
 # WDTT-SERVER (docker) — супервизор (PID 1). Заменяет systemd-юниты и таймеры
 # оригинальной установки:
 #   wdtt.service / wdtt-panel.service / nginx        → циклы перезапуска;
+#   tailscaled (Docker: из образа; на хосте — свой юнит пакета) → run_tailscaled;
 #   wdtt-auto-restart.timer (каждые 6ч)               → AUTO_RESTART_HOURS;
 #   wdtt-panel-backup.timer                           → расписание из панели;
 #   wdtt-panel-autoclean.timer                        → каждые 6ч при enabled;
@@ -190,10 +191,32 @@ run_cert_renew() {
   done
 }
 
+# ── tailscaled: VPN-доступ к коробке (вход — вкладка «Система» панели) ──────
+run_tailscaled() {
+  command -v tailscaled >/dev/null 2>&1 || { log "tailscaled не установлен — пропуск"; return 0; }
+  install -d -m 0700 /var/lib/tailscale /var/run/tailscale 2>/dev/null || true
+  # Без /dev/net/tun (урезанные хостинги) — userspace-режим: сам контейнер
+  # в tailnet попадает, раздавать подсети не сможет.
+  TUN_FLAG=()
+  [ -c /dev/net/tun ] || TUN_FLAG=(--tun=userspace-networking)
+  while [ "$SHUTDOWN" -eq 0 ]; do
+    log "tailscaled: старт${TUN_FLAG[*]:+ (${TUN_FLAG[*]})}"
+    tailscaled --state=/var/lib/tailscale/tailscaled.state "${TUN_FLAG[@]}" &
+    TAILSCALED_PID=$!
+    echo "$TAILSCALED_PID" > /run/wdtt/tailscaled.pid
+    wait "$TAILSCALED_PID"
+    code=$?
+    [ "$SHUTDOWN" -eq 1 ] && break
+    log "tailscaled: завершился (код $code), перезапуск через 5с"
+    sleep 5
+  done
+}
+
 mkdir -p /run/wdtt
 run_wdtt &
 run_panel &
 run_nginx &
+run_tailscaled &
 run_auto_restart &
 run_backup_scheduler &
 run_autoclean &

@@ -223,6 +223,16 @@
           <div class="button-row"><button id="save-telegram" class="primary">Сохранить Telegram</button><button id="test-telegram" class="secondary">Отправить тест</button></div>
         </article>
         <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">TAILSCALE VPN</p><h2>Доступ через Tailscale</h2></div><span id="tailscale-status" class="badge warn">загрузка</span></div>
+          <div class="form-grid compact-grid">
+            <label class="wide">Auth Key<input id="tailscale-auth-key" type="password" autocomplete="off" placeholder="tskey-auth-... (reusable из admin console)"></label>
+            <label>Имя машины<input id="tailscale-hostname" placeholder="wdtt-server"></label>
+            <label class="checkbox"><input id="tailscale-accept-dns" type="checkbox" checked> MagicDNS</label>
+          </div>
+          <p id="tailscale-info" class="muted">Настройки ещё не загружены.</p>
+          <div class="button-row"><button id="install-tailscale" class="secondary">Установить Tailscale</button><button id="connect-tailscale" class="primary">Подключить</button><button id="check-tailscale" class="secondary">Проверить</button><button id="disconnect-tailscale" class="secondary">Отключить</button><button id="logout-tailscale" class="danger">Выйти из сети</button></div>
+        </article>
+        <article class="panel-card">
           <p class="eyebrow">TLS CERTIFICATE</p><h2>Сертификат панели</h2><div id="certificate-info" class="detail-list"></div><div class="form-grid compact-grid"><label class="wide">Домен или IP<input id="domain-host" placeholder="panel.example.com — пусто: оставить текущий"></label><label class="wide">Email для Let's Encrypt<input id="domain-email" placeholder="admin@example.com (необязательно)"></label></div><p class="muted">Привязка домена перевыпускает сертификат (Let's Encrypt, иначе self-signed), обновляет nginx и перезапускает панель. A-запись домена должна указывать на этот сервер, TCP 80 открыт.</p><div class="button-row"><button id="renew-certificate" class="secondary">Проверить/обновить</button><button id="download-certificate" class="secondary">Скачать сертификат</button><button id="change-domain" class="primary">Привязать домен</button></div>
         </article>
         <article class="panel-card wide">

@@ -52,9 +52,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         python3 python3-venv python3-pip \
-        nginx openssl ca-certificates curl \
+        nginx openssl ca-certificates curl gnupg \
         iproute2 iptables nftables conntrack \
         unzip procps psmisc iputils-ping tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+# Tailscale (CLI + демон) из официального apt-репозитория: доступ к коробке
+# через tailnet и MagicDNS, управление — вкладка «Система» панели.
+# Демона крутит супервизор (run_tailscaled), вход — `tailscale up` из панели.
+RUN set -e; . /etc/os-release; \
+  curl -fsSL "https://pkgs.tailscale.com/stable/${ID}/${VERSION_CODENAME}.noarmor.gpg" \
+    -o /usr/share/keyrings/tailscale-archive-keyring.gpg; \
+  chmod 0644 /usr/share/keyrings/tailscale-archive-keyring.gpg; \
+  printf 'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/%s %s main\n' \
+    "${ID}" "${VERSION_CODENAME}" > /etc/apt/sources.list.d/tailscale.list; \
+  apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tailscale \
  && rm -rf /var/lib/apt/lists/*
 
 # certbot в venv — ровно как делает install.sh (install_certbot).
