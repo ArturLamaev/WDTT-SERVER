@@ -4338,30 +4338,37 @@ def tailscale_connect(payload: dict[str, Any]) -> dict[str, Any]:
         stored_key = read_private_text(TAILSCALE_AUTHKEY_FILE) or ""
     except OSError:
         stored_key = ""
-    auth_key = normalize_tailscale_auth_key(str(payload.get("auth_key") or stored_key))
-    if not auth_key:
-        raise ValidationError("Вставьте Auth Key из admin console Tailscale (reusable, с тегом ephemeral при желании)")
+    stored_key = normalize_tailscale_auth_key(stored_key)
     settings = load_tailscale_settings()
     hostname = normalize_tailscale_hostname(
         str(payload.get("hostname") or settings.get("hostname") or default_tailscale_hostname())
     ) or default_tailscale_hostname()
     accept_dns = payload.get("accept_dns", settings.get("accept_dns", True))
     accept_dns = bool(accept_dns) if isinstance(accept_dns, bool) else str(accept_dns).lower() not in {"0", "false", "no", "off", ""}
+    fresh_key = normalize_tailscale_auth_key(str(payload.get("auth_key") or ""))
+    auth_key = fresh_key or stored_key
     ensure_tailscaled_running()
-    if not tailscale_status_raw()["daemon"]:
+    raw = tailscale_status_raw()
+    if not raw["daemon"]:
         raise AdminError("tailscaled не отвечает: на хосте проверьте юнитом tailscaled, в Docker — перезапустите контейнер")
     # Ключ едет аргументом (виден только root в ps) — файла --auth-key-file у CLI нет.
-    connected = run(
-        ["tailscale", "up", f"--auth-key={auth_key}", f"--hostname={hostname}",
-         f"--accept-dns={'true' if accept_dns else 'false'}"],
-        timeout=90,
-    )
+    # Уже в сети и свежего ключа не дали — только обновляем настройки
+    # (имя/DNS): повторный `up` со старым одноразовым ключом упал бы целиком.
+    command = ["tailscale", "up", f"--hostname={hostname}", f"--accept-dns={'true' if accept_dns else 'false'}"]
+    if fresh_key or not raw["online"]:
+        if not auth_key:
+            raise ValidationError("Вставьте Auth Key из admin console Tailscale (reusable, с тегом ephemeral при желании)")
+        command.append(f"--auth-key={auth_key}")
+    connected = run(command, timeout=90)
     if connected.returncode != 0:
         detail = (connected.stderr or connected.stdout or "").strip()
         raise AdminError(detail or "Tailscale не принял Auth Key (одноразовый ключ уже использован?)")
     TAILSCALE_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(TAILSCALE_DIR, 0o700)
-    write_private_text(TAILSCALE_AUTHKEY_FILE, auth_key + "\n")
+    if fresh_key or not raw["online"]:
+        # Ключ реально участвовал во входе — обновляем сохранённый.
+        # В режиме «только настройки» файл не трогаем, иначе сотрём ключ.
+        write_private_text(TAILSCALE_AUTHKEY_FILE, auth_key + "\n")
     save_tailscale_settings({"hostname": hostname, "accept_dns": accept_dns})
     return {"connected": True, **tailscale_status({})}
 

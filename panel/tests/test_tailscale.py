@@ -119,8 +119,11 @@ class ConnectTests(unittest.TestCase):
                 admin.tailscale_connect({"auth_key": "tskey-auth-abcDEF123-xyz"})
 
     def test_connect_without_key(self):
+        stopped = json.dumps({"BackendState": "Stopped", "Self": {}})
         with mock.patch.object(admin.shutil, "which", return_value="/usr/bin/tailscale"), mock.patch.object(
             admin, "read_private_text", return_value=None
+        ), mock.patch.object(
+            admin, "run", return_value=completed(["tailscale", "status"], 0, stopped, "")
         ):
             with self.assertRaises(admin.ValidationError):
                 admin.tailscale_connect({})
@@ -136,7 +139,7 @@ class ConnectTests(unittest.TestCase):
             result = admin.tailscale_connect({
                 "auth_key": "tskey-auth-abcDEF123-xyz", "hostname": "My Node!", "accept_dns": False,
             })
-        up = [command for command in seen if command[:2] == ["tailscale", "up"]]
+        up = [command for command in seen if len(command) > 1 and command[0] == "tailscale" and command[1] == "up"]
         self.assertEqual(len(up), 1)
         self.assertIn("--auth-key=tskey-auth-abcDEF123-xyz", up[0])
         self.assertIn("--hostname=my-node", up[0])
@@ -146,16 +149,58 @@ class ConnectTests(unittest.TestCase):
         self.assertIn("tskey-auth-abcDEF123-xyz", written.get(str(admin.TAILSCALE_AUTHKEY_FILE), ""))
         saved.assert_called_once_with({"hostname": "my-node", "accept_dns": False})
 
-    def test_connect_reuses_stored_key(self):
+    def test_connect_reuses_stored_key_when_offline(self):
+        stopped = json.dumps({"BackendState": "Stopped", "Self": {}})
+
+        def fake_run(command, timeout=20, check=False, cwd=None, env=None):
+            if command[:2] == ["tailscale", "status"]:
+                return completed(command, 0, stopped, "")
+            return completed(command, 0, "", "")
+
         seen = []
+        orig_fake = fake_run
+
+        def spy(command, timeout=20, check=False, cwd=None, env=None):
+            seen.append(command)
+            return orig_fake(command, timeout, check, cwd, env)
+
         with mock.patch.object(admin.shutil, "which", return_value="/usr/bin/tailscale"), mock.patch.object(
             admin, "read_private_text", return_value="tskey-auth-storedKEY-1234567890"
-        ), mock.patch.object(admin, "run", side_effect=self._run_ok(seen)), mock.patch.object(
+        ), mock.patch.object(admin, "run", side_effect=spy), mock.patch.object(
             admin, "write_private_text"
         ), mock.patch.object(admin, "save_tailscale_settings"):
-            admin.tailscale_connect({})
-        up = [command for command in seen if command[:2] == ["tailscale", "up"]]
+            result = admin.tailscale_connect({})
+        up = [command for command in seen if len(command) > 1 and command[0] == "tailscale" and command[1] == "up"]
+        self.assertEqual(len(up), 1)
         self.assertIn("--auth-key=tskey-auth-storedKEY-1234567890", up[0])
+        self.assertTrue(result["connected"])
+        self.assertFalse(result["online"])
+
+    def test_connect_updates_prefs_without_key_when_online(self):
+        seen = []
+        with mock.patch.object(admin.shutil, "which", return_value="/usr/bin/tailscale"), mock.patch.object(
+            admin, "read_private_text", return_value=None
+        ), mock.patch.object(admin, "run", side_effect=self._run_ok(seen)), mock.patch.object(
+            admin, "write_private_text"
+        ) as written, mock.patch.object(admin, "save_tailscale_settings") as saved:
+            result = admin.tailscale_connect({"hostname": "new-name"})
+        up = [command for command in seen if len(command) > 1 and command[0] == "tailscale" and command[1] == "up"]
+        self.assertEqual(len(up), 1)
+        self.assertNotIn("--auth-key", " ".join(up[0]))
+        self.assertIn("--hostname=new-name", up[0])
+        written.assert_not_called()
+        saved.assert_called_once_with({"hostname": "new-name", "accept_dns": True})
+        self.assertTrue(result["connected"])
+
+    def test_connect_offline_without_key(self):
+        stopped = json.dumps({"BackendState": "Stopped", "Self": {}})
+        with mock.patch.object(admin.shutil, "which", return_value="/usr/bin/tailscale"), mock.patch.object(
+            admin, "read_private_text", return_value=None
+        ), mock.patch.object(
+            admin, "run", return_value=completed(["tailscale", "status"], 0, stopped, "")
+        ):
+            with self.assertRaises(admin.ValidationError):
+                admin.tailscale_connect({"hostname": "new-name"})
 
     def test_disconnect_and_logout(self):
         for action, argv in (("tailscale_disconnect", ["tailscale", "down"]),
