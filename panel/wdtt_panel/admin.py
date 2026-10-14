@@ -384,12 +384,16 @@ def reload_docker_kernel() -> bool:
     sighup = getattr(signal, "SIGHUP", None)
     pid = docker_wdtt_pid()
     if sighup is None or pid is None:
-        print("[wdtt-panel] WARN: ядро wdtt-server не найдено, SIGHUP пропущен", flush=True)
+        # WARN — только в stderr: stdout зарезервирован под JSON-ответ
+        # админ-хелпера, лишний вывод роняет json.loads в app.py.
+        print("[wdtt-panel] WARN: ядро wdtt-server не найдено, SIGHUP пропущен",
+              file=sys.stderr, flush=True)
         return False
     try:
         os.kill(pid, sighup)
     except (OSError, ValueError) as exc:
-        print(f"[wdtt-panel] WARN: SIGHUP ядру (pid {pid}) не доставлен: {exc}", flush=True)
+        print(f"[wdtt-panel] WARN: SIGHUP ядру (pid {pid}) не доставлен: {exc}",
+              file=sys.stderr, flush=True)
         return False
     return True
 

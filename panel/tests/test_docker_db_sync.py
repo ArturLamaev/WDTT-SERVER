@@ -1,8 +1,10 @@
 """PR-B 1.21.4: SIGHUP ядру после записи БД в Docker (без затирания юзеров)."""
+import io
 import signal
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -63,6 +65,16 @@ class ReloadKernelTests(unittest.TestCase):
         ), mock.patch.object(admin.os, "kill") as kill:
             self.assertFalse(admin.reload_docker_kernel())
         kill.assert_not_called()
+
+    def test_warn_goes_to_stderr_stdout_stays_json_clean(self):
+        # stdout админ-хелпера — это протокол (один JSON для app.py):
+        # WARN туда попадать не должен, иначе json.loads в app.py уронит
+        # всю операцию с «Root-helper вернул неверный ответ».
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(admin, "docker_wdtt_pid", return_value=None), redirect_stdout(out), redirect_stderr(err):
+            self.assertFalse(admin.reload_docker_kernel())
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("WARN", err.getvalue())
 
 
 class MutateSyncTests(unittest.TestCase):
