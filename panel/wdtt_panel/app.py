@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, quote
 from wsgiref.simple_server import WSGIServer, make_server
 
 from .core import ValidationError, normalize_hash, normalize_user_label, traffic_quota
+from .http_range import parse_range
 from .security import create_session, read_session, verify_csrf, verify_password
 
 
@@ -181,7 +182,7 @@ class Panel:
 
         relative = path[len(self.base) :]
         if relative.startswith("static/"):
-            return self.static(start_response, relative[7:])
+            return self.static(environ, start_response, relative[7:])
 
         if relative == "api/v1/info" and environ["REQUEST_METHOD"] == "GET":
             return self.json_response(start_response, 200, {"ok": True, "result": self.api_v1_info_payload()})
@@ -998,17 +999,33 @@ class Panel:
             "{{PUBLIC_HOST}}": escape_html(str(self.config["public_host"])),
             "{{HTTPS_PORT}}": str(self.config.get("https_port") or 443),
             "{{VERSION}}": escape_html(str(self.config.get("version") or "0.0.0")),
+            "{{APP_JS_SIZE}}": str((PACKAGE_DIR / "static" / "app.js").stat().st_size),
         }
         for source, target in replacements.items():
             html = html.replace(source, target)
         return self.response(start_response, "200 OK", html.encode(), "text/html; charset=utf-8")
 
-    def static(self, start_response: Any, name: str) -> Iterable[bytes]:
-        if name not in {"app.css", "app.js"}:
+    def static(self, environ: dict[str, Any], start_response: Any, name: str) -> Iterable[bytes]:
+        if name not in {"app.css", "app.js", "boot.js"}:
             return self.response(start_response, "404 Not Found", b"Not found", "text/plain")
         path = PACKAGE_DIR / "static" / name
+        data = path.read_bytes()
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        return self.response(start_response, "200 OK", path.read_bytes(), content_type, cache=True)
+        chunk = parse_range(str(environ.get("HTTP_RANGE") or ""), len(data))
+        if chunk is None:
+            return self.response(start_response, "200 OK", data, content_type, cache=True)
+        start, end = chunk
+        return self.response(
+            start_response,
+            "206 Partial Content",
+            data[start:end + 1],
+            content_type,
+            cache=True,
+            extra_headers=[
+                ("Content-Range", f"bytes {start}-{end}/{len(data)}"),
+                ("Accept-Ranges", "bytes"),
+            ],
+        )
 
     @staticmethod
     def response(
@@ -1026,7 +1043,7 @@ class Panel:
             ("X-Frame-Options", "DENY"),
             ("Referrer-Policy", "no-referrer"),
             ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
-            ("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"),
+            ("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self' blob:; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"),
             ("Cache-Control", "public, max-age=3600" if cache else "no-store"),
         ]
         if extra_headers:

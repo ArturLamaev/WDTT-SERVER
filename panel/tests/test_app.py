@@ -48,7 +48,7 @@ class AppSmokeTests(unittest.TestCase):
             patcher.stop()
         self.temp.cleanup()
 
-    def request(self, path, method="GET", body=b"", cookie="", csrf="", auth=""):
+    def request(self, path, method="GET", body=b"", cookie="", csrf="", auth="", http_range=""):
         environ = {}
         setup_testing_defaults(environ)
         environ.update(
@@ -64,6 +64,8 @@ class AppSmokeTests(unittest.TestCase):
                 "HTTP_AUTHORIZATION": auth,
             }
         )
+        if http_range:
+            environ["HTTP_RANGE"] = http_range
         captured = {}
 
         def start_response(status, headers):

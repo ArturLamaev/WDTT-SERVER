@@ -21,7 +21,27 @@ server {
     ssl_session_timeout 1d;
     ssl_session_cache shared:WDTTTLS:10m;
 @@HSTS_HEADER@@
+    # Сжатие ответов панели: под режущими провайдерами (обрыв после ~16 КБ)
+    # HTML/CSS/JSON влезают в один кусок, app.js добирается чанками boot.js.
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_min_length 1024;
+    gzip_comp_level 6;
+    gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
     location = @@PANEL_PATH_TRIM@@ { return 302 @@PANEL_PATH@@; }
+    location ^~ @@PANEL_PATH@@static/ {
+        # Докачка чанками boot.js: каждый кусок — новым соединением с чистым лимитом.
+        keepalive_requests 1;
+        proxy_pass http://127.0.0.1:@@PANEL_LISTEN_PORT@@;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 75s;
+        client_max_body_size 90m;
+    }
     location ^~ @@PANEL_PATH@@ {
         proxy_pass http://127.0.0.1:@@PANEL_LISTEN_PORT@@;
         proxy_http_version 1.1;
