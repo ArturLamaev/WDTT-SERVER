@@ -146,7 +146,11 @@ docker run --rm -v wdtt-server_wdtt-data:/d -v wdtt-server_wdtt-panel-config:/c 
   в неделю (только при `tls_mode=letsencrypt`);
 - Xray Core и wgcf докачиваются в entrypoint (latest с GitHub) в
   `/usr/local/bin` контейнера — при пересоздании контейнера скачаются заново;
-  geoip/geosite складываются в `xray-assets` (volume `wdtt-panel-private`).
+  geoip/geosite складываются в `xray-assets` (volume `wdtt-panel-private`);
+- демона Xray крутит цикл `run_xray` супервизора (включением владеет вкладка
+  «Xray»; конфиг проверяется `xray run -test` при каждом сохранении, журнал —
+  `/var/log/wdtt/xray.log`, он же виден в карточке Xray). Шлюз WDTT → Xray
+  (TPROXY) в контейнере не применяется — только bare-metal.
 
 ## Диагностика
 

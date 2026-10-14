@@ -113,6 +113,9 @@ XRAY_ASSETS = Path(
     os.environ.get("WDTT_XRAY_ASSETS", "/var/lib/wdtt-panel-private/xray-assets")
 )
 XRAY_SERVICE = os.environ.get("WDTT_XRAY_SERVICE", "wdtt-xray.service")
+XRAY_PID_FILE = Path(os.environ.get("WDTT_XRAY_PID_FILE", "/run/wdtt/xray.pid"))
+XRAY_LOG_FILE = Path(os.environ.get("WDTT_XRAY_LOG_FILE", "/var/log/wdtt/xray.log"))
+XRAY_LOG_TAIL_BYTES = 65536
 XRAY_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_XRAY_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
 )
@@ -3924,18 +3927,25 @@ def persist_xray_configuration(settings: dict[str, Any], config: dict[str, Any])
     xray_validate_config(config)
     save_private_json(XRAY_SETTINGS, settings)
     save_private_json(XRAY_CONFIG, config)
-    if not SKIP_SYSTEMD and shutil.which("xray"):
-        action = "enable" if settings["enabled"] else "disable"
-        changed = run(["systemctl", action, XRAY_SERVICE], timeout=30)
-        if changed.returncode != 0:
-            raise AdminError(changed.stderr.strip() or "Не удалось изменить состояние службы Xray")
-        changed = run(["systemctl", "restart" if settings["enabled"] else "stop", XRAY_SERVICE], timeout=60)
-        if changed.returncode != 0:
-            raise AdminError(changed.stderr.strip() or "Не удалось применить конфигурацию Xray")
+    if SKIP_SYSTEMD:
+        # Демона крутит супервизор: пинаем, чтобы подхватил конфиг сейчас,
+        # а не на следующем витке цикла. Best-effort, сохранение уже в файле.
+        if shutil.which("xray"):
+            restart_docker_xray()
+        return
+    if not shutil.which("xray"):
+        return
+    action = "enable" if settings["enabled"] else "disable"
+    changed = run(["systemctl", action, XRAY_SERVICE], timeout=30)
+    if changed.returncode != 0:
+        raise AdminError(changed.stderr.strip() or "Не удалось изменить состояние службы Xray")
+    changed = run(["systemctl", "restart" if settings["enabled"] else "stop", XRAY_SERVICE], timeout=60)
+    if changed.returncode != 0:
+        raise AdminError(changed.stderr.strip() or "Не удалось применить конфигурацию Xray")
 
 
 def xray_validate_config(config: dict[str, Any]) -> None:
-    if SKIP_SYSTEMD or not shutil.which("xray"):
+    if not shutil.which("xray"):
         return
     XRAY_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix="xray-check.", suffix=".json", dir=XRAY_CONFIG.parent)
@@ -3949,17 +3959,86 @@ def xray_validate_config(config: dict[str, Any]) -> None:
         Path(name).unlink(missing_ok=True)
 
 
+def _proc_cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def docker_xray_pid() -> int | None:
+    """PID демона xray в контейнере: pid-файл супервизора, fallback — pidof."""
+    try:
+        pid = int(XRAY_PID_FILE.read_text(encoding="utf-8").strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        pid = 0
+    if pid > 0 and "xray" in _proc_cmdline(pid).split("\x00")[0]:
+        return pid
+    try:
+        result = run(["pidof", "xray"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 0:
+        for token in (result.stdout or "").split():
+            try:
+                return int(token)
+            except ValueError:
+                continue
+    return None
+
+
+def docker_xray_active() -> bool:
+    return docker_xray_pid() is not None
+
+
+def xray_docker_log_tail(limit: int = 50) -> list[str]:
+    try:
+        data = XRAY_LOG_FILE.read_bytes()[-XRAY_LOG_TAIL_BYTES:]
+    except OSError:
+        return []
+    return data.decode("utf-8", "replace").splitlines()[-limit:]
+
+
+def xray_version_string() -> str:
+    if not shutil.which("xray"):
+        return ""
+    probe = run(["xray", "version"], timeout=15)
+    if probe.returncode != 0:
+        return ""
+    return probe.stdout.splitlines()[0] if probe.stdout else "Xray"
+
+
+def restart_docker_xray() -> bool:
+    """Пнуть демона xray в контейнере, чтобы подхватил новый конфиг.
+
+    Best-effort: супервизор поднимет процесс заново; неудача не роняет
+    сохранение (цикл сойдётся сам за секунды)."""
+    pid = docker_xray_pid()
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError) as exc:
+        print(f"[wdtt-panel] WARN: xray (pid {pid}) не перезапущен: {exc}",
+              file=sys.stderr, flush=True)
+        return False
+    return True
+
+
 def xray_status(payload: dict[str, Any]) -> dict[str, Any]:
     settings = load_xray_settings()
     active = False
     version = ""
     logs: list[str] = []
-    if not SKIP_SYSTEMD:
+    if SKIP_SYSTEMD:
+        # В Docker systemd нет: демон крутит супервизор (run_xray),
+        # журнал — файл, конфиг проверяется как на хосте.
+        active = docker_xray_active()
+        version = xray_version_string()
+        logs = xray_docker_log_tail()
+    else:
         active = run(["systemctl", "is-active", "--quiet", XRAY_SERVICE]).returncode == 0
-        if shutil.which("xray"):
-            probe = run(["xray", "version"], timeout=15)
-            if probe.returncode == 0:
-                version = probe.stdout.splitlines()[0] if probe.stdout else "Xray"
+        version = xray_version_string()
         journal = run(["journalctl", "-u", XRAY_SERVICE, "-n", "50", "--no-pager", "-o", "cat"], timeout=20)
         if journal.returncode == 0:
             logs = journal.stdout.splitlines()

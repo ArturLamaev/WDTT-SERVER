@@ -4,6 +4,7 @@
 # оригинальной установки:
 #   wdtt.service / wdtt-panel.service / nginx        → циклы перезапуска;
 #   tailscaled (Docker: из образа; на хосте — свой юнит пакета) → run_tailscaled;
+#   xray (Docker: run_xray; на хосте — wdtt-xray.service) → свой цикл;
 #   wdtt-auto-restart.timer (каждые 6ч)               → AUTO_RESTART_HOURS;
 #   wdtt-panel-backup.timer                           → расписание из панели;
 #   wdtt-panel-autoclean.timer                        → каждые 6ч при enabled;
@@ -212,11 +213,70 @@ run_tailscaled() {
   done
 }
 
+# ── xray: демон для WARP-исходящих/каскада (управление — вкладка «Xray») ────
+# Панель пишет конфиг и пинает демона через restart_docker_xray (SIGTERM);
+# цикл также сам подхватывает смену enabled/конфига (mtime) и падения.
+run_xray() {
+  command -v xray >/dev/null 2>&1 || { log "xray не установлен — пропуск (вкладка Xray → Установить)"; return 0; }
+  CFG="/var/lib/wdtt-panel-private/xray-config.json"
+  SETTINGS="/var/lib/wdtt-panel-private/xray-settings.json"
+  XLOG="/var/log/wdtt/xray.log"
+  install -d -m 0755 /var/log/wdtt /run/wdtt 2>/dev/null || true
+  XPID=""
+  STARTED_CFG=""
+  while [ "$SHUTDOWN" -eq 0 ]; do
+    enabled="$(python3 -c 'import json; print(json.load(open("'"$SETTINGS"'")).get("enabled", False))' 2>/dev/null || echo False)"
+    cur="none"
+    [ -s "$CFG" ] && cur="$(stat -c '%Y %s' "$CFG" 2>/dev/null || echo none)"
+    want="0"
+    [ "$enabled" = "True" ] && [ -s "$CFG" ] && want="1"
+    alive="0"
+    [ -n "$XPID" ] && kill -0 "$XPID" 2>/dev/null && alive="1"
+    if [ "$want" = "1" ]; then
+      if [ "$alive" = "0" ] || [ "$cur" != "$STARTED_CFG" ]; then
+        if [ "$alive" = "1" ]; then
+          log "xray: перезапуск (новый конфиг)"
+          kill "$XPID" 2>/dev/null || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$XPID" 2>/dev/null || break; sleep 0.5; done
+          kill -9 "$XPID" 2>/dev/null || true
+        fi
+        if XRAY_LOCATION_ASSET="${XRAY_LOCATION_ASSET:-/var/lib/wdtt-panel-private/xray-assets}" \
+            xray run -test -c "$CFG" >/dev/null 2>&1; then
+          # Лог без бесконечного роста: держим хвост 500 КБ.
+          if [ -f "$XLOG" ]; then
+            size="$(stat -c '%s' "$XLOG" 2>/dev/null || echo 0)"
+            [ "$size" -gt 512000 ] 2>/dev/null && tail -c 512000 "$XLOG" > "$XLOG.tmp" && mv "$XLOG.tmp" "$XLOG"
+          fi
+          log "xray: старт"
+          XRAY_LOCATION_ASSET="${XRAY_LOCATION_ASSET:-/var/lib/wdtt-panel-private/xray-assets}" \
+            xray run -c "$CFG" >>"$XLOG" 2>&1 &
+          XPID=$!
+          echo "$XPID" > /run/wdtt/xray.pid
+          STARTED_CFG="$cur"
+        else
+          log "xray: конфиг не прошёл проверку — жду правок (см. вкладку Xray)"
+          STARTED_CFG="$cur"
+        fi
+      fi
+    else
+      if [ "$alive" = "1" ]; then
+        log "xray: выключен в настройках — останавливаю"
+        kill "$XPID" 2>/dev/null || true
+      fi
+      XPID=""
+      rm -f /run/wdtt/xray.pid
+    fi
+    sleep 10
+    [ "$SHUTDOWN" -eq 1 ] && break
+  done
+}
+
 mkdir -p /run/wdtt
 run_wdtt &
 run_panel &
 run_nginx &
 run_tailscaled &
+run_xray &
 run_auto_restart &
 run_backup_scheduler &
 run_autoclean &
