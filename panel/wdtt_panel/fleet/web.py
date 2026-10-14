@@ -31,7 +31,6 @@ from .client import NodeClient, find_user
 from .fanout import fanout, fanout_route, summarize
 from .icons import icon
 from .models import Node, split_node_url, normalize_base_path
-from ..http_range import parse_range
 from ..security import create_session, csrf_token, read_session, verify_csrf, verify_password
 from .settings import default_config_path, load_settings, parse_admins, save_settings
 from .store import FleetStore
@@ -209,7 +208,7 @@ class FleetWeb:
         method = environ.get("REQUEST_METHOD", "GET")
 
         if relative.startswith("static/") and method == "GET":
-            return self._static(environ, start_response, relative[7:])
+            return self._static(start_response, relative[7:])
         if relative == "api/v1/auth/login" and method == "POST":
             return self._api_login(environ, start_response)
         if relative.startswith("api/v1/"):
@@ -288,21 +287,12 @@ class FleetWeb:
               code: str = "200 OK", active: str = "", nav: bool = True) -> Iterable[bytes]:
         return self._bytes(start_response, code, _page(title, body, active, nav).encode())
 
-    def _static(self, environ: dict, start_response: Callable, name: str) -> Iterable[bytes]:
+    def _static(self, start_response: Callable, name: str) -> Iterable[bytes]:
         path = STATIC_FILES.get(name)
         if path is None or not path.is_file():
             return self._text(start_response, "404 Not Found", "Not found")
-        data = path.read_bytes()
-        chunk = parse_range(str(environ.get("HTTP_RANGE") or ""), len(data))
-        if chunk is None:
-            return self._bytes(start_response, "200 OK", data,
-                               "text/css; charset=utf-8", [("Cache-Control", "max-age=3600")])
-        start, end = chunk
-        return self._bytes(start_response, "206 Partial Content", data[start:end + 1],
-                           "text/css; charset=utf-8",
-                           [("Cache-Control", "max-age=3600"),
-                            ("Content-Range", f"bytes {start}-{end}/{len(data)}"),
-                            ("Accept-Ranges", "bytes")])
+        return self._bytes(start_response, "200 OK", path.read_bytes(),
+                           "text/css; charset=utf-8", [("Cache-Control", "max-age=3600")])
 
     def _redirect(self, start_response: Callable, name: str,
                   clear_cookie: bool = False) -> Iterable[bytes]:

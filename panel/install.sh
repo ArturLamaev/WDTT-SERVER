@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.25.0"
+PANEL_VERSION="1.25.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1925,18 +1925,6 @@ $HSTS_HEADER
     gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
-    location ^~ ${PANEL_PATH}static/ {
-        # Докачка чанками boot.js: каждый кусок — новым соединением с чистым лимитом.
-        keepalive_requests 1;
-        proxy_pass http://127.0.0.1:$PANEL_LISTEN_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 75s;
-        client_max_body_size 90m;
-    }
     location ^~ $PANEL_PATH {
         proxy_pass http://127.0.0.1:$PANEL_LISTEN_PORT;
         proxy_http_version 1.1;
@@ -2599,18 +2587,6 @@ $HSTS_HEADER
     gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
-    location ^~ ${PANEL_PATH}static/ {
-        # Докачка чанками: каждый кусок — новым соединением с чистым лимитом.
-        keepalive_requests 1;
-        proxy_pass http://127.0.0.1:$FLEET_LISTEN_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 75s;
-        client_max_body_size 90m;
-    }
     location ^~ $PANEL_PATH {
         proxy_pass http://127.0.0.1:$FLEET_LISTEN_PORT;
         proxy_http_version 1.1;
