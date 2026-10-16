@@ -82,6 +82,17 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `WDTT_FETCH_RUNTIME` | `1` | Докачивать Xray/wgcf при старте, `0` — пропуск |
 | `WDTT_BASE_IMAGE` | `ubuntu:24.04` | База образа (`ubuntu:24.04` или `debian:13`) |
 
+`.env` каноничен: при каждом старте `public_host`, путь, порты и email
+в `config.json` выравниваются по нему (старый конфиг — в бэкап
+`config-backups` в volume `wdtt-panel-private`). Поэтому смена домена —
+это правка `PANEL_HOST` (+ `PANEL_EMAIL` для LE) в `.env` и
+`docker compose up -d`; self-signed с чужим SAN при этом перевыпускается
+автоматически. Кнопка «Привязать домен» в панели тоже работает: меняет
+volume, перевыпускает сертификат (LE через работающий nginx, иначе
+self-signed), делает reload nginx и рестарт панели — после неё
+продублируйте домен в `.env` на хосте, иначе следующий рестарт вернёт
+старый.
+
 ## Данные (volumes)
 
 | Volume | Содержимое |

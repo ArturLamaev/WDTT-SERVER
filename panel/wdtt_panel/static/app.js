@@ -1515,8 +1515,9 @@
     if (!confirm(`Привязать панель к ${host}? Сертификат будет перевыпущен, панель перезапустится.`)) return;
     const button = $("#change-domain"); setBusy(button, true);
     try {
-      await api("certificate/change-domain", { method: "POST", body: { host, email } });
-      toast("Смена домена запущена, жду применения…");
+      const scheduled = await api("certificate/change-domain", { method: "POST", body: { host, email } });
+      if (scheduled && scheduled.docker) toast("Смена домена запущена; после применения обновите PANEL_HOST в docker/.env на хосте");
+      else toast("Смена домена запущена, жду применения…");
       for (let attempt = 0; attempt < 36; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
         try {

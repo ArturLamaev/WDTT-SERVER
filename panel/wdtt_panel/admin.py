@@ -12,6 +12,7 @@ import shlex
 import shutil
 import signal
 import socket
+import threading
 import sqlite3
 import ssl
 import subprocess
@@ -277,7 +278,7 @@ def service_action(action: str) -> dict[str, Any]:
 
 
 def is_docker() -> bool:
-    return os.environ.get("WDTT_DOCKER") == "1"
+    return os.environ.get("WDTT_DOCKER", "") not in ("", "0", "false", "no")
 
 
 def docker_wdtt_process_running() -> bool:
@@ -2888,7 +2889,11 @@ def change_panel_domain(payload: dict[str, Any]) -> dict[str, Any]:
     if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise ValidationError("Некорректный email для Let's Encrypt")
     if SKIP_SYSTEMD:
-        return {"scheduled": True, "state": "test", "host": host}
+        # В Docker нет systemd-run: тяжёлую работу (сертификат, nginx,
+        # рестарт панели) делает фоновый поток, фронт опрашивает overview.
+        worker = threading.Thread(target=_apply_docker_domain_change, args=(host, email), daemon=True)
+        worker.start()
+        return {"scheduled": True, "docker": True, "host": host}
     unit = f"wdtt-panel-domain-{int(time.time())}"
     command = [
         "systemd-run",
@@ -2906,6 +2911,158 @@ def change_panel_domain(payload: dict[str, Any]) -> dict[str, Any]:
     if result.returncode != 0:
         raise AdminError(result.stderr.strip() or "Не удалось запланировать смену домена")
     return {"scheduled": True, "unit": unit, "host": host}
+
+
+def _docker_domain_paths() -> dict[str, Any]:
+    """Пути Docker-окружения (через env — чтобы тесты подменяли на tmp)."""
+    return {
+        "config": Path(os.environ.get("WDTT_PANEL_CONFIG", "/etc/wdtt-panel/config.json")),
+        "acme": Path(os.environ.get("WDTT_ACME_DIR", "/var/lib/wdtt-panel/acme")),
+        "tls_dir": Path(os.environ.get("WDTT_DOCKER_TLS_DIR", "/etc/wdtt-panel/tls")),
+        "le_live": Path(os.environ.get("WDTT_LE_LIVE_DIR", "/etc/letsencrypt/live")),
+        "certbot": os.environ.get("WDTT_CERTBOT_BIN", "/opt/wdtt-panel/certbot/bin/certbot"),
+        "nginx_gen": os.environ.get("WDTT_NGINX_GEN", "/usr/local/sbin/wdtt-gen-nginx-conf"),
+        "backups": Path(
+            os.environ.get("WDTT_DOCKER_CONFIG_BACKUPS", "/var/lib/wdtt-panel-private/config-backups")
+        ),
+    }
+
+
+def _looks_like_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _backup_docker_panel_config(config_path: Path, backups: Path) -> None:
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    destination = backups / f"config-{stamp}.json"
+    shutil.copy2(config_path, destination)
+    os.chmod(destination, 0o600)
+    for stale in sorted(backups.glob("config-*.json"))[:-20]:
+        stale.unlink(missing_ok=True)
+
+
+def _obtain_docker_letsencrypt(host: str, email: str, paths: dict[str, Any]) -> bool:
+    """Выпуск LE через работающий nginx (webroot уже раздаётся на :80)."""
+    candidates = [paths["certbot"], shutil.which("certbot") or ""]
+    binary = next(
+        (c for c in candidates if c and Path(c).is_file() and os.access(c, os.X_OK)),
+        "",
+    )
+    if not binary:
+        return False
+    command = [binary, "certonly", "--non-interactive", "--agree-tos"]
+    if email:
+        command += ["--email", email]
+    else:
+        command += ["--register-unsafely-without-email"]
+    command += ["-d", host, "--webroot", "--webroot-path", str(paths["acme"])]
+    try:
+        result = run(command, timeout=180)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    live = Path(paths["le_live"]) / host / "fullchain.pem"
+    return result.returncode == 0 and live.is_file()
+
+
+def _issue_docker_self_signed(host: str, paths: dict[str, Any]) -> tuple[str, str]:
+    """Self-signed с актуальным SAN (как issue_self_signed в entrypoint)."""
+    tls_dir = Path(paths["tls_dir"])
+    tls_dir.mkdir(parents=True, exist_ok=True)
+    cert, key = tls_dir / "fullchain.pem", tls_dir / "privkey.pem"
+    san = f"IP:{host}" if _looks_like_ip(host) else f"DNS:{host}"
+    result = run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256",
+            "-days", "365", "-nodes",
+            "-keyout", str(key), "-out", str(cert),
+            "-subj", f"/CN={host}", "-addext", f"subjectAltName={san}",
+        ],
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise AdminError("Не удалось выпустить самоподписанный сертификат")
+    os.chmod(key, 0o600)
+    os.chmod(cert, 0o644)
+    return str(cert), str(key)
+
+
+def _write_docker_panel_config(config_path: Path, config: dict[str, Any]) -> None:
+    encoded = json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+    fd, temp_name = tempfile.mkstemp(prefix="config.", suffix=".tmp", dir=config_path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o640)
+        os.replace(temp_name, config_path)
+        os.chmod(config_path, 0o640)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _reload_docker_nginx(
+    paths: dict[str, Any], config: dict[str, Any], host: str, cert: str, key: str, tls_mode: str
+) -> None:
+    """Перерендер nginx-конфига из нового config и reload без дауна."""
+    env = {
+        "PANEL_HOST": host,
+        "PANEL_PATH": str(config.get("base_path") or "/"),
+        "PANEL_HTTPS_PORT": str(int(config.get("https_port") or 9999)),
+        "PANEL_LISTEN_PORT": str(int(config.get("listen_port") or 8787)),
+        "CERTIFICATE_PATH": cert,
+        "PRIVATE_KEY_PATH": key,
+        "TLS_MODE": tls_mode,
+    }
+    generated = run([str(paths["nginx_gen"])], timeout=30, env=env)
+    if generated.returncode != 0:
+        raise AdminError("nginx не принял новую конфигурацию")
+    reloaded = run(["nginx", "-s", "reload"], timeout=30)
+    if reloaded.returncode != 0:
+        raise AdminError("nginx не перезагрузился")
+
+
+def _apply_docker_domain_change(host: str, email: str) -> dict[str, Any]:
+    """Фоновая смена домена в Docker: volume → сертификат → nginx → рестарт панели."""
+    paths = _docker_domain_paths()
+    config_path = paths["config"]
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AdminError(f"Не удалось прочитать {config_path}: {exc}") from exc
+    if not isinstance(config, dict):
+        raise AdminError("config.json имеет неверный формат")
+    _backup_docker_panel_config(config_path, paths["backups"])
+    config["public_host"] = host
+    if email:
+        config["certificate_email"] = email
+    tls_mode = str(config.get("tls_mode") or "self-signed")
+    if tls_mode == "letsencrypt" and not _looks_like_ip(host):
+        live = paths["le_live"] / host
+        cert, key = str(live / "fullchain.pem"), str(live / "privkey.pem")
+        if not _obtain_docker_letsencrypt(host, email, paths):
+            cert, key = _issue_docker_self_signed(host, paths)
+            tls_mode = "self-signed"
+    else:
+        # IP или self-signed режим: LE по entrypoint для IP запрещён — только self-signed.
+        tls_mode = "self-signed"
+        cert, key = _issue_docker_self_signed(host, paths)
+    config["certificate_path"] = cert
+    config["tls_mode"] = tls_mode
+    _write_docker_panel_config(config_path, config)
+    _reload_docker_nginx(paths, config, host, cert, key, tls_mode)
+    # Панель читает config на старте: рестарт через супервизор (~3с), фронт пережидает опросом.
+    try:
+        os.kill(os.getpid(), getattr(signal, "SIGTERM", 15))
+    except (OSError, ValueError):
+        pass
+    return {"scheduled": True, "docker": True, "host": host, "tls_mode": tls_mode}
 
 
 def default_cascade_settings() -> dict[str, Any]:
