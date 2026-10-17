@@ -431,6 +431,9 @@ class Panel:
             "tailscale/check": "tailscale.check",
             "wdtt": "wdtt.settings",
             "wdtt/save": "wdtt.save",
+            "proxy": "proxy.status",
+            "proxy/action": "proxy.action",
+            "proxy/config": "proxy.config.save",
             "certificate/change-domain": "certificate.change_domain",
         }
         if route == "history" and method == "GET":
@@ -440,9 +443,9 @@ class Panel:
         action = mapping.get(route)
         if action is None:
             return self.json_response(start_response, 404, {"error": "API endpoint не найден"})
-        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "tailscale.status", "wdtt.settings"}:
+        if method == "GET" and action not in {"overview", "users.list", "logs", "backups.list", "backups.export", "backups.schedule", "autoclean.status", "panel.version", "certificate.export", "telegram.status", "tailscale.status", "wdtt.settings", "proxy.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется POST"})
-        if method == "POST" and action in {"overview", "users.list", "backups.list"}:
+        if method == "POST" and action in {"overview", "users.list", "backups.list", "proxy.status"}:
             return self.json_response(start_response, 405, {"error": "Требуется GET"})
         if action == "overview":
             payload["certificate_path"] = str(self.config.get("certificate_path") or "")

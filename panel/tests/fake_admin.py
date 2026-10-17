@@ -165,6 +165,26 @@ elif action == "wdtt.settings":
         "max_dtls_per_device": 0,
         "online_window_s": 75,
     }
+elif action == "proxy.status":
+    result = {
+        "installed": True,
+        "unit_installed": True,
+        "active": True,
+        "config_dir": "/root/wdtt-proxy",
+        "service": "wdtt-proxy.service",
+        "singbox_found": True,
+        "singbox_bin": "/usr/local/bin/sing-box",
+        "config": {"PROXY_SCHEME": "socks5", "PROXY_HOST": "100.66.0.5", "PROXY_PORT": "26666", "PROXY_USER": "proxyuser", "CAPTURE_IF": "wdtt0", "SOURCE_CIDR": "10.66.0.0/16", "EXCLUDE_CIDRS": "10.66.0.0/16 127.0.0.0/8", "TUN_MTU": "1280", "LOG_LEVEL": "warn"},
+        "proxy_pass_set": True,
+        "proxy_pass_hint": "qw***ED",
+        "extra": {"MARK": "0x100", "TUN_NAME": "sbtun0", "ROUTE_TABLE": "100", "TUN_ADDRESS": "10.200.0.1/30"},
+        "runtime": {"tun_present": True, "rules": ["100: fwmark 256 lookup 100"], "table_routes": ["default dev sbtun0"]},
+    }
+elif action == "proxy.action":
+    result = {"action": str((request.get("payload") or {}).get("action") or ""), "active": True}
+elif action == "proxy.config.save":
+    payload = request.get("payload") or {}
+    result = {"saved": True, "active": True, "config": {key: str(payload.get(key) or "") for key in ["PROXY_HOST", "PROXY_PORT", "PROXY_USER", "CAPTURE_IF"]}}
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}
 elif action == "backups.export":

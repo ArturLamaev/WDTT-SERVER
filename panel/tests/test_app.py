@@ -262,6 +262,33 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertTrue(json.loads(body)["result"]["scheduled"])
 
+    def test_proxy_routes_call_root_helper(self):
+        form = b"username=admin&password=Panel-password-12345"
+        headers, _ = self.request("/private-panel-path/login", "POST", form)
+        cookie = headers["headers"]["Set-Cookie"].split(";", 1)[0]
+        token = cookie.split("=", 1)[1]
+        session = read_session(token, "test-session-secret")
+        csrf = csrf_token(session["n"], "test-session-secret")
+
+        headers, body = self.request("/private-panel-path/api/proxy", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["installed"])
+
+        payload = json.dumps({"action": "start"}).encode()
+        headers, body = self.request("/private-panel-path/api/proxy/action", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertEqual(json.loads(body)["result"]["action"], "start")
+
+        payload = json.dumps({"PROXY_HOST": "100.66.0.5", "PROXY_PORT": "26666"}).encode()
+        headers, body = self.request("/private-panel-path/api/proxy/config", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["saved"])
+
+        # POST на GET-only маршрут статуса должен отклоняться
+        payload = json.dumps({}).encode()
+        headers, _ = self.request("/private-panel-path/api/proxy", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("405"))
+
     def test_vk_hash_library_is_managed_without_calling_root_helper(self):
         form = b"username=admin&password=Panel-password-12345"
         headers, _ = self.request("/private-panel-path/login", "POST", form)

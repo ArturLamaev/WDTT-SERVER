@@ -21,6 +21,7 @@
       <button class="nav-item active" data-tab="dashboard"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h4a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1" /><path d="M5 16h4a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1v-2a1 1 0 0 1 1 -1" /><path d="M15 12h4a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1" /><path d="M15 4h4a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1v-2a1 1 0 0 1 1 -1" /></svg>Обзор</button>
       <button class="nav-item" data-tab="users"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /><path d="M21 21v-2a4 4 0 0 0 -3 -3.85" /></svg>Пользователи</button>
       <button class="nav-item" data-tab="wdtt"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M6 4v4" /><path d="M6 12v8" /><path d="M10 16a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M12 4v10" /><path d="M12 18v2" /><path d="M16 7a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M18 4v1" /><path d="M18 9v11" /></svg>WDTT</button>
+      <button class="nav-item" data-tab="proxy"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a7 7 0 0 1 7 7c0 3 -2 4.5 -3 5.5l0 4.5a2 2 0 0 1 -2 2l-4 0a2 2 0 0 1 -2 -2l0 -4.5c-1 -1 -3 -2.5 -3 -5.5a7 7 0 0 1 7 -7" /><path d="M10 22l0 -11" /><path d="M14 22l0 -11" /></svg>Прокси</button>
       <button class="nav-item" data-tab="logs"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 9l3 3l-3 3" /><path d="M13 15l3 0" /><path d="M3 6a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2l0 -12" /></svg>Журналы</button>
       <button class="nav-item" data-tab="system"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065" /><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" /></svg>Система</button>
     </nav>
@@ -112,8 +113,37 @@
       </div>
     </section>
 
+    <section class="tab" id="tab-proxy">
+      <div class="system-grid">
+        <article class="panel-card">
+          <div class="section-head"><div><p class="eyebrow">SOCKS5 GATEWAY</p><h2>wdtt-proxy</h2></div><span id="proxy-status" class="badge warn">загрузка</span></div>
+          <p class="muted">Прокси заворачивает весь трафик клиентов WDTT (интерфейс <code id="proxy-capture-if">wdtt0</code>) в ваш SOCKS5-сервер через sing-box. Работает и TCP, и UDP.</p>
+          <div id="proxy-info" class="detail-list"><p class="muted">Загрузка статуса…</p></div>
+          <div class="button-row"><button id="proxy-start" class="primary">Запустить</button><button id="proxy-restart" class="secondary">Перезапустить</button><button id="proxy-stop" class="danger">Остановить</button><button id="proxy-refresh" class="secondary">Обновить</button></div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">PROXY SETTINGS</p><h2>Настройки SOCKS5</h2><p class="muted">Правки сохраняются в config.env хоста и сразу применяются (systemctl restart wdtt-proxy). Пустой пароль означает «не менять»; чтобы убрать авторизацию — введите «-».</p>
+          <div class="form-grid compact-grid">
+            <label>SOCKS5 хост<input id="proxy-host" placeholder="100.66.0.5"></label>
+            <label>Порт<input id="proxy-port" type="number" min="1" max="65535" placeholder="26666"></label>
+            <label>Логин<input id="proxy-user" autocomplete="off"></label>
+            <label class="wide">Пароль<input id="proxy-pass" type="password" autocomplete="off" placeholder="сохранён"></label>
+            <label>Интерфейс захвата<input id="proxy-capture" placeholder="wdtt0"></label>
+            <label>MTU tun<input id="proxy-mtu" type="number" min="600" max="9000" placeholder="1280"></label>
+            <label class="wide">Подсеть клиентов<input id="proxy-source-cidr" placeholder="10.66.0.0/16"></label>
+            <label class="wide">Исключения (мимо прокси)<input id="proxy-exclude-cidrs" placeholder="10.66.0.0/16 127.0.0.0/8"></label>
+            <label class="wide">Уровень логов sing-box<select id="proxy-log-level"><option value="warn">warn</option><option value="trace">trace</option><option value="debug">debug</option><option value="info">info</option><option value="error">error</option></select></label>
+          </div>
+          <div class="button-row"><button id="save-proxy" class="primary">Сохранить и применить</button></div>
+        </article>
+        <article class="panel-card wide">
+          <div class="section-head"><div><p class="eyebrow">ROUTES</p><h2>Маршрутизация сейчас</h2></div></div>
+          <pre id="proxy-rules" class="inline-log">После запуска прокси здесь появятся активные ip rules и таблица policy-routing.</pre>
+        </article>
+      </div>
+    </section>
     <section class="tab" id="tab-logs">
-      <div class="section-head"><div><p class="eyebrow">FULL DIAGNOSTICS</p><h2>Полные журналы служб</h2><p class="muted">Выберите источник, загрузите до 5000 строк и при необходимости скачайте файл для диагностики.</p></div><div class="inline-actions"><select id="log-source"><option value="wdtt">WDTT</option><option value="panel">Панель</option><option value="nginx">Nginx</option><option value="installer">Установщик</option><option value="all">Все службы</option></select><select id="log-limit"><option value="500">500 строк</option><option value="1000" selected>1000 строк</option><option value="2000">2000 строк</option><option value="5000">5000 строк</option></select><select id="log-filter"><option value="">Без фильтра</option><option value="[СТАТ]">Статистика</option><option value="[WG]">WireGuard</option><option value="[WRAP]">WRAP</option><option value="[DTLS]">DTLS</option><option value="error">error</option><option value="failed">failed</option></select><button id="download-logs" class="secondary">Скачать</button><button id="load-logs" class="primary">Загрузить</button></div></div>
+      <div class="section-head"><div><p class="eyebrow">FULL DIAGNOSTICS</p><h2>Полные журналы служб</h2><p class="muted">Выберите источник, загрузите до 5000 строк и при необходимости скачайте файл для диагностики.</p></div><div class="inline-actions"><select id="log-source"><option value="wdtt">WDTT</option><option value="proxy">wdtt-proxy</option><option value="panel">Панель</option><option value="nginx">Nginx</option><option value="installer">Установщик</option><option value="all">Все службы</option></select><select id="log-limit"><option value="500">500 строк</option><option value="1000" selected>1000 строк</option><option value="2000">2000 строк</option><option value="5000">5000 строк</option></select><select id="log-filter"><option value="">Без фильтра</option><option value="[СТАТ]">Статистика</option><option value="[WG]">WireGuard</option><option value="[WRAP]">WRAP</option><option value="[DTLS]">DTLS</option><option value="error">error</option><option value="failed">failed</option></select><button id="download-logs" class="secondary">Скачать</button><button id="load-logs" class="primary">Загрузить</button></div></div>
       <p id="logs-summary" class="muted">Выберите источник журнала.</p>
       <article class="log-view"><pre id="logs-output">Загрузка журнала...</pre></article>
     </section>

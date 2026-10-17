@@ -1,5 +1,6 @@
 import json
 import errno
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -1108,6 +1109,151 @@ class WdttInboundAndSpeedTests(unittest.TestCase):
             admin.change_panel_domain({"host": "http://bad host"})
         with self.assertRaises(admin.ValidationError):
             admin.change_panel_domain({"host": "panel.example.com", "email": "not-an-email"})
+
+
+class ProxyPanelTests(unittest.TestCase):
+    SAMPLE_CONFIG = """# wdtt-proxy — конфигурация
+# комментарий, который должен сохраниться
+
+PROXY_SCHEME="socks5"
+PROXY_HOST="100.66.0.5"
+PROXY_PORT="26666"
+PROXY_USER="proxyuser"
+PROXY_PASS="qwerty777LAMBERTED"
+CAPTURE_IF="wdtt0"
+SOURCE_CIDR="10.66.0.0/16"
+EXCLUDE_CIDRS="10.66.0.0/16 127.0.0.0/8"
+MARK="0x100"
+TUN_NAME="sbtun0"
+TUN_MTU="1280"
+STACK="gvisor"
+ROUTE_TABLE="100"
+LOG_LEVEL="warn"
+"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.proxy_dir = root / "wdtt-proxy"
+        self.proxy_dir.mkdir()
+        (self.proxy_dir / "wdtt-proxy.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        (self.proxy_dir / "config.env").write_text(self.SAMPLE_CONFIG, encoding="utf-8")
+        self.patchers = [
+            mock.patch.object(admin, "PROXY_DIR", self.proxy_dir),
+            mock.patch.object(admin, "SKIP_SYSTEMD", True),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.temp.cleanup()
+
+    def test_status_parses_config_and_masks_password(self):
+        status = admin.proxy_status({})
+        self.assertTrue(status["installed"])
+        self.assertTrue(status["active"])
+        config = status["config"]
+        self.assertEqual(config["PROXY_HOST"], "100.66.0.5")
+        self.assertEqual(config["PROXY_PORT"], "26666")
+        self.assertEqual(config["CAPTURE_IF"], "wdtt0")
+        self.assertNotIn("PROXY_PASS", config)
+        self.assertTrue(status["proxy_pass_set"])
+        self.assertNotEqual(status["proxy_pass_hint"], "qwerty777LAMBERTED")
+        self.assertNotIn("qwerty777LAMBERTED", admin.proxy_password_hint("qwerty777LAMBERTED"))
+        self.assertEqual(status["extra"]["TUN_NAME"], "sbtun0")
+
+    def test_status_when_not_installed(self):
+        (self.proxy_dir / "wdtt-proxy.sh").unlink()
+        status = admin.proxy_status({})
+        self.assertFalse(status["installed"])
+        self.assertFalse(status["active"])
+
+    def test_dispatch_unknown_action(self):
+        with self.assertRaises(admin.ValidationError):
+            admin.dispatch({"action": "proxy.nope", "payload": {}})
+
+    def test_save_updates_values_and_keeps_comments(self):
+        result = admin.proxy_config_save(
+            {
+                "PROXY_HOST": "10.66.0.5",
+                "PROXY_PORT": "8443",
+                "PROXY_USER": "another",
+                "PROXY_PASS": "",
+                "CAPTURE_IF": "wgtest0",
+                "SOURCE_CIDR": "10.77.0.0/16",
+                "EXCLUDE_CIDRS": "10.77.0.0/16 169.254.0.0/16,10.10.10.1/32",
+                "TUN_MTU": "1300",
+                "LOG_LEVEL": "debug",
+                "PROXY_SCHEME": "socks5",
+            }
+        )
+        self.assertTrue(result["saved"])
+        text = (self.proxy_dir / "config.env").read_text(encoding="utf-8")
+        self.assertIn("PROXY_HOST=\"10.66.0.5\"", text)
+        self.assertIn("PROXY_PORT=\"8443\"", text)
+        self.assertIn("CAPTURE_IF=\"wgtest0\"", text)
+        self.assertIn("SOURCE_CIDR=\"10.77.0.0/16\"", text)
+        self.assertEqual(text.count('EXCLUDE_CIDRS='), 1)
+        self.assertIn('EXCLUDE_CIDRS="10.77.0.0/16 169.254.0.0/16 10.10.10.1/32"', text)
+        self.assertIn("TUN_MTU=\"1300\"", text)
+        self.assertIn("LOG_LEVEL=\"debug\"", text)
+        self.assertIn("PROXY_PASS=\"qwerty777LAMBERTED\"", text)
+        self.assertIn("# комментарий, который должен сохраниться", text)
+        self.assertIn('MARK="0x100"', text)
+        if os.name == "posix":
+            mode = (self.proxy_dir / "config.env").stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+    def test_save_without_password_updates_keeps_value(self):
+        admin.proxy_config_save({"PROXY_HOST": "1.2.3.4"})
+        text = (self.proxy_dir / "config.env").read_text(encoding="utf-8")
+        self.assertIn('PROXY_HOST="1.2.3.4"', text)
+        self.assertIn('PROXY_PASS="qwerty777LAMBERTED"', text)
+        admin.proxy_config_save({"PROXY_PASS": "-", "PROXY_HOST": "1.2.3.4"})
+        text = (self.proxy_dir / "config.env").read_text(encoding="utf-8")
+        self.assertIn('PROXY_PASS=""', text)
+
+    def test_save_validation_errors(self):
+        cases = [
+            {"PROXY_PORT": "99999"},
+            {"PROXY_PORT": "abc"},
+            {"PROXY_HOST": "1.2.3.4;5"},
+            {"CAPTURE_IF": "bad iface"},
+            {"SOURCE_CIDR": "not-a-cidr"},
+            {"EXCLUDE_CIDRS": "10.0.0.0/16 9999.0.0.0/8"},
+            {"EXCLUDE_CIDRS": "2001:db8::/32"},
+            {"TUN_MTU": "400"},
+            {"LOG_LEVEL": "loud"},
+            {"PROXY_SCHEME": "shadowsocks"},
+        ]
+        for payload in cases:
+            with self.assertRaises(admin.ValidationError, msg=payload):
+                admin.proxy_config_save({**{"PROXY_HOST": "1.2.3.4"}, **payload})
+
+    def test_save_requires_installation(self):
+        (self.proxy_dir / "wdtt-proxy.sh").unlink()
+        with self.assertRaises(admin.ValidationError):
+            admin.proxy_config_save({"PROXY_HOST": "1.2.3.4"})
+        with self.assertRaises(admin.ValidationError):
+            admin.proxy_action({"action": "start"})
+
+    def test_action_validates(self):
+        with self.assertRaises(admin.ValidationError):
+            admin.proxy_action({"action": "flush"})
+        result = admin.proxy_action({"action": "restart"})
+        self.assertEqual(result["action"], "restart")
+        self.assertEqual(result["state"], "test")
+
+    def test_logs_include_proxy_source(self):
+        payload = {"limit": 20, "source": "proxy"}
+        data = admin.journal_logs(payload)
+        self.assertEqual(data["source"], "proxy")
+        self.assertEqual(data["units"], [])
+        self.assertEqual(data["lines"], [])
+        with self.assertRaises(admin.ValidationError):
+            admin.journal_logs({"source": "bogus"})
 
 
 if __name__ == "__main__":

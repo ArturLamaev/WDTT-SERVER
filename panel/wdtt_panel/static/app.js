@@ -6,7 +6,7 @@
   const CSRF = meta("csrf-token");
   const PUBLIC_HOST = meta("public-host");
   const PANEL_VERSION = meta("panel-version");
-  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, historyPoints: [], tailscale: null, vkHashes: [], telegram: null };
+  const state = { overview: null, users: [], limit: 10000, selectedUsers: new Set(), userSort: { key: "", direction: "asc" }, logs: [], logsMeta: null, editing: null, userRefreshTimer: null, historyPoints: [], tailscale: null, proxy: null, vkHashes: [], telegram: null };
 
   let panelVersionTimer = null;
 
@@ -84,6 +84,7 @@
     }
     if (name === "logs") loadLogs();
     if (name === "wdtt") loadWdttSettings();
+    if (name === "proxy") loadProxy();
     if (name === "overview" && Array.isArray(state.historyPoints)) drawCharts(state.historyPoints);
     if (name === "system") { loadBackups(); loadBackupSchedule(); loadAutoclean(); loadAudit(); loadTelegramSettings(); loadTailscale(); loadPanelVersion(); }
   }
@@ -391,6 +392,86 @@
       $("#tailscale-info").textContent = `Tailscale в сети${result.udp === false ? " (UDP закрыт — только реле)" : ""}${derp}${latency}.`;
       toast("Tailscale отвечает");
     } catch (error) { toast(error.message, true); }
+    finally { setBusy(button, false); }
+  }
+
+  function renderProxy(result) {
+    state.proxy = result;
+    const installed = Boolean(result.installed);
+    const active = Boolean(result.active);
+    $("#proxy-status").className = `badge ${active ? "ok" : (installed ? "warn" : "bad")}`;
+    $("#proxy-status").textContent = active ? "работает" : (result.unit_installed ? "остановлен" : (installed ? "юнит не установлен" : "не установлен"));
+    const config = result.config || {};
+    const extra = result.extra || {};
+    $("#proxy-capture-if").textContent = config.CAPTURE_IF || "wdtt0";
+    $("#proxy-host").value = config.PROXY_HOST || "";
+    $("#proxy-port").value = config.PROXY_PORT || "";
+    $("#proxy-user").value = config.PROXY_USER || "";
+    $("#proxy-pass").placeholder = result.proxy_pass_set ? `сохранён: ${result.proxy_pass_hint} (пусто = не менять)` : "нет";
+    $("#proxy-pass").value = "";
+    $("#proxy-capture").value = config.CAPTURE_IF || "";
+    $("#proxy-mtu").value = config.TUN_MTU || "";
+    $("#proxy-source-cidr").value = config.SOURCE_CIDR || "";
+    $("#proxy-exclude-cidrs").value = config.EXCLUDE_CIDRS || "";
+    $("#proxy-log-level").value = config.LOG_LEVEL || "warn";
+    const suffix = `${config.PROXY_HOST || "?"}:${config.PROXY_PORT || "?"}`;
+    const info = !installed
+      ? "wdtt-proxy не найден на этом хосте. Установите его (репозиторий wdtt-proxy: скопируйте каталог в /root/wdtt-proxy, config.env и юнит в /etc/systemd/system) и обновите статус."
+      : (active
+        ? `Клиенты ${config.CAPTURE_IF || "wdtt0"} (${config.SOURCE_CIDR || "—"}) уходят через ${suffix} (sing-box ${extra.TUN_NAME || "sbtun0"}).`
+        : (result.unit_installed ? "Прокси остановлен. Стартуйте кнопкой «Запустить»." : "Каталог прокси найден, но юнит systemd не установлен — скопируйте wdtt-proxy.service в /etc/systemd/system/."));
+    const rows = [
+      healthRow("Юнит systemd", result.unit_installed, result.service || "wdtt-proxy.service"),
+      healthRow("Каталог wdtt-proxy", installed, result.config_dir || ""),
+      healthRow("sing-box", Boolean(result.singbox_found), result.singbox_bin || "не задан"),
+      healthRow("tun-интерфейс", Boolean((result.runtime || {}).tun_present), extra.TUN_NAME || "sbtun0"),
+      healthRow("SOCKS5", Boolean(config.PROXY_HOST), suffix),
+      healthRow("Авторизация прокси", Boolean(result.proxy_pass_set), result.proxy_pass_set ? result.proxy_pass_hint : "без пароля"),
+    ].join("");
+    $("#proxy-info").innerHTML = info ? `<p class="muted">${escapeHtml(info)}</p><div class="detail-list">${rows}</div>` : rows;
+    const runtime = result.runtime || {};
+    const rules = (runtime.rules || []).join("\n");
+    const routes = (runtime.table_routes || []).join("\n");
+    const snapshot = [
+      `# ip rule (fwmark ${extra.MARK || "0x100"})`, rules || "(пусто)",
+      `# таблица ${extra.ROUTE_TABLE || "100"} (${extra.TUN_NAME || "sbtun0"})`, routes || "(пусто)",
+    ].join("\n");
+    $("#proxy-rules").textContent = active ? snapshot : "Прокси не запущен: правила маршрутизации сняты.";
+  }
+
+  async function loadProxy() {
+    try { renderProxy(await api("proxy")); }
+    catch (error) {
+      $("#proxy-info").innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+      $("#proxy-status").className = "badge bad";
+      $("#proxy-status").textContent = "ошибка";
+    }
+  }
+
+  async function proxyAction(action) {
+    if (action === "stop" && !confirm("Остановить прокси? Трафик клиентов пойдёт напрямую с сервера.")) return;
+    const button = $(`#proxy-${action}`); setBusy(button, true);
+    try { renderProxy(await api("proxy/action", { method: "POST", body: { action } })); toast(`Действие «${action}» выполнено`); }
+    catch (error) { toast(error.message, true); loadProxy().catch(() => {}); }
+    finally { setBusy(button, false); }
+  }
+
+  async function saveProxyConfig() {
+    const button = $("#save-proxy"); setBusy(button, true);
+    try {
+      renderProxy(await api("proxy/config", { method: "POST", body: {
+        PROXY_HOST: $("#proxy-host").value.trim(),
+        PROXY_PORT: $("#proxy-port").value.trim(),
+        PROXY_USER: $("#proxy-user").value.trim(),
+        PROXY_PASS: $("#proxy-pass").value === "-" ? "-" : $("#proxy-pass").value,
+        CAPTURE_IF: $("#proxy-capture").value.trim(),
+        SOURCE_CIDR: $("#proxy-source-cidr").value.trim(),
+        EXCLUDE_CIDRS: $("#proxy-exclude-cidrs").value.trim(),
+        TUN_MTU: $("#proxy-mtu").value.trim(),
+        LOG_LEVEL: $("#proxy-log-level").value,
+      }}));
+      toast("Конфиг прокси сохранён и применён");
+    } catch (error) { toast(error.message, true); loadProxy().catch(() => {}); }
     finally { setBusy(button, false); }
   }
 
@@ -1672,6 +1753,11 @@
     $("#download-certificate").addEventListener("click", downloadCertificate);
     $("#change-domain").addEventListener("click", changeDomain);
     $("#save-wdtt-settings").addEventListener("click", saveWdttSettings);
+    $("#proxy-start").addEventListener("click", () => proxyAction("start"));
+    $("#proxy-restart").addEventListener("click", () => proxyAction("restart"));
+    $("#proxy-stop").addEventListener("click", () => proxyAction("stop"));
+    $("#proxy-refresh").addEventListener("click", loadProxy);
+    $("#save-proxy").addEventListener("click", saveProxyConfig);
     $("#upload-backup").addEventListener("click", () => $("#backup-upload").click());
     $("#backup-upload").addEventListener("change", (event) => uploadBackup(event.target.files[0]));
     $("#backups-list").addEventListener("click", (event) => {

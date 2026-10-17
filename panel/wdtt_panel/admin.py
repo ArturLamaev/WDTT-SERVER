@@ -95,6 +95,11 @@ TAILSCALE_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_TAILSCALE_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
 )
 TAILSCALED_SERVICE = os.environ.get("WDTT_TAILSCALED_SERVICE", "tailscaled.service")
+# wdtt-proxy: отдельный sing-box-прокси (tun + policy routing), ставится
+# параллельно с ядром (см. внеший репозиторий wdtt-proxy). Панель только
+# управляет systemd-юнитом и редактирует config.env.
+PROXY_SERVICE = os.environ.get("WDTT_PROXY_SERVICE", "wdtt-proxy.service")
+PROXY_DIR = Path(os.environ.get("WDTT_PROXY_DIR", "/root/wdtt-proxy"))
 INSTALL_LOG_FILE = Path(os.environ.get("WDTT_INSTALL_LOG_FILE", "/var/log/wdtt-panel-install.log"))
 NGINX_ACCESS_LOG = Path(os.environ.get("WDTT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log"))
 NGINX_ERROR_LOG = Path(os.environ.get("WDTT_NGINX_ERROR_LOG", "/var/log/nginx/error.log"))
@@ -1916,6 +1921,7 @@ def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
     sources = {
         "wdtt": ([SERVICE], "WDTT"),
         "panel": (["wdtt-panel.service"], "Панель"),
+        "proxy": ([PROXY_SERVICE], "wdtt-proxy"),
         "nginx": (["nginx.service"], "Nginx"),
         "all": ([SERVICE, "wdtt-panel.service", "nginx.service"], "Все службы панели"),
     }
@@ -3153,6 +3159,322 @@ def overview(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# wdtt-proxy: панель выступает пультом для systemd-юнита wdtt-proxy.service
+# (sing-box tun + fwmark/policy routing). Конфиг — /root/wdtt-proxy/config.env.
+# ---------------------------------------------------------------------------
+PROXY_EDITABLE_KEYS = (
+    "PROXY_SCHEME",
+    "PROXY_HOST",
+    "PROXY_PORT",
+    "PROXY_USER",
+    "PROXY_PASS",
+    "CAPTURE_IF",
+    "SOURCE_CIDR",
+    "EXCLUDE_CIDRS",
+    "TUN_MTU",
+    "LOG_LEVEL",
+)
+PROXY_SCHEME_VALUES = {"socks5"}
+PROXY_LOG_LEVELS = {"trace", "debug", "info", "warn", "error"}
+PROXY_STACK_VALUES = {"gvisor", "system", "mixed"}
+PROXY_INTERFACE_RE = re.compile(r"^[a-zA-Z0-9._-]{1,15}$")
+
+
+def proxy_config_path() -> Path:
+    return PROXY_DIR / "config.env"
+
+
+def proxy_installed() -> bool:
+    return (PROXY_DIR / "wdtt-proxy.sh").is_file()
+
+
+def read_proxy_config() -> tuple[str, dict[str, str]]:
+    """Считывает config.env (shell-формат KEY="VALUE") в словарь.
+
+    Первое значение возвращает вместе с исходником, чтобы save мог
+    сохранить комментарии при точечной замене значений.
+    """
+    path = proxy_config_path()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise AdminError(f"Не удалось прочитать {path}: {exc}") from exc
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(stripped, comments=True)
+        except ValueError:
+            continue
+        if not tokens or "=" not in tokens[0]:
+            continue
+        key, _, value = tokens[0].partition("=")
+        key = key.strip()
+        if key and key not in values:
+            values[key] = value
+    return text, values
+
+
+def proxy_password_hint(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 3:
+        return "***"
+    return f"{value[:2]}***{value[-2:]}"
+
+
+def validate_proxy_cidrs(value: str, field: str) -> str:
+    cidrs = []
+    for item in value.replace(",", " ").split():
+        if item in {"255.255.255.255/32", "0.0.0.0/0"}:
+            cidrs.append(item)
+            continue
+        try:
+            network = ipaddress.ip_network(item, strict=False)
+        except ValueError as exc:
+            raise ValidationError(f"{field}: некорректная подсеть «{item}»") from exc
+        if network.version != 4:
+            raise ValidationError(f"{field}: пока поддерживаются только IPv4-подсети ({item})")
+        cidrs.append(str(network))
+    return " ".join(cidrs)
+
+
+def validate_proxy_config(values: dict[str, Any]) -> dict[str, str]:
+    """Валидирует поля вкладки «Прокси», возвращает нормализованные значения."""
+    out: dict[str, str] = {}
+    scheme = str(values.get("PROXY_SCHEME") or "socks5").strip().lower()
+    if scheme not in PROXY_SCHEME_VALUES:
+        raise ValidationError("PROXY_SCHEME: поддерживается socks5")
+    out["PROXY_SCHEME"] = scheme
+    host = str(values.get("PROXY_HOST") or "").strip()
+    if not host or re.search(r"[\s\"'`$;&|<>\n\r]", host):
+        raise ValidationError("PROXY_HOST: укажите хост или IP SOCKS5-сервера")
+    if host.count("/") or ":" in host:
+        # IPv6-адрес без скобок в shell-строке безопасен, но сокеты socks5
+        # в sing-box ждут host отдельно от порта; скобки запрещаем.
+        raise ValidationError("PROXY_HOST: указывайте IPv4/имя хоста без порта и скобок")
+    out["PROXY_HOST"] = host
+    port_raw = str(values.get("PROXY_PORT") or "").strip()
+    try:
+        port = int(port_raw)
+    except ValueError as exc:
+        raise ValidationError("PROXY_PORT: должно быть число 1-65535") from exc
+    if not 1 <= port <= 65535:
+        raise ValidationError("PROXY_PORT: должно быть числом 1-65535")
+    out["PROXY_PORT"] = str(port)
+    for key in ("PROXY_USER", "PROXY_PASS"):
+        value = str(values.get(key) or "")
+        if len(value) > 255 or re.search(r"[\r\n\"]", value):
+            raise ValidationError(f"{key}: значение слишком длинное или содержит кавычки/перевод строки")
+        out[key] = value
+    capture_if = str(values.get("CAPTURE_IF") or "").strip()
+    if not PROXY_INTERFACE_RE.match(capture_if):
+        raise ValidationError("CAPTURE_IF: имя интерфейса вида wdtt0")
+    out["CAPTURE_IF"] = capture_if
+    out["SOURCE_CIDR"] = validate_proxy_cidrs(str(values.get("SOURCE_CIDR") or ""), "SOURCE_CIDR") if str(values.get("SOURCE_CIDR") or "").strip() else ""
+    if not out["SOURCE_CIDR"]:
+        raise ValidationError("SOURCE_CIDR: укажите хотя бы одну подсеть клиентов")
+    out["EXCLUDE_CIDRS"] = validate_proxy_cidrs(str(values.get("EXCLUDE_CIDRS") or "").strip(), "EXCLUDE_CIDRS")
+    mtu_raw = str(values.get("TUN_MTU") or "").strip()
+    try:
+        mtu = int(mtu_raw)
+    except ValueError as exc:
+        raise ValidationError("TUN_MTU: целое число 600-9000") from exc
+    if not 600 <= mtu <= 9000:
+        raise ValidationError("TUN_MTU: допустимый диапазон 600-9000")
+    out["TUN_MTU"] = str(mtu)
+    log_level = str(values.get("LOG_LEVEL") or "warn").strip().lower()
+    if log_level not in PROXY_LOG_LEVELS:
+        raise ValidationError("LOG_LEVEL: trace|debug|info|warn|error")
+    out["LOG_LEVEL"] = log_level
+    return out
+
+
+def shq(value: str) -> str:
+    """Кавычки для config.env: двойные кавычки с экранированием shell-символов."""
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+    return f'"{escaped}"'
+
+
+def write_proxy_config(current: str, normalized: dict[str, str]) -> None:
+    """Точечно заменяет значения редактируемых ключей, комментарии сохраняются."""
+    replaced: set[str] = set()
+    lines = current.splitlines()
+    rebuilt = []
+    for line in lines:
+        stripped = line.strip()
+        matched_key = ""
+        try:
+            tokens = shlex.split(stripped, comments=True) if stripped and not stripped.startswith("#") else []
+        except ValueError:
+            tokens = []
+        if tokens and "=" in tokens[0]:
+            candidate = tokens[0].partition("=")[0].strip()
+            if candidate in PROXY_EDITABLE_KEYS:
+                matched_key = candidate
+        if matched_key:
+            rebuilt.append(f"{matched_key}={shq(normalized[matched_key])}")
+            replaced.add(matched_key)
+        else:
+            rebuilt.append(line)
+    missing = [key for key in PROXY_EDITABLE_KEYS if key not in replaced]
+    if missing and normalized.get(missing[0]):
+        rebuilt.append("")
+        rebuilt.append("# --- добавлено панелью WDTT ---")
+        for key in missing:
+            rebuilt.append(f"{key}={shq(normalized[key])}")
+    path = proxy_config_path()
+    tmp = path.with_suffix(".env.tmp")
+    try:
+        tmp.write_text("\n".join(rebuilt) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        raise AdminError(f"Не удалось записать {path}: {exc}") from exc
+
+
+def proxy_unit_installed() -> bool:
+    if SKIP_SYSTEMD:
+        return True
+    try:
+        result = run(["systemctl", "show", PROXY_SERVICE, "--property=LoadState", "--value"], timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip() not in {"", "not-found", "not-found "}
+
+
+def proxy_unit_active() -> bool:
+    if SKIP_SYSTEMD:
+        return True
+    try:
+        result = run(["systemctl", "is-active", "--quiet", PROXY_SERVICE], timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def proxy_runtime_snapshot(mark: str = "0x100", tun: str = "sbtun0", table: str = "100") -> dict[str, Any]:
+    """Живая картина: tun-интерфейс, ip rule и таблица policy-routing."""
+    snapshot = {"tun_present": False, "rules": [], "table_routes": []}
+    if SKIP_SYSTEMD:
+        return snapshot
+    try:
+        iface = run(["ip", "link", "show", tun], timeout=10)
+        snapshot["tun_present"] = iface.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    command_result: dict[str, str] = {}
+    for name, command in (("rules", ["ip", "rule", "show"]), ("table_routes", ["ip", "route", "show", "table", table])):
+        try:
+            result = run(command, timeout=10)
+            command_result[name] = result.stdout if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            command_result[name] = ""
+    marker = (mark or "").split("/")[0]
+    snapshot["rules"] = [line for line in command_result["rules"].splitlines() if marker and marker in line]
+    snapshot["table_routes"] = [line for line in command_result["table_routes"].splitlines() if line.strip()]
+    return snapshot
+
+
+def proxy_status(payload: dict[str, Any]) -> dict[str, Any]:
+    installed = proxy_installed()
+    unit_installed = proxy_unit_installed() if installed else False
+    unit_active = proxy_unit_active() if unit_installed else False
+    try:
+        _, values = read_proxy_config()
+    except AdminError:
+        values = {}
+    defaults: dict[str, str] = {
+        "PROXY_SCHEME": "socks5",
+        "PROXY_HOST": "",
+        "PROXY_PORT": "26666",
+        "PROXY_USER": "",
+        "PROXY_PASS": "",
+        "CAPTURE_IF": "wdtt0",
+        "SOURCE_CIDR": "10.66.0.0/16",
+        "EXCLUDE_CIDRS": "",
+        "TUN_MTU": "1280",
+        "LOG_LEVEL": "warn",
+    }
+    config = {key: values.get(key, default) for key, default in defaults.items()}
+    # Пароль наружу не уходит целиком: только признак «задан» и короткий хинт.
+    password = config.pop("PROXY_PASS", "")
+    mark = str(values.get("MARK") or "0x100")
+    tun = str(values.get("TUN_NAME") or "sbtun0")
+    table = str(values.get("ROUTE_TABLE") or "100")
+    singbox_bin = str(values.get("SINGBOX_BIN") or "/usr/local/bin/sing-box")
+    snapshot = proxy_runtime_snapshot(mark, tun, table) if unit_active and installed else {"tun_present": False, "rules": [], "table_routes": []}
+    return {
+        "installed": installed,
+        "unit_installed": unit_installed,
+        "active": unit_active,
+        "config_dir": str(PROXY_DIR),
+        "service": PROXY_SERVICE,
+        "singbox_found": shutil.which(singbox_bin) is not None or Path(singbox_bin).is_file(),
+        "singbox_bin": singbox_bin,
+        "config": config,
+        "proxy_pass_set": bool(password),
+        "proxy_pass_hint": proxy_password_hint(password),
+        "extra": {"MARK": mark, "TUN_NAME": tun, "ROUTE_TABLE": table, "TUN_ADDRESS": str(values.get("TUN_ADDRESS") or "")},
+        "runtime": snapshot,
+    }
+
+
+def proxy_action(payload: dict[str, Any]) -> dict[str, Any]:
+    action = str(payload.get("action") or "")
+    if action not in {"start", "stop", "restart"}:
+        raise ValidationError("Недопустимое действие прокси")
+    if not proxy_installed():
+        raise ValidationError("wdtt-proxy не обнаружен на этом хосте (нет wdtt-proxy.sh)")
+    if SKIP_SYSTEMD:
+        return {"action": action, "state": "test"}
+    if not proxy_unit_installed():
+        raise AdminError(f"Юнит {PROXY_SERVICE} не установлен: скопируйте wdtt-proxy.service в /etc/systemd/system/")
+    result = run(["systemctl", action, PROXY_SERVICE], timeout=60)
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or f"Не удалось выполнить systemctl {action} {PROXY_SERVICE}")
+    return {"action": action, "active": proxy_unit_active()}
+
+
+def proxy_config_save(payload: dict[str, Any]) -> dict[str, Any]:
+    if not proxy_installed():
+        raise ValidationError("wdtt-proxy не обнаружен на этом хосте (нет wdtt-proxy.sh)")
+    text, values = read_proxy_config()
+    update: dict[str, str] = {}
+    for key in PROXY_EDITABLE_KEYS:
+        if payload.get(key) is None:
+            update[key] = values.get(key) or ""
+        elif key == "PROXY_PASS":
+            raw = str(payload.get("PROXY_PASS"))
+            # Пустое значение = не менять (в форме поле не заполняют),
+            # "-" = намеренно убрать авторизацию на SOCKS5.
+            stripped = raw.strip()
+            if stripped in {"", "--"}:
+                update[key] = values.get("PROXY_PASS") or ""
+            else:
+                update[key] = "" if stripped == "-" else stripped
+        else:
+            update[key] = str(payload.get(key))
+    normalized = validate_proxy_config(update)
+    write_proxy_config(text, normalized)
+    if SKIP_SYSTEMD:
+        return {"saved": True, "active": proxy_unit_active(), "config": normalized}
+    if proxy_unit_installed():
+        result = run(["systemctl", "restart", PROXY_SERVICE], timeout=60)
+        if result.returncode != 0:
+            raise AdminError(result.stderr.strip() or f"Конфиг сохранен, но systemctl restart {PROXY_SERVICE} не удался")
+    return {"saved": True, "active": proxy_unit_active(), "config": normalized}
+
+
 OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "overview": overview,
     "users.list": lambda payload: list_users(),
@@ -3191,6 +3513,9 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "telegram.test": telegram_test,
     "wdtt.settings": lambda payload: load_wdtt_settings(),
     "wdtt.save": save_wdtt_settings,
+    "proxy": proxy_status,
+    "proxy.action": proxy_action,
+    "proxy.config": proxy_config_save,
     "certificate.change_domain": change_panel_domain,
 }
 
