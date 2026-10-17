@@ -209,7 +209,7 @@ wipe_previous_install() {
         /etc/systemd/system/wdtt-panel.service /etc/systemd/system/wdtt-panel-wdtt-extensions.* \
         /etc/systemd/system/wdtt-auto-restart.* /etc/systemd/system/wdtt-fleet-agent.service 2>/dev/null || true
   sys_timeout 60 systemctl daemon-reload
-  rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-app /usr/local/bin/xray
+  rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-app
   rm -rf /opt/wdtt-panel /etc/wdtt-panel /var/lib/wdtt-panel /var/lib/wdtt-panel-private \
          /etc/wdtt /var/lib/wdtt
   rm -f /etc/nginx/conf.d/wdtt-panel.conf
@@ -518,7 +518,7 @@ main() {
     status|--status|-s) exec bash "$PANEL_INSTALL" "$@" ;;
     change-password|--change-password) exec bash "$PANEL_INSTALL" "$@" ;;
     clean-system|--clean-system|clean-logs) exec bash "$PANEL_INSTALL" "$@" ;;
-    install-xray-runtime|install-warp-runtime|enable-wdtt-extensions)
+    enable-wdtt-extensions)
       exec bash "$PANEL_INSTALL" "$@" ;;
     *)
       if [[ "${1:-}" == -* ]]; then
@@ -526,7 +526,7 @@ main() {
         main "$@"
         return 0
       fi
-      die "Использование: $0 [--mode node|controller] [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|install-xray-runtime|install-warp-runtime|enable-wdtt-extensions]"
+      die "Использование: $0 [--mode node|controller] [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|enable-wdtt-extensions]"
       ;;
   esac
 }

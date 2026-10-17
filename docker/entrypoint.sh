@@ -12,8 +12,7 @@
 #   6. iptables/NAT (best-effort) + sysctl;
 #   7. TLS панели (self-signed или Let's Encrypt через venv-certbot);
 #   8. рендер nginx-конфига;
-#   9. рантаймы xray/wgcf (пропуск при WDTT_FETCH_RUNTIME=0);
-#  10. печать итоговых доступов в stdout (видно в docker compose logs).
+#   9. печать итоговых доступов в stdout (видно в docker compose logs).
 # =============================================================================
 set -Eeuo pipefail
 
@@ -38,9 +37,8 @@ random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+st
 : "${WDTT_RAW_PORT:=0}"
 : "${WDTT_DNS:=1.1.1.1,1.0.0.1}"
 : "${TLS_MODE:=self-signed}"
-: "${WDTT_FETCH_RUNTIME:=1}"
 export PANEL_USER PANEL_HTTPS_PORT PANEL_LISTEN_PORT TLS_MODE
-export WDTT_DTLS_PORT WDTT_WG_PORT WDTT_ADMIN_PORT WDTT_DIRECT_PORT WDTT_RAW_PORT WDTT_DNS WDTT_FETCH_RUNTIME
+export WDTT_DTLS_PORT WDTT_WG_PORT WDTT_ADMIN_PORT WDTT_DIRECT_PORT WDTT_RAW_PORT WDTT_DNS
 
 [[ "$PANEL_USER" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] || die "Некорректный PANEL_USER"
 [[ "$PANEL_HTTPS_PORT" =~ ^[0-9]+$ ]] && [ "$PANEL_HTTPS_PORT" -ge 1 ] && [ "$PANEL_HTTPS_PORT" -le 65535 ] \
@@ -425,14 +423,7 @@ eval "$NGINX_VARS"
 export PANEL_PATH PANEL_HTTPS_PORT PANEL_LISTEN_PORT
 /usr/local/sbin/wdtt-gen-nginx-conf
 
-# ── 9. рантаймы xray/wgcf ────────────────────────────────────────────────────
-if [ "$WDTT_FETCH_RUNTIME" = "1" ]; then
-  /usr/local/sbin/wdtt-fetch-runtime || log "WARN: рантаймы не докачались — Xray/WARP включаются вручную через панель"
-else
-  log "WDTT_FETCH_RUNTIME=0: пропуск скачивания xray/wgcf"
-fi
-
-# ── 10. итог ─────────────────────────────────────────────────────────────────
+# ── 9. итог ─────────────────────────────────────────────────────────────────
 PANEL_PATH_SAVED="$(python3 -c 'import json; print(json.load(open("/etc/wdtt-panel/config.json"))["base_path"])')"
 echo ""
 echo "======================================================"

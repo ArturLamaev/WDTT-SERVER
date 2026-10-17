@@ -103,7 +103,6 @@ COPY docker/entrypoint.sh          /usr/local/sbin/wdtt-entrypoint
 COPY docker/supervisord.sh         /usr/local/sbin/wdtt-supervisord
 COPY docker/gen-nginx-conf.sh      /usr/local/sbin/wdtt-gen-nginx-conf
 COPY docker/wdtt-exec-args.py      /usr/local/sbin/wdtt-exec-args
-COPY docker/fetch-runtime.sh       /usr/local/sbin/wdtt-fetch-runtime
 COPY docker/healthcheck.sh         /usr/local/sbin/wdtt-healthcheck
 COPY docker/change-password.sh     /usr/local/sbin/wdtt-change-password
 RUN chmod 0755 \
@@ -111,7 +110,6 @@ RUN chmod 0755 \
         /usr/local/sbin/wdtt-supervisord \
         /usr/local/sbin/wdtt-gen-nginx-conf \
         /usr/local/sbin/wdtt-exec-args \
-        /usr/local/sbin/wdtt-fetch-runtime \
         /usr/local/sbin/wdtt-healthcheck \
         /usr/local/sbin/wdtt-change-password
 

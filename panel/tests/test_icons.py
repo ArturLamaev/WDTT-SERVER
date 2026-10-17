@@ -26,14 +26,14 @@ class IconsTests(unittest.TestCase):
         self.assertIn("icon-moon", FLEET_CSS)
 
     def test_node_sidebar_has_icons(self):
-        for tab in ("dashboard", "users", "wdtt", "xray", "logs", "system"):
+        for tab in ("dashboard", "users", "wdtt", "logs", "system"):
             # кусок от начала кнопки (последний <button перед data-tab) до её конца
             start = HTML.split(f'data-tab="{tab}"')[0].rindex("<button")
             end = HTML.index("</button>", HTML.index(f'data-tab="{tab}"'))
             button = HTML[start:end]
             self.assertIn("<svg", button, tab)
             self.assertIn('stroke="currentColor"', button, tab)
-        for label in ("Обзор", "Пользователи", "WDTT", "Xray", "Журналы", "Система"):
+        for label in ("Обзор", "Пользователи", "WDTT", "Журналы", "Система"):
             self.assertIn(label, HTML)
 
     def test_node_theme_toggle_has_sun_and_moon(self):

@@ -1,7 +1,5 @@
 import json
-import base64
 import errno
-import ipaddress
 import sqlite3
 import subprocess
 import tempfile
@@ -23,19 +21,12 @@ class AdminDatabaseTests(unittest.TestCase):
         self.backups = root / "backups"
         self.backup_schedule = root / "backup-schedule.json"
         self.lock_file = root / "admin.lock"
-        self.cascade_settings = root / "cascade.json"
-        self.cascade_config = root / "sing-box.json"
-        self.warp_dir = root / "warp"
-        self.geofiles_dir = root / "geofiles"
-        self.xray_settings = root / "xray-settings.json"
-        self.xray_config = root / "xray-config.json"
-        self.xray_assets = root / "xray-assets"
-        self.xray_cascade_settings = root / "xray-cascade.json"
-        self.xray_access_log = root / "xray-access.log"
-        self.xray_error_log = root / "xray-error.log"
         self.install_log = root / "install.log"
         self.nginx_access_log = root / "nginx-access.log"
         self.nginx_error_log = root / "nginx-error.log"
+        self.tailscale_dir = root / "tailscale"
+        self.tailscale_settings = root / "tailscale-settings.json"
+        self.tailscale_authkey = root / "tailscale-authkey"
         self.patchers = [
             mock.patch.object(admin, "DB_FILE", self.db_file),
             mock.patch.object(admin, "PANEL_LABELS_FILE", self.panel_labels),
@@ -43,22 +34,15 @@ class AdminDatabaseTests(unittest.TestCase):
             mock.patch.object(admin, "BACKUP_DIR", self.backups),
             mock.patch.object(admin, "BACKUP_SCHEDULE_FILE", self.backup_schedule),
             mock.patch.object(admin, "LOCK_FILE", self.lock_file),
-            mock.patch.object(admin, "CASCADE_SETTINGS", self.cascade_settings),
-            mock.patch.object(admin, "CASCADE_CONFIG", self.cascade_config),
-            mock.patch.object(admin, "WARP_DIR", self.warp_dir),
-            mock.patch.object(admin, "GEOFILES_DIR", self.geofiles_dir),
-            mock.patch.object(admin, "XRAY_SETTINGS", self.xray_settings),
-            mock.patch.object(admin, "XRAY_CONFIG", self.xray_config),
-            mock.patch.object(admin, "XRAY_ASSETS", self.xray_assets),
-            mock.patch.object(admin, "XRAY_CASCADE_SETTINGS", self.xray_cascade_settings),
-            mock.patch.object(admin, "XRAY_ACCESS_LOG", self.xray_access_log),
-            mock.patch.object(admin, "XRAY_ERROR_LOG", self.xray_error_log),
             mock.patch.object(admin, "INSTALL_LOG_FILE", self.install_log),
             mock.patch.object(admin, "NGINX_ACCESS_LOG", self.nginx_access_log),
             mock.patch.object(admin, "NGINX_ERROR_LOG", self.nginx_error_log),
             mock.patch.object(admin, "WDTT_UNIT_FILE", root / "wdtt.service"),
             mock.patch.object(admin, "WDTT_BOT_TOKEN_FILE", root / "etc" / "bot.token"),
             mock.patch.object(admin, "WDTT_SETTINGS_FILE", root / "wdtt-settings.json"),
+            mock.patch.object(admin, "TAILSCALE_DIR", self.tailscale_dir),
+            mock.patch.object(admin, "TAILSCALE_SETTINGS", self.tailscale_settings),
+            mock.patch.object(admin, "TAILSCALE_AUTHKEY_FILE", self.tailscale_authkey),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
         ]
         for patcher in self.patchers:
@@ -233,11 +217,7 @@ class AdminDatabaseTests(unittest.TestCase):
         }
         data["devices"]["device-stats"] = {"device_id": "device-stats", "ip": "10.66.66.9"}
         admin.save_database(data)
-        xray = admin.default_xray_settings()
-        xray["access_log"] = True
-        admin.save_private_json(self.xray_settings, xray)
-        self.warp_dir.mkdir(parents=True)
-        (self.warp_dir / "wgcf-profile.conf").write_text("[Interface]\nPrivateKey = restored\n", encoding="utf-8")
+        admin.save_tailscale_settings({"hostname": "restored-node", "accept_dns": False})
 
         backup = admin.create_manual_backup({"type": "full"})
         self.assertEqual(backup["type"], "full")
@@ -246,35 +226,29 @@ class AdminDatabaseTests(unittest.TestCase):
         changed["devices"].clear()
         changed.pop("custom_setting")
         admin.save_database(changed)
-        xray["access_log"] = False
-        admin.save_private_json(self.xray_settings, xray)
-        (self.warp_dir / "wgcf-profile.conf").write_text("[Interface]\nPrivateKey = changed\n", encoding="utf-8")
+        admin.save_tailscale_settings({"hostname": "changed-node", "accept_dns": True})
 
         admin.restore_backup({"name": backup["name"]})
         restored = admin.load_database()
         self.assertEqual(restored["passwords"]["StatsUser123"]["down_bytes"], 123456)
         self.assertEqual(restored["devices"]["device-stats"]["ip"], "10.66.66.9")
         self.assertEqual(restored["custom_setting"], "preserved")
-        self.assertTrue(admin.load_xray_settings()["access_log"])
-        self.assertIn("restored", (self.warp_dir / "wgcf-profile.conf").read_text(encoding="utf-8"))
+        self.assertEqual(admin.load_tailscale_settings()["hostname"], "restored-node")
 
     def test_users_backup_does_not_replace_panel_settings(self):
         admin.create_user(
             {"password": "UserOnly123", "label": "Отдельно", "days": 30, "vk_hash": "hash_one", "ports": "56000,56001,9000"}
         )
-        xray = admin.default_xray_settings()
-        xray["access_log"] = True
-        admin.save_private_json(self.xray_settings, xray)
+        admin.save_tailscale_settings({"hostname": "kept-node", "accept_dns": False})
         backup = admin.create_manual_backup({"type": "users"})
         self.assertEqual(backup["type"], "users")
 
         admin.delete_user({"password": "UserOnly123"})
-        xray["access_log"] = False
-        admin.save_private_json(self.xray_settings, xray)
+        admin.save_tailscale_settings({"hostname": "changed-node", "accept_dns": True})
 
         admin.restore_backup({"name": backup["name"]})
         self.assertIn("UserOnly123", admin.load_database()["passwords"])
-        self.assertFalse(admin.load_xray_settings()["access_log"])
+        self.assertEqual(admin.load_tailscale_settings()["hostname"], "changed-node")
 
     def test_backups_can_be_deleted_and_scheduled_with_retention(self):
         schedule = admin.save_backup_schedule({"frequency": "daily", "time": "04:20", "type": "users", "keep": 1})
@@ -583,7 +557,6 @@ class AdminDatabaseTests(unittest.TestCase):
 
     def test_cleanup_preview_and_apply_only_known_safe_targets(self):
         self.install_log.write_text("install log\n", encoding="utf-8")
-        self.xray_access_log.write_text("route log\n", encoding="utf-8")
         preview = admin.cleanup_system({"targets": ["service_logs"], "keep_days": 7}, False)
         self.assertFalse(preview["applied"])
         self.assertGreater(preview["estimated_freed_bytes"], 0)
@@ -596,12 +569,10 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertGreater(result["items"][0]["freed_bytes"], 0)
         self.assertEqual(result["items"][0]["remaining_bytes"], 0)
         self.assertEqual(self.install_log.read_text(encoding="utf-8"), "")
-        self.assertEqual(self.xray_access_log.read_text(encoding="utf-8"), "")
         self.assertEqual(admin.load_database()["passwords"], {})
 
     def test_cleanup_apply_skips_read_only_log_without_failing(self):
         self.install_log.write_text("locked log\n", encoding="utf-8")
-        self.xray_access_log.write_text("route log\n", encoding="utf-8")
         original_open = type(self.install_log).open
 
         def guarded_open(path, *args, **kwargs):
@@ -618,10 +589,8 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertTrue(result["applied"])
         self.assertTrue(files["installer"]["skipped"])
         self.assertIn("только для чтения", files["installer"]["error"])
-        self.assertTrue(files["xray_access"]["cleared"])
         self.assertGreater(service_logs["remaining_bytes"], 0)
         self.assertEqual(self.install_log.read_text(encoding="utf-8"), "locked log\n")
-        self.assertEqual(self.xray_access_log.read_text(encoding="utf-8"), "")
 
     def test_cleanup_package_cache_reports_remaining_size_after_apply(self):
         sizes = [100, 0, 0, 0, 25, 0, 0, 0]
@@ -851,350 +820,6 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(result["limit"], 5000)
         self.assertEqual(result["lines"], [])
 
-    def test_xray_access_log_is_available_as_a_diagnostic_source(self):
-        self.xray_access_log.write_text("accepted tcp:gemini.google.com:443 [eu-vless]", encoding="utf-8")
-        result = admin.journal_logs({"source": "xray-access", "limit": 100})
-        self.assertEqual(result["title"], "Xray: домены и маршруты")
-        self.assertEqual(result["lines"], ["accepted tcp:gemini.google.com:443 [eu-vless]"])
-        self.xray_error_log.write_text("connection failed: gemini.google.com", encoding="utf-8")
-        errors = admin.journal_logs({"source": "xray-errors", "limit": 100})
-        self.assertEqual(errors["title"], "Xray: ошибки соединений")
-        self.assertEqual(errors["lines"], ["connection failed: gemini.google.com"])
-
-    def test_xray_managed_config_has_safe_default_outbounds(self):
-        settings = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "log_level": "warning",
-                "inbounds": [],
-                "outbounds": [
-                    {"tag": "vless-out", "protocol": "vless", "settings": {"vnext": []}},
-                ],
-                "routing_rules": [{"type": "field", "outboundTag": "vless-out", "domain": ["geosite:ru"]}],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        config = admin.build_xray_config(settings)
-        self.assertEqual([item["tag"] for item in config["outbounds"]], ["direct", "block", "vless-out"])
-        self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "vless-out")
-        self.assertIn("runetfreedom", settings["geofiles"][0]["url"])
-        self.assertTrue(config["inbounds"] == [] or config["inbounds"][0]["sniffing"]["enabled"])
-
-    def test_xray_access_logging_writes_to_private_panel_state(self):
-        settings = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "log_level": "info",
-                "access_log": True,
-                "inbounds": [],
-                "outbounds": [],
-                "routing_rules": [],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        config = admin.build_xray_config(settings)
-        self.assertEqual(config["log"]["access"], str(self.xray_access_log))
-        self.assertEqual(config["log"]["error"], str(self.xray_error_log))
-
-    def test_xray_access_logging_also_applies_to_raw_config(self):
-        settings = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "raw",
-                "log_level": "warning",
-                "access_log": True,
-                "raw_config": '{"log": {"loglevel": "error"}, "inbounds": [], "outbounds": []}',
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        config = admin.build_xray_config(settings)
-        self.assertEqual(config["log"]["loglevel"], "error")
-        self.assertEqual(config["log"]["access"], str(self.xray_access_log))
-
-    def test_wdtt_gateway_adds_transparent_xray_inbound_without_cascade(self):
-        settings = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "log_level": "info",
-                "gateway_enabled": True,
-                "gateway_source_cidr": "10.66.66.0/24",
-                "gateway_inbound_port": 12346,
-                "inbounds": [],
-                "outbounds": [],
-                "routing_rules": [],
-                "friendly_rules": [{"name": "Google AI", "outbound": "warp", "domains": "gemini.google.com"}],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        settings["outbounds"] = [{"tag": "warp", "protocol": "freedom", "settings": {}}]
-        config = admin.build_effective_xray_config(settings, {"enabled": False})
-        inbound = next(item for item in config["inbounds"] if item["tag"] == "wdtt-gateway-in")
-        self.assertEqual(inbound["port"], 12346)
-        self.assertTrue(inbound["sniffing"]["enabled"])
-        self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "warp")
-
-    def test_google_ai_warp_rule_covers_quic_google_frontends_by_ip(self):
-        settings = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "log_level": "info",
-                "inbounds": [],
-                "outbounds": [{"tag": "warp", "protocol": "freedom", "settings": {}}],
-                "routing_rules": [],
-                "friendly_rules": [{"name": "Google AI", "outbound": "warp", "domains": "gemini.google.com"}],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        rule = settings["friendly_rules"][0]
-        self.assertIn("robinfrontend-pa.googleapis.com", rule["domains"])
-        self.assertIn("142.250.0.0/15", rule["ip_cidrs"])
-        self.assertIn("216.239.32.0/19", rule["ip_cidrs"])
-        config = admin.build_xray_config(settings)
-        ip_rule = next(item for item in config["routing"]["rules"] if item.get("ip"))
-        self.assertEqual(ip_rule["outboundTag"], "warp")
-        self.assertIn("142.251.0.0/16", ip_rule["ip"])
-
-    def test_gateway_and_cascade_cannot_capture_wdtt_traffic_together(self):
-        settings = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "gateway_enabled": True,
-                "gateway_source_cidr": "10.66.66.0/24",
-                "gateway_inbound_port": 12346,
-                "inbounds": [],
-                "outbounds": [],
-                "routing_rules": [],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        with self.assertRaises(admin.ValidationError):
-            admin.build_effective_xray_config(settings, {"enabled": True})
-
-    def test_xray_save_applies_gateway_without_restarting_its_oneshot_service(self):
-        payload = {
-            "enabled": True,
-            "mode": "managed",
-            "log_level": "warning",
-            "gateway_enabled": True,
-            "gateway_source_cidr": "10.66.66.0/24",
-            "gateway_inbound_port": 12346,
-            "inbounds": [],
-            "outbounds": [],
-            "routing_rules": [],
-            "geofiles": admin.default_xray_settings()["geofiles"],
-        }
-        fake_run = mock.Mock(return_value=mock.Mock(returncode=0, stderr=""))
-        with (
-            mock.patch.object(admin, "SKIP_SYSTEMD", False),
-            mock.patch.object(admin, "run", fake_run),
-            mock.patch.object(admin, "persist_xray_configuration"),
-            mock.patch.object(admin, "load_xray_cascade_settings", return_value={"enabled": False}),
-            mock.patch.object(admin, "xray_gateway_apply_rules") as apply_rules,
-            mock.patch.object(admin, "xray_status", return_value={"saved": True}),
-        ):
-            result = admin.xray_save(payload)
-
-        self.assertEqual(result, {"saved": True})
-        fake_run.assert_called_once_with(["systemctl", "enable", admin.XRAY_GATEWAY_SERVICE], timeout=45)
-        apply_rules.assert_called_once_with({})
-
-    def test_iptables_falls_back_to_legacy_when_nftables_is_unavailable(self):
-        nft_error = mock.Mock(
-            returncode=1,
-            stdout="",
-            stderr="iptables: Failed to initialize nft: Address family not supported by protocol",
-        )
-        legacy_result = mock.Mock(returncode=0, stdout="", stderr="")
-        locations = {"iptables": "/usr/sbin/iptables", "iptables-legacy": "/usr/sbin/iptables-legacy"}
-        fake_run = mock.Mock(side_effect=[nft_error, legacy_result])
-        with (
-            mock.patch.object(admin, "IPTABLES_BINARY", None),
-            mock.patch.object(admin.shutil, "which", side_effect=locations.get),
-            mock.patch.object(admin, "run", fake_run),
-        ):
-            result = admin.cascade_iptables(["-S", "PREROUTING"])
-
-        self.assertIs(result, legacy_result)
-        self.assertEqual(
-            fake_run.call_args_list,
-            [
-                mock.call(
-                    ["/usr/sbin/iptables", "-w", "-t", "mangle", "-S", "PREROUTING"],
-                    timeout=30,
-                    env={"XTABLES_LOCKFILE": admin.XTABLES_LOCK_FILE},
-                ),
-                mock.call(
-                    ["/usr/sbin/iptables-legacy", "-w", "-t", "mangle", "-S", "PREROUTING"],
-                    timeout=30,
-                    env={"XTABLES_LOCKFILE": admin.XTABLES_LOCK_FILE},
-                ),
-            ],
-        )
-
-    def test_xray_friendly_routes_and_rules_build_without_json_editor(self):
-        settings = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "log_level": "warning",
-                "inbounds": [],
-                "outbounds": [],
-                "routing_rules": [],
-                "routes": [
-                    {
-                        "name": "EU server",
-                        "tag": "eu-main",
-                        "type": "vless",
-                        "vless_uri": "vless://00000000-0000-4000-8000-000000000000@eu.example.com:443?type=tcp&security=tls&sni=eu.example.com",
-                    }
-                ],
-                "friendly_rules": [
-                    {
-                        "name": "Blocked resources",
-                        "outbound": "eu-main",
-                        "domains": "youtube.com\ngooglevideo.com",
-                        "ip_cidrs": "203.0.113.10\n198.51.100.0/24",
-                        "geosite": "ru-blocked",
-                        "geoip": "ru-blocked",
-                    }
-                ],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        config = admin.build_xray_config(settings)
-        self.assertEqual([item["tag"] for item in config["outbounds"]], ["direct", "block", "eu-main"])
-        self.assertEqual(config["routing"]["rules"][0]["outboundTag"], "eu-main")
-        self.assertEqual(config["routing"]["rules"][0]["domain"], ["domain:youtube.com", "domain:googlevideo.com", "geosite:ru-blocked"])
-        self.assertEqual(config["routing"]["rules"][1]["ip"], ["203.0.113.10/32", "198.51.100.0/24", "geoip:ru-blocked"])
-
-    def test_ru_to_eu_cascade_adds_transparent_inbound_and_blocked_routes(self):
-        xray = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "log_level": "warning",
-                "inbounds": [],
-                "outbounds": [],
-                "routing_rules": [],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        routing = admin.normalize_xray_cascade_settings(
-            {
-                "enabled": True,
-                "source_cidr": "10.66.66.0/24",
-                "inbound_port": 12345,
-                "geosite_category": "ru-blocked",
-                "geoip_category": "ru-blocked",
-                "domains": "example.com\nblocked.example",
-                "ip_cidrs": "203.0.113.10\n198.51.100.0/24",
-                "eu_vless_uri": "vless://00000000-0000-4000-8000-000000000000@eu.example.com:443?type=tcp&security=tls&sni=eu.example.com",
-            }
-        )
-        config = admin.build_effective_xray_config(xray, routing)
-        self.assertIn("wdtt-cascade-in", [item["tag"] for item in config["inbounds"]])
-        self.assertIn("eu-vless", [item["tag"] for item in config["outbounds"]])
-        self.assertEqual(config["routing"]["rules"][0]["domain"], ["domain:example.com", "domain:blocked.example"])
-        self.assertEqual(config["routing"]["rules"][1]["ip"], ["203.0.113.10/32", "198.51.100.0/24"])
-        self.assertEqual(config["routing"]["rules"][2]["domain"], ["geosite:ru-blocked"])
-        self.assertEqual(config["routing"]["rules"][3]["ip"], ["geoip:ru-blocked"])
-
-    def test_friendly_rule_can_use_enabled_eu_vless_cascade(self):
-        xray = admin.normalize_xray_settings(
-            {
-                "enabled": True,
-                "mode": "managed",
-                "log_level": "warning",
-                "inbounds": [],
-                "outbounds": [],
-                "routing_rules": [],
-                "friendly_rules": [{"name": "Google AI", "outbound": "eu-vless", "domains": "gemini.google.com"}],
-                "geofiles": admin.default_xray_settings()["geofiles"],
-            }
-        )
-        routing = admin.normalize_xray_cascade_settings(
-            {
-                "enabled": True,
-                "source_cidr": "10.66.66.0/24",
-                "inbound_port": 12345,
-                "geosite_category": "ru-blocked",
-                "geoip_category": "ru-blocked",
-                "eu_vless_uri": "vless://00000000-0000-4000-8000-000000000000@eu.example.com:443?type=tcp&security=tls&sni=eu.example.com",
-            }
-        )
-        config = admin.build_effective_xray_config(xray, routing)
-        google_rule = next(rule for rule in config["routing"]["rules"] if rule.get("domain") == ["domain:gemini.google.com"])
-        self.assertEqual(google_rule["outboundTag"], "eu-vless")
-
-    def test_wdtt_client_cidr_covers_whole_kernel_pool(self):
-        # Ядро раздаёт 10.66.0.1 → 10.66.255.254 (getNextIP, wgServerCIDR /16),
-        # дефолты шлюза/каскада обязаны покрывать весь пул (issue #3).
-        self.assertEqual(admin.default_xray_settings()["gateway_source_cidr"], "10.66.0.0/16")
-        self.assertEqual(admin.default_xray_cascade_settings()["source_cidr"], "10.66.0.0/16")
-        gateway = ipaddress.ip_network(admin.default_xray_settings()["gateway_source_cidr"])
-        for client_ip in ("10.66.0.2", "10.66.0.24", "10.66.1.5", "10.66.66.2", "10.66.255.254"):
-            self.assertIn(ipaddress.ip_address(client_ip), gateway, client_ip)
-        narrow = ipaddress.ip_network("10.66.66.0/24")
-        self.assertNotIn(ipaddress.ip_address("10.66.0.2"), narrow)
-
-    def test_legacy_client_cidrs_migrate_to_full_pool(self):
-        gateway_file = self.xray_settings
-        gateway_file.write_text(json.dumps({"gateway_source_cidr": "10.66.66.0/24"}), encoding="utf-8")
-        self.assertEqual(admin.load_xray_settings()["gateway_source_cidr"], "10.66.0.0/16")
-        gateway_file.write_text(json.dumps({"gateway_source_cidr": "10.66.0.0/24"}), encoding="utf-8")
-        self.assertEqual(admin.load_xray_settings()["gateway_source_cidr"], "10.66.0.0/16")
-        cascade_file = self.xray_cascade_settings
-        cascade_file.write_text(json.dumps({"source_cidr": "10.66.66.0/24"}), encoding="utf-8")
-        self.assertEqual(admin.load_xray_cascade_settings()["source_cidr"], "10.66.0.0/16")
-        cascade_file.write_text(json.dumps({"source_cidr": "10.66.0.0/24"}), encoding="utf-8")
-        self.assertEqual(admin.load_xray_cascade_settings()["source_cidr"], "10.66.0.0/16")
-
-    def test_warp_profile_becomes_xray_wireguard_outbound(self):
-        self.warp_dir.mkdir()
-        (self.warp_dir / "wgcf-profile.conf").write_text(
-            "[Interface]\nPrivateKey = private-key\nAddress = 172.16.0.2/32, 2606:4700:110:8a36::2/128\nMTU = 1280\n\n[Peer]\nPublicKey = public-key\nEndpoint = engage.cloudflareclient.com:2408\nAllowedIPs = 0.0.0.0/0, ::/0\nReserved = 1,2,3\n",
-            encoding="utf-8",
-        )
-        outbound = admin.warp_xray_outbound()
-        self.assertEqual(outbound["tag"], "warp")
-        self.assertTrue(outbound["settings"]["noKernelTun"])
-        self.assertEqual(outbound["settings"]["peers"][0]["endpoint"], "engage.cloudflareclient.com:2408")
-        self.assertEqual(outbound["settings"]["reserved"], [1, 2, 3])
-        self.assertEqual(outbound["settings"]["domainStrategy"], "ForceIPv4v6")
-        probe = admin.warp_probe_config(1080)
-        self.assertEqual(probe["inbounds"][0]["port"], 1080)
-        self.assertEqual(probe["outbounds"][0]["tag"], "warp")
-        self.assertEqual(admin.parse_cloudflare_trace("warp=on\nip=198.51.100.10\n")["warp"], "on")
-
-    def test_xray_raw_config_and_geofile_sources_are_saved(self):
-        result = admin.xray_save(
-            {
-                "enabled": False,
-                "mode": "raw",
-                "log_level": "warning",
-                "raw_config": '{"inbounds": [], "outbounds": [{"tag": "direct", "protocol": "freedom"}]}',
-                "geofiles": [
-                    {
-                        "tag": "custom",
-                        "filename": "custom.dat",
-                        "url": "https://example.com/custom.dat",
-                        "enabled": True,
-                        "auto_update": True,
-                        "update_interval": "1d",
-                    }
-                ],
-            }
-        )
-        self.assertTrue(self.xray_config.is_file())
-        self.assertEqual(result["settings"]["mode"], "raw")
-        with self.assertRaises(admin.ValidationError):
-            admin.normalize_xray_geofiles([{"tag": "bad", "filename": "bad.dat", "url": "http://example.com/bad.dat"}])
-
 
 class PanelUpdateTests(unittest.TestCase):
     def setUp(self):
@@ -1288,45 +913,6 @@ class PanelUpdateTests(unittest.TestCase):
             self.assertTrue(admin.start_panel_update({})["scheduled"])
         self.assertEqual(len(calls), 1)
         self.assertIn("--collect", calls[0])
-
-
-class GeofileSizeLimitTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        root = Path(self.temp.name)
-        self.patchers = [
-            mock.patch.object(admin, "GEOFILES_DIR", root / "geofiles"),
-            mock.patch.object(admin, "XRAY_ASSETS", root / "xray-assets"),
-        ]
-        for patcher in self.patchers:
-            patcher.start()
-
-    def tearDown(self):
-        for patcher in reversed(self.patchers):
-            patcher.stop()
-        self.temp.cleanup()
-
-    def test_geofile_max_bytes_is_128mb(self):
-        self.assertEqual(admin.GEOFILE_MAX_BYTES, 128 * 1024 * 1024)
-
-    def test_geofile_upload_accepts_runetfreedom_size(self):
-        payload = {
-            "name": "geosite.srs",
-            "tag": "geosite",
-            "kind": "srs",
-            "content": base64.b64encode(b"x" * (74 * 1024 * 1024)).decode("ascii"),
-        }
-        self.assertEqual(admin.geofile_from_payload(payload)["tag"], "geosite")
-
-    def test_geofile_upload_rejects_over_limit(self):
-        payload = {
-            "name": "big.srs",
-            "tag": "big",
-            "kind": "srs",
-            "content": base64.b64encode(b"x" * (admin.GEOFILE_MAX_BYTES + 1)).decode("ascii"),
-        }
-        with self.assertRaisesRegex(admin.ValidationError, "128 МБ"):
-            admin.geofile_from_payload(payload)
 
 
 class WdttInboundAndSpeedTests(unittest.TestCase):

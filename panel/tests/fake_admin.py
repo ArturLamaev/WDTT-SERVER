@@ -145,15 +145,7 @@ elif action == "telegram.save":
     result = {"enabled": bool(payload.get("enabled")), "admin_id": str(payload.get("admin_id") or ""), "bot_token_set": bool(payload.get("bot_token")), "bot_token_hint": "123456...test", "service_active": True}
 elif action == "telegram.test":
     result = {"sent": True, "admin_id": "123456789"}
-elif action == "xray.status":
-    result = {"settings": {"enabled": False, "mode": "managed", "log_level": "warning", "inbounds": [], "outbounds": [], "routing_rules": [], "geofiles": []}, "active": False, "installed": False, "version": "", "config_exists": False, "logs": [], "geofiles": []}
-elif action == "warp.status":
-    result = {"installed": False, "account_exists": False, "profile_exists": False, "configured": False, "active": False}
-elif action == "cascade.status":
-    result = {"settings": {"enabled": False, "source_cidr": "10.66.66.0/24", "inbound_port": 12345, "eu_vless_uri": "", "geosite_category": "ru-blocked", "geoip_category": "ru-blocked", "domains": [], "ip_cidrs": []}, "xray_active": False, "service_active": False, "rules_active": False, "eu_summary": ""}
-elif action == "warp.ping":
-    result = {"ok": True, "latency_ms": 42, "warp": "on", "ip": "198.51.100.10", "colo": "FRA"}
-elif action in {"xray.save", "xray.install", "xray.geofiles.refresh", "xray.geofiles.refresh_auto", "warp.install", "warp.create", "warp.restart", "cascade.save", "cascade.restart", "certificate.renew", "certificate.change_domain", "wdtt.save"}:
+elif action in {"certificate.renew", "certificate.change_domain", "wdtt.save"}:
     result = {"scheduled": True, "state": "test"}
 elif action == "wdtt.settings":
     result = {

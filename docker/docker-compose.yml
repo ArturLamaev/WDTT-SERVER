@@ -69,7 +69,7 @@ services:
       - wdtt-data:/etc/wdtt                       # passwords.json, секреты ядра
       - wdtt-panel-config:/etc/wdtt-panel         # config.json, самоподписанный TLS
       - wdtt-panel-state:/var/lib/wdtt-panel      # sqlite-состояние панели
-      - wdtt-panel-private:/var/lib/wdtt-panel-private   # xray, warp, бэкапы
+      - wdtt-panel-private:/var/lib/wdtt-panel-private   # бэкапы, расписания, настройки
       - wdtt-letsencrypt:/etc/letsencrypt         # сертификаты Let's Encrypt
       - tailscale-state:/var/lib/tailscale        # идентичность tailnet (переживает рестарты)
       # Код панели из репозитория поверх запечённого в образ: обновление

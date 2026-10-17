@@ -37,7 +37,7 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 - опубликованные порты (см. таблицу ниже) открыты и в фаерволе VPS;
 - опубликованные порты (см. таблицу ниже) открыты и в фаерволе VPS;
 - интернет при первой сборке (apt, Go, Go-модули) и при первом старте
-  (публичный IP для `PANEL_HOST`, скачивание Xray/wgcf, Let's Encrypt).
+  (публичный IP для `PANEL_HOST`, Let's Encrypt).
 
 ## Порты
 
@@ -79,7 +79,6 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `WDTT_TELEGRAM_BOT_TOKEN` / `WDTT_TELEGRAM_ADMIN_ID` | — | Telegram-бот ядра |
 | `TZ` | `UTC` | Часовой пояс |
 | `AUTO_RESTART_HOURS` | `6` | Авто-рестарт ядра+панели, `0` — выкл. (аналог `wdtt-auto-restart.timer`) |
-| `WDTT_FETCH_RUNTIME` | `1` | Докачивать Xray/wgcf при старте, `0` — пропуск |
 | `WDTT_BASE_IMAGE` | `ubuntu:24.04` | База образа (`ubuntu:24.04` или `debian:13`) |
 
 `.env` каноничен: при каждом старте `public_host`, путь, порты и email
@@ -100,7 +99,7 @@ self-signed), делает reload nginx и рестарт панели — по�
 | `wdtt-data` | `/etc/wdtt` — `passwords.json`, секреты ядра |
 | `wdtt-panel-config` | `/etc/wdtt-panel` — `config.json`, self-signed TLS |
 | `wdtt-panel-state` | `/var/lib/wdtt-panel` — sqlite-состояние панели |
-| `wdtt-panel-private` | `/var/lib/wdtt-panel-private` — Xray/WARP/бэкапы/расписания |
+| `wdtt-panel-private` | `/var/lib/wdtt-panel-private` — бэкапы/расписания/настройки |
 | `wdtt-letsencrypt` | `/etc/letsencrypt` — сертификаты LE |
 | `tailscale-state` | `/var/lib/tailscale` — идентичность в tailnet (переживает рестарты) |
 
@@ -153,15 +152,8 @@ docker run --rm -v wdtt-server_wdtt-data:/d -v wdtt-server_wdtt-panel-config:/c 
   (`save_wdtt_settings` при этом честно сообщает `applied: false`);
 - таймеры systemd заменены циклами: автобэкапы читают расписание из панели
   (`daily`/`weekly`, время `ЧЧ:ММ`, воскресенье — как `OnCalendar` в install.sh),
-  автоочистка — при `enabled`, GeoFiles — раз в сутки, `certbot renew` — раз
-  в неделю (только при `tls_mode=letsencrypt`);
-- Xray Core и wgcf докачиваются в entrypoint (latest с GitHub) в
-  `/usr/local/bin` контейнера — при пересоздании контейнера скачаются заново;
-  geoip/geosite складываются в `xray-assets` (volume `wdtt-panel-private`);
-- демона Xray крутит цикл `run_xray` супервизора (включением владеет вкладка
-  «Xray»; конфиг проверяется `xray run -test` при каждом сохранении, журнал —
-  `/var/log/wdtt/xray.log`, он же виден в карточке Xray). Шлюз WDTT → Xray
-  (TPROXY) в контейнере не применяется — только bare-metal.
+  автоочистка — при `enabled`, `certbot renew` — раз в неделю (только при
+  `tls_mode=letsencrypt`).
 
 ## Диагностика
 

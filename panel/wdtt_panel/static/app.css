@@ -29,8 +29,8 @@ body.light-theme .sidebar-toggle:hover, body.light-theme .sidebar-toggle:focus-v
 body.light-theme button.secondary { background: #f4efe1; border-color: #d3c8ab; color: var(--text); }
 body.light-theme button.danger { color: #8c3d2c; background: rgba(177, 85, 63, .08); border-color: rgba(177, 85, 63, .3); }
 body.light-theme .hero-card, body.light-theme .metric-card, body.light-theme .panel-card { background: #fffdf6; }
-body.light-theme input, body.light-theme select, body.light-theme textarea, body.light-theme .route-rule, body.light-theme .friendly-route, body.light-theme .friendly-rule, body.light-theme .friendly-card { color: var(--text); background: #faf6ec; border-color: #d3c8ab; }
-body.light-theme .xray-workflow, body.light-theme .xray-advanced, body.light-theme .xray-json-row, body.light-theme .backup-schedule { background: rgba(244, 239, 225, .78); }
+body.light-theme input, body.light-theme select, body.light-theme textarea { color: var(--text); background: #faf6ec; border-color: #d3c8ab; }
+body.light-theme .backup-schedule { background: rgba(244, 239, 225, .78); }
 body.light-theme .log-view, body.light-theme .inline-log { color: #4a4436; background: #ece6d4; }
 body.light-theme .log-view pre, body.light-theme .inline-log { color: #4a4436; }
 body.light-theme dialog { border-color: #d3c8ab; background: #fffdf6; box-shadow: 0 28px 90px rgba(60, 50, 30, .25); }
@@ -224,42 +224,8 @@ body.light-theme .user-actions-popover button { color: #2b2620; background: #faf
 .backup-schedule-controls { display: grid; grid-template-columns: 150px 112px 175px 90px auto; gap: 9px; align-items: end; }
 .backup-schedule-controls label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .backup-schedule-controls input, .backup-schedule-controls select { min-width: 0; }
-.field-label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
-.compact-textarea { min-height: 105px; }
 .compact-grid { margin: 15px 0; align-items: end; }
-.cascade-toggle { min-height: 41px; }
-.preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-.route-rules { display: grid; gap: 10px; }
-.route-rule { display: grid; grid-template-columns: 32px minmax(130px, .8fr) minmax(190px, 2fr) minmax(120px, .7fr) auto; gap: 9px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: #141310; }
-.route-rule textarea { min-height: 68px; }
-.route-order { display: grid; gap: 4px; }
-.route-order button { min-height: 29px; padding: 0; }
-.geofile-form { display: grid; grid-template-columns: 1.4fr .8fr 1fr 1fr 1.6fr .9fr 1fr auto; gap: 9px; align-items: center; margin-bottom: 16px; }
 .inline-log { max-height: 260px; overflow: auto; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: #141310; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
-.xray-json-list { display: grid; gap: 10px; margin: 12px 0 22px; }
-.xray-json-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(20, 19, 16, .5); }
-.xray-json-row strong, .xray-json-row small { display: block; }
-.xray-json-row small { color: var(--muted); margin-top: 4px; }
-.xray-json-row textarea { min-height: 120px; resize: vertical; }
-.xray-guide { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
-.xray-guide span { padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 999px; color: var(--accent-pale); background: var(--accent-soft); font-size: 12px; }
-.xray-easy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-.xray-workflow { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: rgba(20, 19, 16, .35); }
-.xray-workflow h3, .xray-advanced h3 { margin: 0; font-size: 18px; }
-.friendly-route-list, .friendly-rule-list { display: grid; gap: 10px; margin-top: 16px; }
-.friendly-route, .friendly-rule { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #141310; }
-.friendly-route.builtin-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.friendly-route strong, .friendly-route small, .friendly-rule strong, .friendly-rule small { display: block; }
-.friendly-route small, .friendly-rule small { margin-top: 5px; color: var(--muted); }
-.friendly-route .section-head, .friendly-rule .section-head { margin-bottom: 0; }
-.friendly-route .row-actions, .friendly-rule .row-actions { margin-top: 8px; }
-.friendly-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #141310; }
-.friendly-card strong, .friendly-card small { display: block; }
-.friendly-card small { margin-top: 5px; color: var(--muted); }
-.friendly-card .inline-actions { justify-content: flex-end; flex-wrap: wrap; }
-.xray-advanced { margin-top: 18px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: rgba(20, 19, 16, .3); }
-.xray-advanced summary { cursor: pointer; color: var(--text); font-weight: 700; }
-.xray-advanced[open] summary { margin-bottom: 12px; }
 dialog { width: min(650px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 20px; padding: 24px; color: var(--text); background: var(--panel); box-shadow: 0 28px 90px rgba(0, 0, 0, .55); }
 dialog[open] { animation: modal-pop .28s cubic-bezier(.2, .9, .3, 1.05) both; }
 dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(3px); }
@@ -303,7 +269,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(3px); }
 .login-form button.primary, .login-form button[type="submit"] { width: 100%; margin-top: 10px; }
 .form-error { min-height: 18px; margin: 0; color: var(--danger); font-size: 12px; }
 .form-error:empty { display: none; }
-@media (max-width: 1150px) { .hero-grid { grid-template-columns: 1fr 1fr; } .hero-card { grid-column: 1 / -1; } .two-column { grid-template-columns: 1fr; } .route-rule { grid-template-columns: 32px 1fr 1.5fr; } .route-rule .route-target, .route-rule .row-actions { grid-column: span 1; } .geofile-form { grid-template-columns: 1fr 1fr; } #tab-logs .section-head { flex-wrap: wrap; } #tab-logs .inline-actions { flex-basis: 100%; } .backup-schedule { flex-wrap: wrap; } .backup-schedule-controls { width: 100%; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); } .backup-schedule-controls button { grid-column: 1 / -1; } }
+@media (max-width: 1150px) { .hero-grid { grid-template-columns: 1fr 1fr; } .hero-card { grid-column: 1 / -1; } .two-column { grid-template-columns: 1fr; } #tab-logs .section-head { flex-wrap: wrap; } #tab-logs .inline-actions { flex-basis: 100%; } .backup-schedule { flex-wrap: wrap; } .backup-schedule-controls { width: 100%; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); } .backup-schedule-controls button { grid-column: 1 / -1; } }
 @media (max-width: 760px) {
   :root { --sidebar: 0px; }
   body { min-width: 0; }
@@ -367,13 +333,10 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(3px); }
   #tab-users td:nth-child(8)::before { content: "Активность"; }
   #tab-users td:nth-child(9) { display: block; padding-top: 12px; }
   #tab-users td:nth-child(9)::before { content: ""; }
-  .form-grid, .xray-easy-grid, .route-rule, .geofile-form, .xray-json-row { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
   .access-plan { grid-template-columns: 1fr; }
   .form-grid .wide { grid-column: auto; }
-  .route-order { grid-template-columns: 1fr 1fr; }
-  .preset-grid { grid-template-columns: 1fr; }
-  .friendly-card, .friendly-route.builtin-route, .backup-schedule, .detail-row, .backup-row { align-items: stretch; flex-direction: column; }
-  .friendly-card .inline-actions, .friendly-route .row-actions, .friendly-rule .row-actions { justify-content: flex-start; }
+  .backup-schedule, .detail-row, .backup-row { align-items: stretch; flex-direction: column; }
   .backup-schedule-controls { width: 100%; grid-template-columns: 1fr 1fr; }
   .backup-schedule-controls button { grid-column: 1 / -1; }
   #tab-logs .inline-actions { grid-template-columns: 1fr 1fr; }
@@ -382,7 +345,6 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(3px); }
   .log-view { min-height: 420px; }
   input, select, textarea { font-size: 16px; }
   textarea { min-height: 150px; }
-  .compact-textarea { min-height: 92px; }
   dialog { width: min(560px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); padding: 18px; border-radius: 16px; overflow: auto; }
   .dialog-head { align-items: flex-start; gap: 12px; }
   .dialog-head h2 { font-size: 21px; }

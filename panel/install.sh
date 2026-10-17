@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="1.26.0"
+PANEL_VERSION="2.0.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,23 +19,11 @@ SELF_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-self-update"
 SOURCE_CONF_FILE="$CONFIG_DIR/source.conf"
 UNINSTALL_WRAPPER="/usr/local/sbin/wdtt-panel-uninstall"
 STATUS_WRAPPER="/usr/local/sbin/wdtt-panel-status"
-GEOFILES_UPDATE_WRAPPER="/usr/local/sbin/wdtt-panel-geofiles-update"
 BACKUP_RUNNER="/usr/local/sbin/wdtt-panel-backup"
 AUTOCLEAN_RUNNER="/usr/local/sbin/wdtt-panel-autoclean"
 AUTOCLEAN_SERVICE="wdtt-panel-autoclean.service"
 AUTOCLEAN_TIMER="wdtt-panel-autoclean.timer"
-CASCADE_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-cascade-rules"
-GATEWAY_RULES_WRAPPER="/usr/local/sbin/wdtt-panel-xray-gateway"
 MANAGER_WRAPPER="/usr/local/sbin/wdtt-panel"
-XRAY_SERVICE="wdtt-xray.service"
-LEGACY_CASCADE_SERVICE="wdtt-cascade.service"
-XRAY_CONFIG="$PRIVATE_STATE_DIR/xray-config.json"
-XRAY_SETTINGS="$PRIVATE_STATE_DIR/xray-settings.json"
-XRAY_ASSETS="$PRIVATE_STATE_DIR/xray-assets"
-XRAY_CASCADE_SETTINGS="$PRIVATE_STATE_DIR/xray-cascade.json"
-XRAY_CASCADE_SERVICE="wdtt-xray-cascade.service"
-XRAY_GATEWAY_SERVICE="wdtt-xray-gateway.service"
-WARP_DIR="$PRIVATE_STATE_DIR/warp"
 LOG_FILE="/var/log/wdtt-panel-install.log"
 USERDATA_DIR="${WDTT_USERDATA_DIR:-$SCRIPT_DIR/../userdata}"
 SEED_HASHES_FILE="$CONFIG_DIR/vk-hash.txt"
@@ -1262,11 +1250,6 @@ write_maintenance_scripts() {
 exec /bin/bash $INSTALL_DIR/install.sh status
 EOF
   chmod 0755 "$STATUS_WRAPPER"
-  cat > "$GEOFILES_UPDATE_WRAPPER" <<EOF
-#!/bin/sh
-printf '%s\n' '{"action":"xray.geofiles.refresh_auto","payload":{}}' | $ADMIN_WRAPPER
-EOF
-  chmod 0755 "$GEOFILES_UPDATE_WRAPPER"
   cat > "$BACKUP_RUNNER" <<EOF
 #!/bin/sh
 case "\${1:-full}" in
@@ -1281,24 +1264,6 @@ EOF
 printf '%s\n' '{"action":"autoclean.run","payload":{}}' | $ADMIN_WRAPPER
 EOF
   chmod 0755 "$AUTOCLEAN_RUNNER"
-  cat > "$CASCADE_RULES_WRAPPER" <<EOF
-#!/bin/sh
-case "\${1:-apply}" in
-  apply) printf '%s\n' '{"action":"cascade.apply","payload":{}}' | $ADMIN_WRAPPER ;;
-  remove) printf '%s\n' '{"action":"cascade.remove","payload":{}}' | $ADMIN_WRAPPER ;;
-  *) exit 2 ;;
-esac
-EOF
-  chmod 0755 "$CASCADE_RULES_WRAPPER"
-  cat > "$GATEWAY_RULES_WRAPPER" <<EOF
-#!/bin/sh
-case "\${1:-apply}" in
-  apply) printf '%s\n' '{"action":"xray.gateway.apply","payload":{}}' | $ADMIN_WRAPPER ;;
-  remove) printf '%s\n' '{"action":"xray.gateway.remove","payload":{}}' | $ADMIN_WRAPPER ;;
-  *) exit 2 ;;
-esac
-EOF
-  chmod 0755 "$GATEWAY_RULES_WRAPPER"
 }
 
 # WDTT-SERVER: полный перезапуск панели, ядра WDTT и демонов. Используется
@@ -1310,7 +1275,7 @@ restart_services() {
   for unit in "$WDTT_SERVICE" "$PANEL_SERVICE" wdtt-app.service; do
     systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
   done
-  for unit in nginx.service "$XRAY_SERVICE" "$XRAY_GATEWAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$LEGACY_CASCADE_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE"; do
+  for unit in nginx.service "$FLEET_SERVICE" "$FLEET_BOT_SERVICE"; do
     if systemctl is-active --quiet "$unit" 2>/dev/null; then
       systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
     fi
@@ -1399,169 +1364,6 @@ PY
   fi
   chown root:wdtt-panel "$CONFIG_FILE"
   chmod 0640 "$CONFIG_FILE"
-}
-
-write_xray_services() {
-  systemctl disable --now "$LEGACY_CASCADE_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service 2>/dev/null || true
-  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE"
-  install -d -m 0700 "$XRAY_ASSETS"
-
-  cat > "/etc/systemd/system/$XRAY_SERVICE" <<EOF
-[Unit]
-Description=WDTT Xray Routing Runtime
-After=network-online.target wdtt.service
-Wants=network-online.target
-ConditionPathExists=$XRAY_CONFIG
-
-[Service]
-Type=simple
-User=root
-Environment=XRAY_LOCATION_ASSET=$XRAY_ASSETS
-ExecStartPre=/usr/local/bin/xray run -test -c $XRAY_CONFIG
-ExecStart=/usr/local/bin/xray run -c $XRAY_CONFIG
-Restart=on-failure
-RestartSec=3
-LimitNOFILE=1048576
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-NoNewPrivileges=true
-ProtectHome=true
-ProtectSystem=strict
-ReadWritePaths=$PRIVATE_STATE_DIR /run
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat > "/etc/systemd/system/$XRAY_CASCADE_SERVICE" <<EOF
-[Unit]
-Description=WDTT Xray RU to EU Cascade Rules
-After=network-online.target wdtt.service $XRAY_SERVICE
-Wants=network-online.target
-ConditionPathExists=$XRAY_CASCADE_SETTINGS
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=$CASCADE_RULES_WRAPPER apply
-ExecStop=$CASCADE_RULES_WRAPPER remove
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat > "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" <<EOF
-[Unit]
-Description=WDTT traffic gateway to Xray
-After=network-online.target wdtt.service $XRAY_SERVICE
-Wants=network-online.target
-ConditionPathExists=$XRAY_SETTINGS
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=$GATEWAY_RULES_WRAPPER apply
-ExecStop=$GATEWAY_RULES_WRAPPER remove
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  cat > /etc/systemd/system/wdtt-panel-geofiles-update.service <<EOF
-[Unit]
-Description=Update WDTT Panel Xray GeoFiles
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=$GEOFILES_UPDATE_WRAPPER
-EOF
-  cat > /etc/systemd/system/wdtt-panel-geofiles-update.timer <<'EOF'
-[Unit]
-Description=Automatic WDTT Panel Xray GeoFiles updates
-
-[Timer]
-OnBootSec=20min
-OnUnitActiveSec=6h
-RandomizedDelaySec=30min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now wdtt-panel-geofiles-update.timer >>"$LOG_FILE" 2>&1
-}
-
-github_asset_url() {
-  local repository="$1" pattern="$2"
-  python3 - "$repository" "$pattern" <<'PY'
-import json, re, sys, urllib.request
-repo, pattern = sys.argv[1:]
-request = urllib.request.Request(
-    f"https://api.github.com/repos/{repo}/releases/latest",
-    headers={"User-Agent": "wdtt-control-panel"},
-)
-with urllib.request.urlopen(request, timeout=30) as response:
-    release = json.load(response)
-for asset in release.get("assets", []):
-    if re.search(pattern, asset.get("name", "")):
-        print(asset["browser_download_url"])
-        raise SystemExit
-raise SystemExit(2)
-PY
-}
-
-install_xray_runtime() {
-  require_root
-  local machine asset_pattern work xray_url bundled_asset
-  machine="$(uname -m)"
-  case "$machine" in
-    x86_64|amd64) asset_pattern='Xray-linux-64\.zip$' ;;
-    aarch64|arm64) asset_pattern='Xray-linux-arm64-v8a\.zip$' ;;
-    *) die "Xray поддержан для amd64 и arm64" ;;
-  esac
-  work="$(mktemp -d)"
-  trap 'rm -rf "${work:-}"' RETURN
-
-  log "Установка Xray Core"
-  xray_url="$(github_asset_url XTLS/Xray-core "$asset_pattern")" || die "Не найден релиз Xray Core"
-  curl -fsSL --retry 3 "$xray_url" -o "$work/xray.zip"
-  unzip -q "$work/xray.zip" -d "$work/xray"
-  install -m 0755 "$(find "$work/xray" -type f \( -name Xray -o -name xray \) | head -1)" /usr/local/bin/xray
-  install -d -m 0700 "$XRAY_ASSETS"
-  for bundled_asset in geoip.dat geosite.dat; do
-    if [ ! -f "$XRAY_ASSETS/$bundled_asset" ] && [ -f "$work/xray/$bundled_asset" ]; then
-      install -m 0600 "$work/xray/$bundled_asset" "$XRAY_ASSETS/$bundled_asset"
-    fi
-  done
-  write_xray_services
-  if [ -r "$XRAY_SETTINGS" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("enabled") else 1)' "$XRAY_SETTINGS"; then
-    systemctl enable --now "$XRAY_SERVICE" >>"$LOG_FILE" 2>&1
-  fi
-  log "Xray Core установлен"
-  /usr/local/bin/xray version | head -1
-}
-
-install_warp_runtime() {
-  require_root
-  local machine asset_pattern warp_url work
-  machine="$(uname -m)"
-  case "$machine" in
-    x86_64|amd64) asset_pattern='wgcf_[^/]*_linux_amd64$' ;;
-    aarch64|arm64) asset_pattern='wgcf_[^/]*_linux_arm64$' ;;
-    *) die "Cloudflare WARP поддержан для amd64 и arm64" ;;
-  esac
-  work="$(mktemp -d)"
-  trap 'rm -rf "${work:-}"' RETURN
-  log "Установка wgcf для Cloudflare WARP"
-  warp_url="$(github_asset_url ViRb3/wgcf "$asset_pattern")" || die "Не найден релиз wgcf"
-  curl -fsSL --retry 3 "$warp_url" -o "$work/wgcf"
-  install -m 0755 "$work/wgcf" /usr/local/bin/wgcf
-  install -d -m 0700 "$WARP_DIR"
-  log "Компонент Cloudflare WARP установлен"
-  /usr/local/bin/wgcf --version || true
 }
 
 install_tailscale_runtime() {
@@ -1700,58 +1502,6 @@ remove_obsolete_fleet_agent() {
   systemctl disable --now wdtt-fleet-agent.service >/dev/null 2>&1 || true
   rm -f /etc/systemd/system/wdtt-fleet-agent.service "$STATE_DIR/fleet-agent.json"
   systemctl daemon-reload
-}
-
-remove_obsolete_openwrt_podkop() {
-  local changed
-  changed="$(python3 - "$XRAY_CONFIG" "$XRAY_SETTINGS" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-config_path = Path(sys.argv[1])
-settings_path = Path(sys.argv[2])
-changed = False
-
-def load_json(path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-def save_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-settings = load_json(settings_path) if settings_path.is_file() else None
-if isinstance(settings, dict):
-    for key in ("podkop_native_enabled", "podkop_inbound_port", "podkop_ws_path"):
-        if key in settings:
-            settings.pop(key, None)
-            changed = True
-    if changed:
-        save_json(settings_path, settings)
-
-config_changed = False
-config = load_json(config_path) if config_path.is_file() else None
-if isinstance(config, dict) and isinstance(config.get("inbounds"), list):
-    inbounds = config["inbounds"]
-    filtered = [item for item in inbounds if not (isinstance(item, dict) and item.get("tag") == "podkop-plus-in")]
-    if len(filtered) != len(inbounds):
-        config["inbounds"] = filtered
-        config_changed = True
-        changed = True
-if config_changed:
-    save_json(config_path, config)
-
-print("changed" if changed else "unchanged")
-PY
-)"
-  if [ "$changed" = "changed" ]; then
-    log "Удалена устаревшая OpenWrt/Podkop Plus настройка Xray"
-    if systemctl is-active --quiet "$XRAY_SERVICE"; then
-      systemctl restart "$XRAY_SERVICE" >/dev/null 2>&1 || true
-    fi
-  fi
 }
 
 port_80_available_for_nginx() {
@@ -2206,8 +1956,6 @@ clean_system_safe() {
   log "Безопасная очистка журналов и системного кэша"
   for file in \
     /var/log/wdtt-panel-install.log \
-    /var/lib/wdtt-panel-private/xray-access.log \
-    /var/lib/wdtt-panel-private/xray-error.log \
     /var/log/nginx/access.log \
     /var/log/nginx/error.log
   do
@@ -2302,10 +2050,8 @@ uninstall_panel() {
   sys_timeout 180 systemctl disable --now "$PANEL_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service
   log "Удаляю unit-файлы и каталоги панели..."
   rm -f "/etc/systemd/system/$PANEL_SERVICE" "/etc/systemd/system/$FLEET_SERVICE" "/etc/systemd/system/$FLEET_BOT_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
-  log "Останавливаю и отключаю Xray/каскад..."
-  sys_timeout 120 systemctl disable --now "$LEGACY_CASCADE_SERVICE" "$XRAY_SERVICE" "$XRAY_CASCADE_SERVICE" "$XRAY_GATEWAY_SERVICE" wdtt-panel-geofiles-update.timer wdtt-panel-geofiles-update.service
-  rm -f "/etc/systemd/system/$LEGACY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_SERVICE" "/etc/systemd/system/$XRAY_CASCADE_SERVICE" "/etc/systemd/system/$XRAY_GATEWAY_SERVICE" /etc/systemd/system/wdtt-panel-geofiles-update.service /etc/systemd/system/wdtt-panel-geofiles-update.timer
-  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$GEOFILES_UPDATE_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER" "$CASCADE_RULES_WRAPPER" "$GATEWAY_RULES_WRAPPER"
+  log "Убираю обёртки панели и служебные файлы..."
+  rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER"
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   log "Чищу правила фаервола панели и ядра..."
   remove_firewall_rule "$panel_port" tcp
@@ -2343,8 +2089,6 @@ update_panel() {
   write_renew_timer
   write_wdtt_extensions_timer
   write_autoclean_timer
-  write_xray_services
-  remove_obsolete_openwrt_podkop
   schedule_wdtt_extensions
   systemctl restart "$PANEL_SERVICE"
   log "Панель обновлена; адрес, пароль, сертификаты и данные сохранены"
@@ -2735,7 +2479,6 @@ install_panel() {
   write_renew_timer
   write_wdtt_extensions_timer
   write_autoclean_timer
-  write_xray_services
   open_firewall
   systemctl restart "$PANEL_SERVICE"
 
@@ -2763,9 +2506,7 @@ case "${1:-install}" in
   change-domain|--change-domain) change_panel_domain ;;
   clean-system|--clean-system|clean-logs) clean_system_safe ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
-  install-xray-runtime) install_xray_runtime ;;
-  install-warp-runtime) install_warp_runtime ;;
   install-tailscale-runtime) install_tailscale_runtime ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-xray-runtime|install-warp-runtime|install-tailscale-runtime|enable-wdtt-extensions] [--mode node|controller]" ;;
+  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-tailscale-runtime|enable-wdtt-extensions] [--mode node|controller]" ;;
 esac

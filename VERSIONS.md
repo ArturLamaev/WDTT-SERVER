@@ -11,6 +11,30 @@
 - новый функционал/фича → минор (`+0.1`), например `1.0.0 → 1.1.0`;
 - мажорная обнова → мажор (`+1.0`), например `1.0.0 → 2.0.0`.
 
+## 2.0.0
+
+Удалена вся реализация Xray (каскад RU → EU так и не заработал ни разу, поэтому
+убрано целиком, а не по частям):
+
+- бэкенд панели (`admin.py`): вырезаны Xray Core (managed/raw, inbounds/outbounds,
+  JSON-правила, маршруты, GeoFiles и таймер их обновления), шлюз WDTT → Xray
+  (TPROXY iptables), каскад RU → EU, Cloudflare WARP (wgcf-профиль жил только как
+  WireGuard-исходящий Xray) и легаси-каскад на sing-box; удалены операции
+  `xray.*`, `warp.*`, `cascade.*` и их API-роуты;
+- фронтенд: вкладка «Xray» с диалогами, вся JS-логика и CSS-классы удалены; из
+  «Журналов» убраны источники «Xray/WARP», «Каскад RU → EU», «Xray: домены и
+  маршруты», «Xray: ошибки соединений»;
+- установщик (`panel/install.sh`) больше не создаёт юниты `wdtt-xray.service`,
+  `wdtt-xray-cascade.service`, `wdtt-xray-gateway.service`, `wdtt-cascade.service`,
+  таймер GeoFiles и обёртки iptables-правил; не скачивает Xray Core и wgcf;
+  в Docker удалён `fetch-runtime.sh`, из супервизора — цикл `run_xray`, из
+  entrypoint — шаг докачки рантаймов (`WDTT_FETCH_RUNTIME`);
+- резервные копии: секции `xray`/`xray_cascade`/`legacy_cascade`/`warp` из старых
+  копий игнорируются; полная копия хранит пользователей, метки, Tailscale,
+  состояние расширения WDTT и расписания;
+- тесты Xray/WARP/каскада/geo/iptables удалены.
+  Проверки: 294 passed, 3 skipped.
+
 ## 1.26.0
 
 Рабочая смена домена в Docker (кнопка «Привязать домен» больше не no-op):
