@@ -202,17 +202,24 @@ upgrade_existing_install() {
 wipe_previous_install() {
   info "Делаю полную очистку старой панели и WDTT..."
   info "Останавливаю службы..."
-  sys_timeout 180 systemctl stop wdtt wdtt-panel wdtt-app wdtt-proxy
-  sys_timeout 60 systemctl disable wdtt wdtt-panel wdtt-app wdtt-proxy
+  sys_timeout 180 systemctl stop wdtt wdtt-panel wdtt-app
+  sys_timeout 60 systemctl disable wdtt wdtt-panel wdtt-app
   pkill -x wdtt-server 2>/dev/null || true
   uninstall_wdtt_kernel
   rm -f /etc/systemd/system/wdtt.service /etc/systemd/system/wdtt-app.service \
-        /etc/systemd/system/wdtt-panel.service /etc/systemd/system/wdtt-proxy.service \
+        /etc/systemd/system/wdtt-panel.service \
         /etc/systemd/system/wdtt-panel-wdtt-extensions.* \
         /etc/systemd/system/wdtt-auto-restart.* /etc/systemd/system/wdtt-fleet-agent.service 2>/dev/null || true
+  # Шлюз wdtt-proxy снимаем только если это наш компонент (/opt/wdtt-proxy):
+  # прежнюю ручную установку из внешнего репозитория в /root не трогаем.
+  if [ -f /opt/wdtt-proxy/wdtt-proxy.sh ]; then
+    sys_timeout 120 systemctl disable --now wdtt-proxy
+    rm -f /etc/systemd/system/wdtt-proxy.service
+    rm -rf /opt/wdtt-proxy
+  fi
   sys_timeout 60 systemctl daemon-reload
   rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-app
-  rm -rf /opt/wdtt-panel /opt/wdtt-proxy /etc/wdtt-panel /var/lib/wdtt-panel /var/lib/wdtt-panel-private \
+  rm -rf /opt/wdtt-panel /etc/wdtt-panel /var/lib/wdtt-panel /var/lib/wdtt-panel-private \
          /etc/wdtt /var/lib/wdtt
   rm -f /etc/nginx/conf.d/wdtt-panel.conf
   rm -f /usr/local/sbin/wdtt-panel* /etc/sudoers.d/wdtt-panel
@@ -428,9 +435,11 @@ cmd_uninstall() {
   sys_timeout 120 systemctl disable --now wdtt-auto-restart.timer wdtt-auto-restart.service
   rm -f /etc/systemd/system/wdtt-auto-restart.* 2>/dev/null || true
   info "Снимаю шлюз wdtt-proxy..."
-  sys_timeout 120 systemctl disable --now wdtt-proxy
-  rm -f /etc/systemd/system/wdtt-proxy.service 2>/dev/null || true
-  rm -rf /opt/wdtt-proxy 2>/dev/null || true
+  if [ -f /opt/wdtt-proxy/wdtt-proxy.sh ]; then
+    sys_timeout 120 systemctl disable --now wdtt-proxy
+    rm -f /etc/systemd/system/wdtt-proxy.service 2>/dev/null || true
+    rm -rf /opt/wdtt-proxy 2>/dev/null || true
+  fi
   info "Останавливаю ядро WDTT..."
   sys_timeout 120 systemctl stop wdtt
   sys_timeout 60 systemctl disable wdtt

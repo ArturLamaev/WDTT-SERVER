@@ -14,9 +14,9 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="2.2.0"', installer)
-        self.assertIn('__version__ = "2.2.0"', package)
-        self.assertIn("Текущая версия: 2.2.0", readme)
+        self.assertIn('PANEL_VERSION="2.2.1"', installer)
+        self.assertIn('__version__ = "2.2.1"', package)
+        self.assertIn("Текущая версия: 2.2.1", readme)
 
     def test_wdtt_proxy_is_bundled_monolith(self):
         """Шлюз лежит в репозитории (wdtt-proxy/) и ставится install.sh в /opt."""
@@ -42,6 +42,22 @@ class InstallScriptTests(unittest.TestCase):
         dockerfile = (root / "docker" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY wdtt-proxy /opt/wdtt-proxy", dockerfile)
         self.assertIn("/usr/local/bin/sing-box", dockerfile)
+
+    def test_wdtt_proxy_keeps_backward_compatibility(self):
+        """Прежняя установка в /root/wdtt-proxy: настройки переносятся, чужое не сносим."""
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('WDTT_PROXY_LEGACY_DIR="/root/wdtt-proxy"', installer)
+        # config.env из старого каталога переносится, а не перетирается дефолтом.
+        self.assertIn('elif [ -f "$WDTT_PROXY_LEGACY_DIR/config.env" ]; then', installer)
+        self.assertIn("config.env перенесён из $WDTT_PROXY_LEGACY_DIR", installer)
+        # Снос снимает только наш компонент: чужую установку не трогаем.
+        remove_block = installer.split("remove_wdtt_proxy() {", 1)[1].split("\n}", 1)[0]
+        self.assertIn('[ ! -f "$WDTT_PROXY_DIR/wdtt-proxy.sh" ]', remove_block)
+        self.assertIn("return 0", remove_block)
+        # Панель должна уметь писать в /opt/wdtt-proxy (иначе EROFS).
+        self.assertIn("-/opt/wdtt-proxy", installer)
+        root_installer = (ROOT.parent / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("if [ -f /opt/wdtt-proxy/wdtt-proxy.sh ]; then", root_installer)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="2.2.0"
+PANEL_VERSION="2.2.1"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,6 +70,9 @@ WDTT_EXTENSION_MARKER="wdtt-panel-extension-v10"
 # рядом с панелью /opt/wdtt-panel. Панель (вкладка «Прокси») управляет
 # сервисом и правит config.env.
 WDTT_PROXY_DIR="/opt/wdtt-proxy"
+# Прежнее место установки (внешний репозиторий wdtt-proxy) — только для
+# обратной совместимости: оттуда переносится config.env при обновлении.
+WDTT_PROXY_LEGACY_DIR="/root/wdtt-proxy"
 WDTT_PROXY_SERVICE="wdtt-proxy.service"
 WDTT_PROXY_SERVICE_FILE="/etc/systemd/system/wdtt-proxy.service"
 SINGBOX_BIN="/usr/local/bin/sing-box"
@@ -1485,7 +1488,7 @@ install_singbox_binary() {
 
 install_wdtt_proxy() {
   require_root
-  local src="" was_active=0
+  local src="" was_active=0 migrated=0
   src="$(proxy_source_dir)" || die "Каталог wdtt-proxy не найден рядом с install.sh"
   # 1. Файлы шлюза. config.env не перетираем: в нём текущая настройка SOCKS5.
   install -d -m 0755 "$WDTT_PROXY_DIR"
@@ -1496,6 +1499,11 @@ install_wdtt_proxy() {
   fi
   if [ -f "$WDTT_PROXY_DIR/config.env" ]; then
     log "config.env прокси сохранён без изменений"
+  elif [ -f "$WDTT_PROXY_LEGACY_DIR/config.env" ]; then
+    # Обратная совместимость: переезд с прежнего каталога (/root/wdtt-proxy).
+    install -m 0600 "$WDTT_PROXY_LEGACY_DIR/config.env" "$WDTT_PROXY_DIR/config.env"
+    log "config.env перенесён из $WDTT_PROXY_LEGACY_DIR"
+    migrated=1
   else
     install -m 0600 "$src/config.env" "$WDTT_PROXY_DIR/config.env"
   fi
@@ -1518,10 +1526,26 @@ install_wdtt_proxy() {
   else
     log "systemd недоступен (Docker?): файлы wdtt-proxy готовы в $WDTT_PROXY_DIR, запуск — из вкладки «Прокси»"
   fi
+  # Обратная совместимость: прежняя копия шлюза (/root/wdtt-proxy) больше не
+  # используется — гасим её процесс, если он жил без systemd, чтобы два
+  # sing-box не дрались за tun-интерфейс и таблицу маршрутизации.
+  if [ "$migrated" = "1" ]; then
+    if [ -x "$WDTT_PROXY_LEGACY_DIR/wdtt-proxy.sh" ] \
+      && ! { command_exists systemctl && systemctl is-active --quiet "$WDTT_PROXY_SERVICE" 2>/dev/null; }; then
+      "$WDTT_PROXY_LEGACY_DIR/wdtt-proxy.sh" stop >>"$LOG_FILE" 2>&1 || true
+    fi
+    log "Прежний каталог $WDTT_PROXY_LEGACY_DIR больше не используется (можно удалить)"
+  fi
 }
 
 remove_wdtt_proxy() {
   local keep_dir="${1:-0}"
+  # Обратная совместимость: снимаем только свой компонент (/opt/wdtt-proxy).
+  # Прежнюю ручную установку из внешнего репозитория (/root/wdtt-proxy) не
+  # трогаем ни в части юнита, ни в части файлов — панель её не ставила.
+  if [ ! -f "$WDTT_PROXY_DIR/wdtt-proxy.sh" ]; then
+    return 0
+  fi
   if command_exists systemctl && [ -d /run/systemd/system ]; then
     if [ -f "$WDTT_PROXY_SERVICE_FILE" ] || systemctl list-unit-files "$WDTT_PROXY_SERVICE" >/dev/null 2>&1; then
       sys_timeout 60 systemctl disable --now "$WDTT_PROXY_SERVICE"
