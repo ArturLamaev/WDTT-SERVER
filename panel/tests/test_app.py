@@ -294,6 +294,32 @@ class AppSmokeTests(unittest.TestCase):
         headers, _ = self.request("/private-panel-path/api/proxy", "POST", payload, cookie, csrf)
         self.assertTrue(headers["status"].startswith("405"))
 
+    def test_tailscale_routes_call_root_helper(self):
+        form = b"username=admin&password=Panel-password-12345"
+        headers, _ = self.request("/private-panel-path/login", "POST", form)
+        cookie = headers["headers"]["Set-Cookie"].split(";", 1)[0]
+        token = cookie.split("=", 1)[1]
+        session = read_session(token, "test-session-secret")
+        csrf = csrf_token(session["n"], "test-session-secret")
+
+        headers, body = self.request("/private-panel-path/api/tailscale", cookie=cookie)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["online"])
+
+        payload = json.dumps({"hostname": "wdtt-server", "authkey": "tskey-auth-test"}).encode()
+        headers, body = self.request("/private-panel-path/api/tailscale/connect", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["connected"])
+
+        payload = json.dumps({}).encode()
+        headers, body = self.request("/private-panel-path/api/tailscale/install", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["scheduled"])
+
+        headers, body = self.request("/private-panel-path/api/tailscale/check", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["ok"])
+
     def test_vk_hash_library_is_managed_without_calling_root_helper(self):
         form = b"username=admin&password=Panel-password-12345"
         headers, _ = self.request("/private-panel-path/login", "POST", form)
@@ -381,6 +407,89 @@ class AppSmokeTests(unittest.TestCase):
         headers, body = self.request("/private-panel-path/api/telegram/test", "POST", b"{}", cookie, csrf)
         self.assertTrue(headers["status"].startswith("200"))
         self.assertTrue(json.loads(body)["result"]["sent"])
+
+
+class RouteOperationParityTests(unittest.TestCase):
+    """Панель и root-хелпер — два процесса; их связка только по именам операций.
+
+    Расхождение имени (например панель шлёт `proxy.status`, а хелпер знает
+    `proxy`) видно пользователю как «Неизвестная административная операция»,
+    поэтому контракт проверяется автоматически.
+    """
+
+    def test_panel_routes_map_to_registered_operations(self):
+        from wdtt_panel import admin
+
+        # Не меньше 45 маршрутов: пустой/переименованный словарь сделал бы проверку ниже пустой.
+        self.assertGreaterEqual(len(app.API_ROUTES), 45)
+        missing = sorted({op for op in app.API_ROUTES.values() if op not in admin.OPERATIONS})
+        self.assertEqual(missing, [], f"панель шлёт хелперу незарегистрированные операции: {missing}")
+
+    def test_admin_retries_with_legacy_operation_name(self):
+        """Панель обновилась, хелпер ещё старый: шлём старое имя операции."""
+        calls = []
+
+        def fake_run(command, input=None, text=None, capture_output=True, timeout=None):
+            action = json.loads(input)["action"]
+            calls.append((action, timeout))
+            if action == "proxy.status":
+                return mock.Mock(stdout=json.dumps({"ok": False, "error": "Неизвестная административная операция"}), stderr="")
+            return mock.Mock(stdout=json.dumps({"ok": True, "result": {"installed": True}}), stderr="")
+
+        with mock.patch.object(app.subprocess, "run", side_effect=fake_run):
+            result = app.Panel.admin("proxy.status", {})
+        self.assertTrue(result["ok"])
+        self.assertEqual([action for action, _ in calls], ["proxy.status", "proxy"])
+
+    def test_admin_install_operations_get_long_timeout(self):
+        timeouts = {}
+
+        def fake_run(command, input=None, text=None, capture_output=True, timeout=None):
+            action = json.loads(input)["action"]
+            timeouts[action] = timeout
+            return mock.Mock(stdout=json.dumps({"ok": True, "result": {}}), stderr="")
+
+        with mock.patch.object(app.subprocess, "run", side_effect=fake_run):
+            app.Panel.admin("proxy.install", {})
+            app.Panel.admin("proxy.status", {})
+            app.Panel.admin("tailscale.install", {})
+        self.assertEqual(timeouts["proxy.install"], 960)
+        self.assertEqual(timeouts["proxy.status"], 60)
+        self.assertEqual(timeouts["tailscale.install"], 240)
+
+    def test_every_route_is_unique_and_dotted(self):
+        for route, operation in app.API_ROUTES.items():
+            self.assertTrue(operation, route)
+            self.assertNotIn("/", operation, f"{route} -> {operation}")
+
+    def test_proxy_and_tailscale_operations_are_reachable(self):
+        from wdtt_panel import admin
+
+        expected = [
+            "proxy.status",
+            "proxy.install",
+            "proxy.action",
+            "proxy.config.save",
+            "tailscale.status",
+            "tailscale.install",
+            "tailscale.connect",
+            "tailscale.disconnect",
+            "tailscale.logout",
+            "tailscale.check",
+        ]
+        for operation in expected:
+            self.assertIn(operation, admin.OPERATIONS)
+        # Алиасы для панелей 2.1.0–2.2.1 (короткие имена), чтобы обновление
+        # хелпера не сломало уже установленную панель.
+        self.assertIs(admin.OPERATIONS["proxy"], admin.OPERATIONS["proxy.status"])
+        self.assertIs(admin.OPERATIONS["proxy.config"], admin.OPERATIONS["proxy.config.save"])
+
+    def test_fake_helper_implements_new_operations(self):
+        """Тестовый хелпер должен уметь всё, что шлёт панель в новых вкладках
+        (прокси и Tailscale): иначе тесты этих маршрутов пройдут на пустом ответе."""
+        fake = Path(__file__).with_name("fake_admin.py").read_text(encoding="utf-8")
+        for operation in sorted(op for op in app.API_ROUTES.values() if op.startswith(("proxy.", "tailscale."))):
+            self.assertIn(operation, fake, f"fake_admin.py не обрабатывает {operation}")
 
 
 if __name__ == "__main__":

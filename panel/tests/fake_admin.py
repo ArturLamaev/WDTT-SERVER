@@ -191,6 +191,27 @@ elif action == "proxy.action":
 elif action == "proxy.config.save":
     payload = request.get("payload") or {}
     result = {"saved": True, "active": True, "config": {key: str(payload.get(key) or "") for key in ["PROXY_HOST", "PROXY_PORT", "PROXY_USER", "CAPTURE_IF"]}}
+elif action == "tailscale.status":
+    result = {
+        "installed": True,
+        "daemon": True,
+        "online": True,
+        "hostname": "wdtt-server",
+        "tailscale_ips": ["100.66.0.4"],
+        "dns_name": "wdtt-server.tailnet.ts.net.",
+        "tailnet": "tailnet.ts.net",
+        "authkey_set": True,
+        "authkey_hint": "tskey-auth-...test",
+        "accept_dns": True,
+    }
+elif action == "tailscale.install":
+    result = {"scheduled": True, "unit": "wdtt-tailscale-install-1"}
+elif action == "tailscale.connect":
+    result = {"connected": True, "tailscale_ips": ["100.66.0.4"], "dns_name": "wdtt-server.tailnet.ts.net."}
+elif action in {"tailscale.disconnect", "tailscale.logout"}:
+    result = {"connected": False, "installed": True, "daemon": True, "online": False}
+elif action == "tailscale.check":
+    result = {"ok": True, "latency_ms": 12, "udp": True, "tailscale_ips": ["100.66.0.4"], "dns_name": "wdtt-server.tailnet.ts.net."}
 elif action == "certificate.export":
     result = {"name": "wdtt-panel-certificate.pem", "content": "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"}
 elif action == "backups.export":

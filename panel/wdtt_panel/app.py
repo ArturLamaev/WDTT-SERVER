@@ -29,6 +29,67 @@ SEED_HASHES_FILE = Path(os.environ.get("WDTT_PANEL_SEED_HASHES", "/etc/wdtt-pane
 ADMIN_COMMAND = os.environ.get("WDTT_PANEL_ADMIN", "/usr/bin/sudo -n /usr/local/sbin/wdtt-panel-admin").split()
 MAX_BODY = 90 * 1024 * 1024
 
+# Соответствие URL панели -> имя операции root-хелпера (wdtt_panel.admin.OPERATIONS).
+# Имена должны совпадать с ключами OPERATIONS: расхождение даёт пользователю
+# «Неизвестная административная операция». Паритет проверяет
+# test_panel_routes_map_to_registered_operations.
+API_ROUTES: dict[str, str] = {
+    "overview": "overview",
+    "users": "users.list",
+    "users/create": "users.create",
+    "users/create-bulk": "users.create_bulk",
+    "users/update": "users.update",
+    "users/delete": "users.delete",
+    "users/unbind": "users.unbind",
+    "users/reset-traffic": "users.reset_traffic",
+    "users/renew": "users.renew",
+    "users/add-traffic": "users.add_traffic",
+    "users/adjust-plan": "users.adjust_plan",
+    "users/bulk-action": "users.bulk_action",
+    "service": "service.action",
+    "logs": "logs",
+    "cleanup/preview": "cleanup.preview",
+    "cleanup/apply": "cleanup.apply",
+    "autoclean": "autoclean.status",
+    "autoclean/settings": "autoclean.settings",
+    "autoclean/run": "autoclean.run",
+    "backups": "backups.list",
+    "backups/create": "backups.create",
+    "backups/delete": "backups.delete",
+    "backups/restore": "backups.restore",
+    "backups/export": "backups.export",
+    "backups/import": "backups.import",
+    "backups/schedule": "backups.schedule",
+    "panel/version": "panel.version",
+    "panel/check": "panel.check",
+    "panel/update": "panel.update",
+    "certificate/export": "certificate.export",
+    "certificate/renew": "certificate.renew",
+    "telegram": "telegram.status",
+    "telegram/save": "telegram.save",
+    "telegram/test": "telegram.test",
+    "tailscale": "tailscale.status",
+    "tailscale/install": "tailscale.install",
+    "tailscale/connect": "tailscale.connect",
+    "tailscale/disconnect": "tailscale.disconnect",
+    "tailscale/logout": "tailscale.logout",
+    "tailscale/check": "tailscale.check",
+    "wdtt": "wdtt.settings",
+    "wdtt/save": "wdtt.save",
+    "proxy": "proxy.status",
+    "proxy/install": "proxy.install",
+    "proxy/action": "proxy.action",
+    "proxy/config": "proxy.config.save",
+    "certificate/change-domain": "certificate.change_domain",
+}
+
+# Имена операций, которые понимали прежние root-хелперы (до 2.2.2), — на случай,
+# если панель обновилась раньше хелпера: см. Panel.admin.
+LEGACY_ADMIN_ALIASES: dict[str, str] = {
+    "proxy.status": "proxy",
+    "proxy.config.save": "proxy.config",
+}
+
 
 class ThreadingServer(ThreadingMixIn, WSGIServer):
     daemon_threads = True
@@ -388,55 +449,7 @@ class Panel:
             if method != "GET":
                 return self.json_response(start_response, 405, {"error": "Требуется GET"})
             return self.json_response(start_response, 200, {"ok": True, "result": self.qwdtt_subscription()})
-        mapping = {
-            "overview": "overview",
-            "users": "users.list",
-            "users/create": "users.create",
-            "users/create-bulk": "users.create_bulk",
-            "users/update": "users.update",
-            "users/delete": "users.delete",
-            "users/unbind": "users.unbind",
-            "users/reset-traffic": "users.reset_traffic",
-            "users/renew": "users.renew",
-            "users/add-traffic": "users.add_traffic",
-            "users/adjust-plan": "users.adjust_plan",
-            "users/bulk-action": "users.bulk_action",
-            "service": "service.action",
-            "logs": "logs",
-            "cleanup/preview": "cleanup.preview",
-            "cleanup/apply": "cleanup.apply",
-            "autoclean": "autoclean.status",
-            "autoclean/settings": "autoclean.settings",
-            "autoclean/run": "autoclean.run",
-            "backups": "backups.list",
-            "backups/create": "backups.create",
-            "backups/delete": "backups.delete",
-            "backups/restore": "backups.restore",
-            "backups/export": "backups.export",
-            "backups/import": "backups.import",
-            "backups/schedule": "backups.schedule",
-            "panel/version": "panel.version",
-            "panel/check": "panel.check",
-            "panel/update": "panel.update",
-            "certificate/export": "certificate.export",
-            "certificate/renew": "certificate.renew",
-            "telegram": "telegram.status",
-            "telegram/save": "telegram.save",
-            "telegram/test": "telegram.test",
-            "tailscale": "tailscale.status",
-            "tailscale/install": "tailscale.install",
-            "tailscale/connect": "tailscale.connect",
-            "tailscale/disconnect": "tailscale.disconnect",
-            "tailscale/logout": "tailscale.logout",
-            "tailscale/check": "tailscale.check",
-            "wdtt": "wdtt.settings",
-            "wdtt/save": "wdtt.save",
-            "proxy": "proxy.status",
-            "proxy/install": "proxy.install",
-            "proxy/action": "proxy.action",
-            "proxy/config": "proxy.config.save",
-            "certificate/change-domain": "certificate.change_domain",
-        }
+        mapping = API_ROUTES
         if route == "history" and method == "GET":
             return self.json_response(start_response, 200, self.history())
         if route == "audit" and method == "GET":
@@ -512,6 +525,16 @@ class Panel:
 
     @staticmethod
     def admin(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = Panel.invoke_admin(action, payload)
+        # Панель могла обновиться раньше root-хелпера (он лежит в /usr/local/sbin
+        # и обновляется тем же install.sh): не заставляем пользователя ловить
+        # «Неизвестная административная операция» — повторяем со старым именем.
+        if not result.get("ok") and LEGACY_ADMIN_ALIASES.get(action) and "Неизвестная административная операция" in str(result.get("error") or ""):
+            return Panel.invoke_admin(LEGACY_ADMIN_ALIASES[action], payload)
+        return result
+
+    @staticmethod
+    def invoke_admin(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = json.dumps({"action": action, "payload": payload}, ensure_ascii=False)
         try:
             completed = subprocess.run(
@@ -519,7 +542,15 @@ class Panel:
                 input=request,
                 text=True,
                 capture_output=True,
-                timeout=240 if action.startswith(("tailscale.",)) else 60,
+                # Таймауты: установка рантайма/шлюза качает пакеты с github —
+                # 60 с на это не хватает, поэтому у install-операций свой лимит.
+                timeout=(
+                    960
+                    if action in {"proxy.install"}
+                    else 240
+                    if action.startswith(("tailscale.",))
+                    else 60
+                ),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "error": f"Root-helper недоступен: {exc}"}

@@ -1269,6 +1269,14 @@ LOG_LEVEL="warn"
         self.assertEqual(status["install_hint"], "")
         self.assertTrue(status["unit_installed"])
 
+    def test_dispatch_uses_panel_operation_names(self):
+        """Именно эти имена шлёт панель (app.API_ROUTES) — dispatch не должен их терять."""
+        status = admin.dispatch({"action": "proxy.status", "payload": {}})
+        self.assertTrue(status["installed"])
+        self.assertTrue(admin.dispatch({"action": "proxy", "payload": {}})["installed"])
+        with self.assertRaises(admin.ValidationError):
+            admin.dispatch({"action": "proxy.bogus", "payload": {}})
+
     def test_status_hints_installation_when_absent(self):
         (self.proxy_dir / "wdtt-proxy.sh").unlink()
         status = admin.proxy_status({})

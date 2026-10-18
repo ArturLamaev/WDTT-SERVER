@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -14,9 +15,12 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="2.2.1"', installer)
-        self.assertIn('__version__ = "2.2.1"', package)
-        self.assertIn("Текущая версия: 2.2.1", readme)
+        match = re.search(r'PANEL_VERSION="([^"]+)"', installer)
+        self.assertIsNotNone(match, "в install.sh нет PANEL_VERSION")
+        version = match.group(1)
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertIn(f'__version__ = "{version}"', package)
+        self.assertIn(f"Текущая версия: {version}", readme)
 
     def test_wdtt_proxy_is_bundled_monolith(self):
         """Шлюз лежит в репозитории (wdtt-proxy/) и ставится install.sh в /opt."""
