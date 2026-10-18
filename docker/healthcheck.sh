@@ -7,7 +7,10 @@
 set -u
 
 pidof wdtt-server >/dev/null 2>&1 || exit 1
-pidof nginx >/dev/null 2>&1 || exit 1
+case "${WDTT_WEB_SERVER:-nginx}" in
+  caddy) pidof caddy >/dev/null 2>&1 || exit 1 ;;
+  *) pidof nginx >/dev/null 2>&1 || exit 1 ;;
+esac
 
 PANEL_INFO="$(python3 - /etc/wdtt-panel/config.json <<'PY'
 import json, sys

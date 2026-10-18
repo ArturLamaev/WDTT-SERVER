@@ -105,6 +105,13 @@ PROXY_INSTALL_COMMAND = Path(os.environ.get("WDTT_PROXY_INSTALL_COMMAND", "/opt/
 INSTALL_LOG_FILE = Path(os.environ.get("WDTT_INSTALL_LOG_FILE", "/var/log/wdtt-panel-install.log"))
 NGINX_ACCESS_LOG = Path(os.environ.get("WDTT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log"))
 NGINX_ERROR_LOG = Path(os.environ.get("WDTT_NGINX_ERROR_LOG", "/var/log/nginx/error.log"))
+# Веб-сервер перед панелью: nginx (по умолчанию) или caddy (wdtt-caddy.service).
+# Задаётся как env в unit панели (пишет install.sh) и в окружении Docker.
+WEB_SERVER = os.environ.get("WDTT_WEB_SERVER", "nginx").strip().lower()
+if WEB_SERVER not in {"nginx", "caddy"}:
+    WEB_SERVER = "nginx"
+WEB_SERVICE = "wdtt-caddy.service" if WEB_SERVER == "caddy" else "nginx.service"
+WEB_TITLE = "Caddy" if WEB_SERVER == "caddy" else "Nginx"
 VK_HASH_LIBRARY_FORMAT = "wdtt-panel-vk-hash-library-v1"
 
 
@@ -1902,6 +1909,8 @@ def schedule_certificate_renew(payload: dict[str, Any]) -> dict[str, Any]:
 def export_certificate(payload: dict[str, Any]) -> dict[str, Any]:
     path = Path(str(payload.get("certificate_path") or ""))
     if not path.is_file():
+        if not str(path) and WEB_SERVER == "caddy":
+            raise ValidationError("Скачивать нечего: TLS-сертификатом управляет Caddy в собственном хранилище")
         raise ValidationError("Файл сертификата не найден")
     return {"name": "wdtt-panel-certificate.pem", "content": path.read_text(encoding="utf-8")}
 
@@ -1934,8 +1943,8 @@ def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
         "wdtt": ([SERVICE], "WDTT"),
         "panel": (["wdtt-panel.service"], "Панель"),
         "proxy": ([PROXY_SERVICE], "wdtt-proxy"),
-        "nginx": (["nginx.service"], "Nginx"),
-        "all": ([SERVICE, "wdtt-panel.service", "nginx.service"], "Все службы панели"),
+        "nginx": ([WEB_SERVICE], WEB_TITLE),
+        "all": ([SERVICE, "wdtt-panel.service", WEB_SERVICE], "Все службы панели"),
     }
     if source == "installer":
         path = INSTALL_LOG_FILE
@@ -2720,6 +2729,7 @@ def _docker_domain_paths() -> dict[str, Any]:
         "le_live": Path(os.environ.get("WDTT_LE_LIVE_DIR", "/etc/letsencrypt/live")),
         "certbot": os.environ.get("WDTT_CERTBOT_BIN", "/opt/wdtt-panel/certbot/bin/certbot"),
         "nginx_gen": os.environ.get("WDTT_NGINX_GEN", "/usr/local/sbin/wdtt-gen-nginx-conf"),
+        "web_gen": os.environ.get("WDTT_WEB_GEN", "/usr/local/sbin/wdtt-gen-nginx-conf"),
         "backups": Path(
             os.environ.get("WDTT_DOCKER_CONFIG_BACKUPS", "/var/lib/wdtt-panel-private/config-backups")
         ),
@@ -2808,7 +2818,9 @@ def _write_docker_panel_config(config_path: Path, config: dict[str, Any]) -> Non
 def _reload_docker_nginx(
     paths: dict[str, Any], config: dict[str, Any], host: str, cert: str, key: str, tls_mode: str
 ) -> None:
-    """Перерендер nginx-конфига из нового config и reload без дауна."""
+    """Перерендер конфига веб-сервера из нового config и reload без дауна."""
+    use_caddy = str(config.get("web_server") or os.environ.get("WDTT_WEB_SERVER") or "nginx") == "caddy"
+    generate_target = paths["web_gen"] if use_caddy else paths["nginx_gen"]
     env = {
         "PANEL_HOST": host,
         "PANEL_PATH": str(config.get("base_path") or "/"),
@@ -2818,9 +2830,18 @@ def _reload_docker_nginx(
         "PRIVATE_KEY_PATH": key,
         "TLS_MODE": tls_mode,
     }
-    generated = run([str(paths["nginx_gen"])], timeout=30, env=env)
+    generated = run([str(generate_target)], timeout=30, env=env)
     if generated.returncode != 0:
-        raise AdminError("nginx не принял новую конфигурацию")
+        raise AdminError("Веб-сервер не принял новую конфигурацию")
+    if use_caddy:
+        # Caddy: рендер-скрипт уже провалидировал Caddyfile; reload через admin API.
+        caddy_config = os.environ.get("WDTT_CADDY_CONFIG", "/etc/wdtt-docker/Caddyfile")
+        reloaded = run(
+            ["caddy", "reload", "--config", caddy_config, "--adapter", "caddyfile"], timeout=30
+        )
+        if reloaded.returncode != 0:
+            raise AdminError("Caddy не перезагрузился")
+        return
     reloaded = run(["nginx", "-s", "reload"], timeout=30)
     if reloaded.returncode != 0:
         raise AdminError("nginx не перезагрузился")
@@ -2840,6 +2861,19 @@ def _apply_docker_domain_change(host: str, email: str) -> dict[str, Any]:
     config["public_host"] = host
     if email:
         config["certificate_email"] = email
+    if str(config.get("web_server") or os.environ.get("WDTT_WEB_SERVER") or "nginx") == "caddy":
+        # Caddy управляет TLS сам: certbot/self-signed не нужны, конфиг
+        # генератор сам выберет tls internal (IP) или автоматический ACME (домен).
+        tls_mode = "internal" if _looks_like_ip(host) else "acme"
+        config["certificate_path"] = ""
+        config["tls_mode"] = tls_mode
+        _write_docker_panel_config(config_path, config)
+        _reload_docker_nginx(paths, config, host, "", "", tls_mode)
+        try:
+            os.kill(os.getpid(), getattr(signal, "SIGTERM", 15))
+        except (OSError, ValueError):
+            pass
+        return {"scheduled": True, "docker": True, "host": host, "tls_mode": tls_mode}
     tls_mode = str(config.get("tls_mode") or "self-signed")
     if tls_mode == "letsencrypt" and not _looks_like_ip(host):
         live = paths["le_live"] / host

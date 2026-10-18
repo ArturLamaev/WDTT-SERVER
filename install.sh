@@ -22,7 +22,7 @@
 #     копией в /var/lib/wdtt-uninstall-backup-<ts>.tar.gz; -y/--yes без запроса.
 #
 # Использование:
-#   sudo ./install.sh [--mode node|controller] [--non-interactive] [--domain panel.example.com] [--ip A.B.C.D]
+#   sudo ./install.sh [--mode node|controller] [--web-server nginx|caddy] [--non-interactive] [--domain panel.example.com] [--ip A.B.C.D]
 #                     [--user admin] [--password '...'] [--email '...']
 #                     [--https-port 9999] [--path /secret] [--wdtt-password '...']
 #                     [--telegram-token '123:...' --telegram-admin-id 123456]
@@ -137,6 +137,7 @@ detect_previous_install() {
     [ -e "$p" ] && return 0
   done
   [ -e /etc/nginx/conf.d/wdtt-panel.conf ] && return 0
+  [ -e /etc/systemd/system/wdtt-caddy.service ] && return 0
   systemctl list-units --all 2>/dev/null | grep -qE 'wdtt-panel|wdtt\.service' && return 0
   return 1
 }
@@ -222,6 +223,8 @@ wipe_previous_install() {
   rm -rf /opt/wdtt-panel /etc/wdtt-panel /var/lib/wdtt-panel /var/lib/wdtt-panel-private \
          /etc/wdtt /var/lib/wdtt
   rm -f /etc/nginx/conf.d/wdtt-panel.conf
+  rm -f /etc/systemd/system/wdtt-caddy.service
+  rm -rf /var/lib/wdtt-caddy /etc/wdtt-panel/caddy
   rm -f /usr/local/sbin/wdtt-panel* /etc/sudoers.d/wdtt-panel
   rm -f /var/log/wdtt-panel* /var/log/wdtt-server*.log 2>/dev/null || true
   info "Старая установка снесена"
@@ -424,7 +427,7 @@ cmd_uninstall() {
   info "Создаю резервную копию: $backup_file"
   tar -czf "$backup_file" /etc/wdtt /etc/wdtt-panel /opt/wdtt-panel /opt/wdtt-proxy \
       /var/lib/wdtt-panel /var/lib/wdtt-panel-private /var/lib/wdtt \
-      /etc/nginx/conf.d/wdtt-panel.conf 2>/dev/null || true
+      /etc/nginx/conf.d/wdtt-panel.conf /etc/systemd/system/wdtt-caddy.service 2>/dev/null || true
 
   info "Удаляю web-панель (штатным снос-скриптом)..."
   bash "$PANEL_INSTALL" uninstall "$@" || true
@@ -543,7 +546,7 @@ main() {
         main "$@"
         return 0
       fi
-      die "Использование: $0 [--mode node|controller] [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|enable-wdtt-extensions|install-wdtt-proxy]"
+      die "Использование: $0 [--mode node|controller] [--web-server nginx|caddy] [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|enable-wdtt-extensions|install-wdtt-proxy]"
       ;;
   esac
 }

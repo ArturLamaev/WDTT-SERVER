@@ -87,6 +87,29 @@ run_nginx() {
   done
 }
 
+# ── caddy на переднем плане (WDTT_WEB_SERVER=caddy; TLS сам) ─────────────────
+run_caddy() {
+  while [ "$SHUTDOWN" -eq 0 ]; do
+    log "caddy: старт"
+    caddy run --config "${WDTT_CADDY_OUTPUT:-/etc/wdtt-docker/Caddyfile}" --adapter caddyfile &
+    CADDY_PID=$!
+    echo "$CADDY_PID" > /run/wdtt/web.pid
+    wait "$CADDY_PID"
+    code=$?
+    [ "$SHUTDOWN" -eq 1 ] && break
+    log "caddy: завершился (код $code), перезапуск через 3с"
+    sleep 3
+  done
+}
+
+# ── веб-сервер: один из run_nginx/run_caddy по WDTT_WEB_SERVER ────────────────
+run_web() {
+  case "${WDTT_WEB_SERVER:-nginx}" in
+    caddy) run_caddy ;;
+    *) run_nginx ;;
+  esac
+}
+
 # ── авто-рестарт ядра и панели (аналог wdtt-auto-restart.timer) ──────────────
 run_auto_restart() {
   [ "${AUTO_RESTART_HOURS:-6}" -gt 0 ] 2>/dev/null || { log "auto-restart выключен"; return 0; }
@@ -203,7 +226,7 @@ run_tailscaled() {
 mkdir -p /run/wdtt
 run_wdtt &
 run_panel &
-run_nginx &
+run_web &
 run_tailscaled &
 run_auto_restart &
 run_backup_scheduler &
