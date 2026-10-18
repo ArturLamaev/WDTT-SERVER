@@ -109,6 +109,8 @@ button.secondary { color: var(--text); background: var(--panel-2); border-color:
 button.secondary:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 button.danger { color: var(--danger); background: rgba(208, 131, 107, .1); border-color: rgba(208, 131, 107, .3); }
 button:disabled { opacity: .5; cursor: wait; }
+/* Кнопки управляются атрибутом hidden (display из правил выше перебил бы UA). */
+button[hidden] { display: none; }
 .tab { display: none; }
 .tab.active { display: block; animation: page-in .25s ease both; }
 .tab.active .hero-grid > *, .tab.active .two-column > *, .tab.active .system-grid > * { animation: page-in .35s ease both; }

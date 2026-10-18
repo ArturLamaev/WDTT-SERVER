@@ -95,11 +95,13 @@ TAILSCALE_INSTALL_COMMAND = Path(
     os.environ.get("WDTT_TAILSCALE_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh")
 )
 TAILSCALED_SERVICE = os.environ.get("WDTT_TAILSCALED_SERVICE", "tailscaled.service")
-# wdtt-proxy: отдельный sing-box-прокси (tun + policy routing), ставится
-# параллельно с ядром (см. внеший репозиторий wdtt-proxy). Панель только
-# управляет systemd-юнитом и редактирует config.env.
+# wdtt-proxy: SOCKS5-шлюз (sing-box tun + policy routing), монолитно входит в
+# этот репозиторий (каталог wdtt-proxy/) и ставится установщиком панели в
+# /opt/wdtt-proxy — рядом с самой панелью. Панель управляет службой
+# (systemd-юнит на хосте, скрипт — в Docker) и редактирует config.env.
 PROXY_SERVICE = os.environ.get("WDTT_PROXY_SERVICE", "wdtt-proxy.service")
-PROXY_DIR = Path(os.environ.get("WDTT_PROXY_DIR", "/root/wdtt-proxy"))
+PROXY_DIR = Path(os.environ.get("WDTT_PROXY_DIR", "/opt/wdtt-proxy"))
+PROXY_INSTALL_COMMAND = Path(os.environ.get("WDTT_PROXY_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh"))
 INSTALL_LOG_FILE = Path(os.environ.get("WDTT_INSTALL_LOG_FILE", "/var/log/wdtt-panel-install.log"))
 NGINX_ACCESS_LOG = Path(os.environ.get("WDTT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log"))
 NGINX_ERROR_LOG = Path(os.environ.get("WDTT_NGINX_ERROR_LOG", "/var/log/nginx/error.log"))
@@ -1912,6 +1914,16 @@ def read_stats() -> dict[str, Any]:
         return {}
 
 
+def proxy_log_file() -> Path:
+    """Лог sing-box из RUNTIME_DIR (для режима без systemd, Docker)."""
+    try:
+        _, values = read_proxy_config()
+    except AdminError:
+        values = {}
+    runtime = str(values.get("RUNTIME_DIR") or "/run/wdtt-proxy")
+    return Path(runtime) / "sing-box.log"
+
+
 def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         limit = max(20, min(int(payload.get("limit", 1000)), 5000))
@@ -1935,6 +1947,14 @@ def journal_logs(payload: dict[str, Any]) -> dict[str, Any]:
     if source not in sources:
         raise ValidationError("Неизвестный источник журнала")
     units, title = sources[source]
+    if source == "proxy" and not proxy_uses_systemd():
+        # Docker: journald нет — читаем файл лога, который пишет wdtt-proxy.sh.
+        path = proxy_log_file()
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+        except OSError:
+            lines = []
+        return {"lines": lines, "source": source, "title": f"{title} (лог {path})", "units": [], "limit": limit}
     if SKIP_SYSTEMD:
         return {"lines": [], "source": source, "title": title, "units": [], "limit": limit}
     command = ["journalctl"]
@@ -3189,6 +3209,32 @@ def proxy_installed() -> bool:
     return (PROXY_DIR / "wdtt-proxy.sh").is_file()
 
 
+def proxy_uses_systemd() -> bool:
+    """Есть ли на хосте systemd. В Docker (WDTT_SKIP_SYSTEMD=1) — нет:
+    там шлюзом управляет сам wdtt-proxy.sh (nohup + pidfile)."""
+    if SKIP_SYSTEMD:
+        return False
+    return shutil.which("systemctl") is not None and Path("/run/systemd/system").is_dir()
+
+
+def proxy_script_path() -> Path:
+    return PROXY_DIR / "wdtt-proxy.sh"
+
+
+def proxy_script_active() -> bool:
+    """Запущен ли sing-box шлюза — для режима без systemd (Docker)."""
+    try:
+        result = run(["pgrep", "-f", "sing-box run -c"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def proxy_script_run(action: str, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+    script = proxy_script_path()
+    return run([str(script), action], timeout=timeout)
+
+
 def read_proxy_config() -> tuple[str, dict[str, str]]:
     """Считывает config.env (shell-формат KEY="VALUE") в словарь.
 
@@ -3343,8 +3389,9 @@ def write_proxy_config(current: str, normalized: dict[str, str]) -> None:
 
 
 def proxy_unit_installed() -> bool:
-    if SKIP_SYSTEMD:
-        return True
+    if not proxy_uses_systemd():
+        # Без systemd «юнит» не нужен: шлюзом управляет wdtt-proxy.sh.
+        return proxy_installed()
     try:
         result = run(["systemctl", "show", PROXY_SERVICE, "--property=LoadState", "--value"], timeout=15)
     except (OSError, subprocess.TimeoutExpired):
@@ -3353,8 +3400,8 @@ def proxy_unit_installed() -> bool:
 
 
 def proxy_unit_active() -> bool:
-    if SKIP_SYSTEMD:
-        return True
+    if not proxy_uses_systemd():
+        return proxy_script_active()
     try:
         result = run(["systemctl", "is-active", "--quiet", PROXY_SERVICE], timeout=15)
     except (OSError, subprocess.TimeoutExpired):
@@ -3362,10 +3409,30 @@ def proxy_unit_active() -> bool:
     return result.returncode == 0
 
 
+def proxy_restart() -> None:
+    """Перезапуск шлюза после правки config.env (systemd либо скрипт)."""
+    if not proxy_uses_systemd():
+        if not proxy_installed():
+            return
+        try:
+            result = proxy_script_run("restart")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AdminError(f"Не удалось перезапустить wdtt-proxy: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise AdminError(detail or "Конфиг сохранён, но перезапуск wdtt-proxy не удался")
+        return
+    if not proxy_unit_installed():
+        return
+    result = run(["systemctl", "restart", PROXY_SERVICE], timeout=60)
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or f"Конфиг сохранён, но systemctl restart {PROXY_SERVICE} не удался")
+
+
 def proxy_runtime_snapshot(mark: str = "0x100", tun: str = "sbtun0", table: str = "100") -> dict[str, Any]:
     """Живая картина: tun-интерфейс, ip rule и таблица policy-routing."""
     snapshot = {"tun_present": False, "rules": [], "table_routes": []}
-    if SKIP_SYSTEMD:
+    if shutil.which("ip") is None:
         return snapshot
     try:
         iface = run(["ip", "link", "show", tun], timeout=10)
@@ -3385,8 +3452,17 @@ def proxy_runtime_snapshot(mark: str = "0x100", tun: str = "sbtun0", table: str 
     return snapshot
 
 
+def proxy_install_hint() -> str:
+    return (
+        "Установите компонент кнопкой «Установить wdtt-proxy» "
+        "(или вручную: sudo /opt/wdtt-panel/install.sh install-wdtt-proxy "
+        "либо переустановка панели ./install.sh update)"
+    )
+
+
 def proxy_status(payload: dict[str, Any]) -> dict[str, Any]:
     installed = proxy_installed()
+    systemd_mode = proxy_uses_systemd()
     unit_installed = proxy_unit_installed() if installed else False
     unit_active = proxy_unit_active() if unit_installed else False
     try:
@@ -3417,6 +3493,10 @@ def proxy_status(payload: dict[str, Any]) -> dict[str, Any]:
         "installed": installed,
         "unit_installed": unit_installed,
         "active": unit_active,
+        "mode": "systemd" if systemd_mode else "script",
+        "autostart": proxy_autostart_enabled() if installed else False,
+        "install_hint": "" if installed else proxy_install_hint(),
+        "install_command": str(PROXY_INSTALL_COMMAND),
         "config_dir": str(PROXY_DIR),
         "service": PROXY_SERVICE,
         "singbox_found": shutil.which(singbox_bin) is not None or Path(singbox_bin).is_file(),
@@ -3429,25 +3509,87 @@ def proxy_status(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def proxy_autostart_enabled() -> bool:
+    """Автозапуск: systemd is-enabled либо маркер .enabled (Docker)."""
+    if not proxy_uses_systemd():
+        return (PROXY_DIR / ".enabled").is_file()
+    try:
+        result = run(["systemctl", "is-enabled", "--quiet", PROXY_SERVICE], timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def proxy_action(payload: dict[str, Any]) -> dict[str, Any]:
     action = str(payload.get("action") or "")
     if action not in {"start", "stop", "restart"}:
         raise ValidationError("Недопустимое действие прокси")
     if not proxy_installed():
-        raise ValidationError("wdtt-proxy не обнаружен на этом хосте (нет wdtt-proxy.sh)")
-    if SKIP_SYSTEMD:
-        return {"action": action, "state": "test"}
+        raise ValidationError("wdtt-proxy не установлен на этом хосте: " + proxy_install_hint())
+    if not proxy_uses_systemd():
+        # Docker/без systemd: шлюзом управляет собственный скрипт (nohup + pidfile),
+        # а «включённость» хранится маркером .enabled — его читает entrypoint.
+        try:
+            result = proxy_script_run(action)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AdminError(f"Не удалось выполнить wdtt-proxy.sh {action}: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            raise AdminError(detail[-1] if detail else f"wdtt-proxy.sh {action} вернул ошибку")
+        marker = PROXY_DIR / ".enabled"
+        try:
+            if action == "start":
+                marker.touch()
+            elif action == "stop" and marker.exists():
+                marker.unlink()
+        except OSError:
+            pass
+        return {"action": action, "mode": "script", "active": proxy_unit_active()}
     if not proxy_unit_installed():
-        raise AdminError(f"Юнит {PROXY_SERVICE} не установлен: скопируйте wdtt-proxy.service в /etc/systemd/system/")
-    result = run(["systemctl", action, PROXY_SERVICE], timeout=60)
+        raise AdminError(f"Юнит {PROXY_SERVICE} не установлен: выполните sudo {PROXY_INSTALL_COMMAND} install-wdtt-proxy")
+    # «Запустить» и «Остановить» — это ещё и автозапуск при перезагрузке.
+    if action == "start":
+        command = ["systemctl", "enable", "--now", PROXY_SERVICE]
+    elif action == "stop":
+        command = ["systemctl", "disable", "--now", PROXY_SERVICE]
+    else:
+        command = ["systemctl", "restart", PROXY_SERVICE]
+    result = run(command, timeout=60)
     if result.returncode != 0:
-        raise AdminError(result.stderr.strip() or f"Не удалось выполнить systemctl {action} {PROXY_SERVICE}")
-    return {"action": action, "active": proxy_unit_active()}
+        raise AdminError(result.stderr.strip() or f"Не удалось выполнить {' '.join(command[1:])}")
+    return {"action": action, "mode": "systemd", "active": proxy_unit_active()}
+
+
+def proxy_install(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ставит шлюз монолитно: файлы в /opt/wdtt-proxy + sing-box + юнит."""
+    if proxy_installed() and payload.get("force") is not True:
+        return {"installed": True, "already": True, "state": "present", **proxy_status({})}
+    command = PROXY_INSTALL_COMMAND
+    if not command.is_file():
+        raise AdminError(f"Установщик не найден: {command}. Обновите панель (install.sh update).")
+    if not proxy_uses_systemd():
+        # Docker: systemd-run нет — ставим прямо в текущем окружении.
+        try:
+            result = run(["bash", str(command), "install-wdtt-proxy"], timeout=900)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AdminError(f"Не удалось запустить установку wdtt-proxy: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise AdminError(detail or "Установка wdtt-proxy завершилась ошибкой")
+        return {"installed": proxy_installed(), "scheduled": False, **proxy_status({})}
+    unit = f"wdtt-proxy-install-{int(time.time())}"
+    result = run_transient_unit(
+        ["systemd-run", "--quiet", "--collect", f"--unit={unit}", "--on-active=2s", str(command), "install-wdtt-proxy"],
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise AdminError(result.stderr.strip() or "Не удалось запланировать установку wdtt-proxy")
+    return {"scheduled": True, "unit": unit}
 
 
 def proxy_config_save(payload: dict[str, Any]) -> dict[str, Any]:
     if not proxy_installed():
-        raise ValidationError("wdtt-proxy не обнаружен на этом хосте (нет wdtt-proxy.sh)")
+        raise ValidationError("wdtt-proxy не установлен на этом хосте: " + proxy_install_hint())
     text, values = read_proxy_config()
     update: dict[str, str] = {}
     for key in PROXY_EDITABLE_KEYS:
@@ -3466,12 +3608,12 @@ def proxy_config_save(payload: dict[str, Any]) -> dict[str, Any]:
             update[key] = str(payload.get(key))
     normalized = validate_proxy_config(update)
     write_proxy_config(text, normalized)
-    if SKIP_SYSTEMD:
-        return {"saved": True, "active": proxy_unit_active(), "config": normalized}
-    if proxy_unit_installed():
-        result = run(["systemctl", "restart", PROXY_SERVICE], timeout=60)
-        if result.returncode != 0:
-            raise AdminError(result.stderr.strip() or f"Конфиг сохранен, но systemctl restart {PROXY_SERVICE} не удался")
+    # Если шлюз запущен (или есть юнит) — перезапускаем с новыми настройками.
+    if proxy_uses_systemd():
+        if proxy_unit_installed():
+            proxy_restart()
+    elif proxy_unit_active():
+        proxy_restart()
     return {"saved": True, "active": proxy_unit_active(), "config": normalized}
 
 
@@ -3514,6 +3656,7 @@ OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "wdtt.settings": lambda payload: load_wdtt_settings(),
     "wdtt.save": save_wdtt_settings,
     "proxy": proxy_status,
+    "proxy.install": proxy_install,
     "proxy.action": proxy_action,
     "proxy.config": proxy_config_save,
     "certificate.change_domain": change_panel_domain,

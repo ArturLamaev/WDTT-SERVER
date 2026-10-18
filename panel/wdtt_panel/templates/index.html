@@ -117,12 +117,13 @@
       <div class="system-grid">
         <article class="panel-card">
           <div class="section-head"><div><p class="eyebrow">SOCKS5 GATEWAY</p><h2>wdtt-proxy</h2></div><span id="proxy-status" class="badge warn">загрузка</span></div>
-          <p class="muted">Прокси заворачивает весь трафик клиентов WDTT (интерфейс <code id="proxy-capture-if">wdtt0</code>) в ваш SOCKS5-сервер через sing-box. Работает и TCP, и UDP.</p>
+          <p class="muted">Прокси заворачивает весь трафик клиентов WDTT (интерфейс <code id="proxy-capture-if">wdtt0</code>) в ваш SOCKS5-сервер через sing-box. Работает и TCP, и UDP. Компонент входит в сборку WDTT-SERVER и ставится в <code>/opt/wdtt-proxy</code>.</p>
           <div id="proxy-info" class="detail-list"><p class="muted">Загрузка статуса…</p></div>
-          <div class="button-row"><button id="proxy-start" class="primary">Запустить</button><button id="proxy-restart" class="secondary">Перезапустить</button><button id="proxy-stop" class="danger">Остановить</button><button id="proxy-refresh" class="secondary">Обновить</button></div>
+          <div class="button-row"><button id="proxy-install" class="secondary">Установить wdtt-proxy</button><button id="proxy-start" class="primary">Запустить</button><button id="proxy-restart" class="secondary">Перезапустить</button><button id="proxy-stop" class="danger">Остановить</button><button id="proxy-refresh" class="secondary">Обновить</button></div>
+          <p class="muted">«Запустить» включает и автозапуск при перезагрузке, «Остановить» — выключает его.</p>
         </article>
         <article class="panel-card">
-          <p class="eyebrow">PROXY SETTINGS</p><h2>Настройки SOCKS5</h2><p class="muted">Правки сохраняются в config.env хоста и сразу применяются (systemctl restart wdtt-proxy). Пустой пароль означает «не менять»; чтобы убрать авторизацию — введите «-».</p>
+          <p class="eyebrow">PROXY SETTINGS</p><h2>Настройки SOCKS5</h2><p class="muted">Правки сохраняются в /opt/wdtt-proxy/config.env и сразу применяются (перезапуск wdtt-proxy). Пустой пароль означает «не менять»; чтобы убрать авторизацию — введите «-».</p>
           <div class="form-grid compact-grid">
             <label>SOCKS5 хост<input id="proxy-host" placeholder="100.66.0.5"></label>
             <label>Порт<input id="proxy-port" type="number" min="1" max="65535" placeholder="26666"></label>

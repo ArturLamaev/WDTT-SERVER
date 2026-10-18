@@ -170,7 +170,11 @@ elif action == "proxy.status":
         "installed": True,
         "unit_installed": True,
         "active": True,
-        "config_dir": "/root/wdtt-proxy",
+        "mode": "systemd",
+        "autostart": True,
+        "install_hint": "",
+        "install_command": "/opt/wdtt-panel/install.sh",
+        "config_dir": "/opt/wdtt-proxy",
         "service": "wdtt-proxy.service",
         "singbox_found": True,
         "singbox_bin": "/usr/local/bin/sing-box",
@@ -180,6 +184,8 @@ elif action == "proxy.status":
         "extra": {"MARK": "0x100", "TUN_NAME": "sbtun0", "ROUTE_TABLE": "100", "TUN_ADDRESS": "10.200.0.1/30"},
         "runtime": {"tun_present": True, "rules": ["100: fwmark 256 lookup 100"], "table_routes": ["default dev sbtun0"]},
     }
+elif action == "proxy.install":
+    result = {"installed": True, "already": True, "state": "present"}
 elif action == "proxy.action":
     result = {"action": str((request.get("payload") or {}).get("action") or ""), "active": True}
 elif action == "proxy.config.save":

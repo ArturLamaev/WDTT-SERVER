@@ -88,6 +88,33 @@ COPY --from=kernel-build /out/wdtt-server /usr/local/bin/wdtt-server
 # Веб-панель (pure-stdlib Python, без зависимостей)
 COPY panel/wdtt_panel /opt/wdtt-panel/wdtt_panel
 
+# wdtt-proxy — монолитный SOCKS5-шлюз (sing-box tun + policy routing).
+# sing-box ставим фиксированной версии туда же, куда и install.sh хоста.
+ARG SINGBOX_VERSION=1.14.3
+RUN set -e; arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) sb=amd64 ;; \
+    arm64) sb=arm64 ;; \
+    armhf) sb=armv7 ;; \
+    *) echo "sing-box: неподдерживаемая архитектура $arch" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL --retry 3 --max-time 600 \
+    "https://github.com/SAGernet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-${sb}.tar.gz" \
+    -o /tmp/sing-box.tar.gz; \
+  tar -xzf /tmp/sing-box.tar.gz -C /tmp; \
+  install -m 0755 "/tmp/sing-box-${SINGBOX_VERSION}-linux-${sb}/sing-box" /usr/local/bin/sing-box; \
+  rm -rf /tmp/sing-box.tar.gz "/tmp/sing-box-${SINGBOX_VERSION}-linux-${sb}"; \
+  sing-box version
+
+# Файлы шлюза: рабочий каталог /opt/wdtt-proxy + копия исходников рядом с
+# панелью, чтобы `install.sh install-wdtt-proxy` работал и внутри контейнера.
+COPY wdtt-proxy /opt/wdtt-proxy
+COPY wdtt-proxy /opt/wdtt-panel/wdtt-proxy
+COPY panel/install.sh /opt/wdtt-panel/install.sh
+RUN chmod 0755 /opt/wdtt-proxy/wdtt-proxy.sh /opt/wdtt-panel/wdtt-proxy/wdtt-proxy.sh /opt/wdtt-panel/install.sh \
+ && chmod 0600 /opt/wdtt-proxy/config.env /opt/wdtt-panel/wdtt-proxy/config.env \
+ && chmod 0644 /opt/wdtt-proxy/wdtt-proxy.service /opt/wdtt-proxy/README.md
+
 # Сид VK-хешей из репозитория (userdata/vk-hash.txt)
 COPY userdata /opt/userdata
 

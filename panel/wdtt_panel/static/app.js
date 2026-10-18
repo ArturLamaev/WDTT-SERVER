@@ -399,8 +399,14 @@
     state.proxy = result;
     const installed = Boolean(result.installed);
     const active = Boolean(result.active);
+    const scriptMode = (result.mode || "systemd") === "script";
+    // Кнопка установки нужна и когда файлы есть, а sing-box не встал (например,
+    // не было доступа к github при обновлении) — установщик идемпотентен.
+    const canInstall = !installed || !result.singbox_found;
     $("#proxy-status").className = `badge ${active ? "ok" : (installed ? "warn" : "bad")}`;
-    $("#proxy-status").textContent = active ? "работает" : (result.unit_installed ? "остановлен" : (installed ? "юнит не установлен" : "не установлен"));
+    $("#proxy-status").textContent = active ? "работает" : (installed ? "остановлен" : "не установлен");
+    $("#proxy-install").hidden = !canInstall;
+    $("#proxy-install").disabled = false;
     const config = result.config || {};
     const extra = result.extra || {};
     $("#proxy-capture-if").textContent = config.CAPTURE_IF || "wdtt0";
@@ -416,16 +422,19 @@
     $("#proxy-log-level").value = config.LOG_LEVEL || "warn";
     const suffix = `${config.PROXY_HOST || "?"}:${config.PROXY_PORT || "?"}`;
     const info = !installed
-      ? "wdtt-proxy не найден на этом хосте. Установите его (репозиторий wdtt-proxy: скопируйте каталог в /root/wdtt-proxy, config.env и юнит в /etc/systemd/system) и обновите статус."
-      : (active
-        ? `Клиенты ${config.CAPTURE_IF || "wdtt0"} (${config.SOURCE_CIDR || "—"}) уходят через ${suffix} (sing-box ${extra.TUN_NAME || "sbtun0"}).`
-        : (result.unit_installed ? "Прокси остановлен. Стартуйте кнопкой «Запустить»." : "Каталог прокси найден, но юнит systemd не установлен — скопируйте wdtt-proxy.service в /etc/systemd/system/."));
+      ? `wdtt-proxy не установлен на этом хосте. ${result.install_hint || "Установите его установщиком панели."}`
+      : (!result.singbox_found
+        ? "Файлы шлюза на месте, но sing-box не установлен — нажмите «Установить wdtt-proxy» (нужен доступ к github.com)."
+        : (active
+          ? `Клиенты ${config.CAPTURE_IF || "wdtt0"} (${config.SOURCE_CIDR || "—"}) уходят через ${suffix} (sing-box ${extra.TUN_NAME || "sbtun0"}).`
+          : "Прокси остановлен. Стартуйте кнопкой «Запустить»."));
     const rows = [
-      healthRow("Юнит systemd", result.unit_installed, result.service || "wdtt-proxy.service"),
+      healthRow(scriptMode ? "Способ управления" : "Юнит systemd", result.unit_installed, scriptMode ? "скриптом wdtt-proxy.sh (без systemd)" : (result.service || "wdtt-proxy.service")),
       healthRow("Каталог wdtt-proxy", installed, result.config_dir || ""),
       healthRow("sing-box", Boolean(result.singbox_found), result.singbox_bin || "не задан"),
       healthRow("tun-интерфейс", Boolean((result.runtime || {}).tun_present), extra.TUN_NAME || "sbtun0"),
       healthRow("SOCKS5", Boolean(config.PROXY_HOST), suffix),
+      healthRow("Автозапуск", Boolean(result.autostart), result.autostart ? "включён" : "выключен"),
       healthRow("Авторизация прокси", Boolean(result.proxy_pass_set), result.proxy_pass_set ? result.proxy_pass_hint : "без пароля"),
     ].join("");
     $("#proxy-info").innerHTML = info ? `<p class="muted">${escapeHtml(info)}</p><div class="detail-list">${rows}</div>` : rows;
@@ -453,6 +462,19 @@
     const button = $(`#proxy-${action}`); setBusy(button, true);
     try { renderProxy(await api("proxy/action", { method: "POST", body: { action } })); toast(`Действие «${action}» выполнено`); }
     catch (error) { toast(error.message, true); loadProxy().catch(() => {}); }
+    finally { setBusy(button, false); }
+  }
+
+  async function installProxy() {
+    const button = $("#proxy-install");
+    if (!confirm("Установить wdtt-proxy (sing-box + шлюз в /opt/wdtt-proxy)? Понадобится доступ к github.com для загрузки sing-box.")) return;
+    setBusy(button, true);
+    try {
+      const result = await api("proxy/install", { method: "POST", body: { force: true } });
+      if (result.scheduled) toast("Установка wdtt-proxy запущена, статус обновится автоматически");
+      else toast("wdtt-proxy установлен");
+      setTimeout(loadProxy, result.scheduled ? 15000 : 2000);
+    } catch (error) { toast(error.message, true); loadProxy().catch(() => {}); }
     finally { setBusy(button, false); }
   }
 
@@ -1753,6 +1775,7 @@
     $("#download-certificate").addEventListener("click", downloadCertificate);
     $("#change-domain").addEventListener("click", changeDomain);
     $("#save-wdtt-settings").addEventListener("click", saveWdttSettings);
+    $("#proxy-install").addEventListener("click", installProxy);
     $("#proxy-start").addEventListener("click", () => proxyAction("start"));
     $("#proxy-restart").addEventListener("click", () => proxyAction("restart"));
     $("#proxy-stop").addEventListener("click", () => proxyAction("stop"));

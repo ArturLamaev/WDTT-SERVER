@@ -102,9 +102,21 @@ self-signed), делает reload nginx и рестарт панели — по�
 | `wdtt-panel-private` | `/var/lib/wdtt-panel-private` — бэкапы/расписания/настройки |
 | `wdtt-letsencrypt` | `/etc/letsencrypt` — сертификаты LE |
 | `tailscale-state` | `/var/lib/tailscale` — идентичность в tailnet (переживает рестарты) |
+| `wdtt-proxy-config` | `/opt/wdtt-proxy` — файлы шлюза SOCKS5 и `config.env` |
 
 Свой сид VK-хешей вместо вшитого в образ: раскомментируйте монтирование
 `../userdata:/opt/userdata:ro` в compose.
+
+## Шлюз SOCKS5 (wdtt-proxy)
+
+Образ ставит sing-box и кладёт файлы шлюза в `/opt/wdtt-proxy`; управление —
+вкладка **«Прокси»** панели (статус, старт/стоп/перезапуск, правка `config.env`).
+systemd в контейнере нет, поэтому панель управляет шлюзом его же скриптом
+(`wdtt-proxy.sh start|stop|restart`, nohup + pidfile), а не юнитом. Правки
+`config.env` сохраняются в томе `wdtt-proxy-config`.
+
+Контейнеру нужны `NET_ADMIN`/`NET_RAW` и `/dev/net/tun` (уже в compose) — без них
+sing-box не создаст tun-интерфейс.
 
 ## Обслуживание
 

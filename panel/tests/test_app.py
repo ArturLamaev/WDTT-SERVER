@@ -279,6 +279,11 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(headers["status"].startswith("200"))
         self.assertEqual(json.loads(body)["result"]["action"], "start")
 
+        payload = json.dumps({}).encode()
+        headers, body = self.request("/private-panel-path/api/proxy/install", "POST", payload, cookie, csrf)
+        self.assertTrue(headers["status"].startswith("200"))
+        self.assertTrue(json.loads(body)["result"]["installed"])
+
         payload = json.dumps({"PROXY_HOST": "100.66.0.5", "PROXY_PORT": "26666"}).encode()
         headers, body = self.request("/private-panel-path/api/proxy/config", "POST", payload, cookie, csrf)
         self.assertTrue(headers["status"].startswith("200"))

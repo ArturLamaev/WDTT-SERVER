@@ -1138,9 +1138,17 @@ LOG_LEVEL="warn"
         self.proxy_dir.mkdir()
         (self.proxy_dir / "wdtt-proxy.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         (self.proxy_dir / "config.env").write_text(self.SAMPLE_CONFIG, encoding="utf-8")
+        self.script_calls = []
+
+        def fake_script_run(action, timeout=180):
+            self.script_calls.append(action)
+            return subprocess.CompletedProcess([str(self.proxy_dir / "wdtt-proxy.sh"), action], 0, "ok", "")
+
         self.patchers = [
             mock.patch.object(admin, "PROXY_DIR", self.proxy_dir),
             mock.patch.object(admin, "SKIP_SYSTEMD", True),
+            mock.patch.object(admin, "proxy_script_active", return_value=True),
+            mock.patch.object(admin, "proxy_script_run", side_effect=fake_script_run),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -1244,7 +1252,67 @@ LOG_LEVEL="warn"
             admin.proxy_action({"action": "flush"})
         result = admin.proxy_action({"action": "restart"})
         self.assertEqual(result["action"], "restart")
-        self.assertEqual(result["state"], "test")
+        self.assertEqual(result["mode"], "script")
+        self.assertEqual(self.script_calls, ["restart"])
+
+    def test_action_uses_systemd_when_available(self):
+        with mock.patch.object(admin, "proxy_uses_systemd", return_value=True), mock.patch.object(
+            admin, "proxy_unit_installed", return_value=True
+        ), mock.patch.object(admin, "run", return_value=subprocess.CompletedProcess([], 0, "", "")):
+            result = admin.proxy_action({"action": "start"})
+        self.assertEqual(result["mode"], "systemd")
+        self.assertEqual(self.script_calls, [])
+
+    def test_status_marks_script_mode_in_docker(self):
+        status = admin.proxy_status({})
+        self.assertEqual(status["mode"], "script")
+        self.assertEqual(status["install_hint"], "")
+        self.assertTrue(status["unit_installed"])
+
+    def test_status_hints_installation_when_absent(self):
+        (self.proxy_dir / "wdtt-proxy.sh").unlink()
+        status = admin.proxy_status({})
+        self.assertFalse(status["installed"])
+        self.assertIn("install-wdtt-proxy", status["install_hint"])
+
+    def test_install_schedules_transient_unit_on_systemd_host(self):
+        (self.proxy_dir / "wdtt-proxy.sh").unlink()
+        installer = self.proxy_dir / "install.sh"
+        installer.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", installer), mock.patch.object(
+            admin, "proxy_uses_systemd", return_value=True
+        ), mock.patch.object(admin, "run_transient_unit", return_value=subprocess.CompletedProcess([], 0, "", "")) as transient:
+            result = admin.proxy_install({})
+        self.assertTrue(result["scheduled"])
+        command = transient.call_args.args[0]
+        self.assertEqual(command[-1], "install-wdtt-proxy")
+        self.assertIn(str(installer), command)
+
+    def test_install_runs_installer_in_script_mode(self):
+        (self.proxy_dir / "wdtt-proxy.sh").unlink()
+        installer = self.proxy_dir / "install.sh"
+        installer.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+        def fake_run(command, **kwargs):
+            (self.proxy_dir / "wdtt-proxy.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "installed", "")
+
+        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", installer), mock.patch.object(admin, "run", side_effect=fake_run):
+            result = admin.proxy_install({})
+        self.assertFalse(result["scheduled"])
+        self.assertTrue(result["installed"])
+
+    def test_install_is_idempotent(self):
+        result = admin.proxy_install({})
+        self.assertTrue(result["already"])
+        self.assertEqual(result["state"], "present")
+
+    def test_install_requires_installer_file(self):
+        (self.proxy_dir / "wdtt-proxy.sh").unlink()
+        missing = self.proxy_dir / "nope-install.sh"
+        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", missing):
+            with self.assertRaises(admin.AdminError):
+                admin.proxy_install({})
 
     def test_logs_include_proxy_source(self):
         payload = {"limit": 20, "source": "proxy"}
@@ -1254,6 +1322,18 @@ LOG_LEVEL="warn"
         self.assertEqual(data["lines"], [])
         with self.assertRaises(admin.ValidationError):
             admin.journal_logs({"source": "bogus"})
+
+    def test_logs_read_singbox_file_without_systemd(self):
+        runtime = Path(self.temp.name) / "run"
+        runtime.mkdir()
+        (runtime / "sing-box.log").write_text("первая\nвторая\n", encoding="utf-8")
+        config = self.proxy_dir / "config.env"
+        config.write_text(
+            config.read_text(encoding="utf-8") + f'RUNTIME_DIR="{runtime.as_posix()}"\n', encoding="utf-8"
+        )
+        data = admin.journal_logs({"limit": 20, "source": "proxy"})
+        self.assertEqual(data["lines"], ["первая", "вторая"])
+        self.assertEqual(data["units"], [])
 
 
 if __name__ == "__main__":

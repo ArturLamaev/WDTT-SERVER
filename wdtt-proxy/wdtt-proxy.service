@@ -1,0 +1,23 @@
+[Unit]
+Description=wdtt-proxy — SOCKS5 transparent proxy for wdtt0
+Documentation=file:/opt/wdtt-proxy/README.md
+After=network-online.target
+Wants=network-online.target
+# Если SOCKS5-прокси доступен через tailscale — раскомментируйте:
+#After=tailscaled.service
+#Requires=tailscaled.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wdtt-proxy
+Environment=WDTT_PROXY_CONFIG=/opt/wdtt-proxy/config.env
+ExecStartPre=/opt/wdtt-proxy/wdtt-proxy.sh rules-down
+ExecStart=/opt/wdtt-proxy/wdtt-proxy.sh run
+ExecStartPost=/opt/wdtt-proxy/wdtt-proxy.sh rules-up
+ExecStopPost=/opt/wdtt-proxy/wdtt-proxy.sh rules-down
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

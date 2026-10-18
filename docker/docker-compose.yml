@@ -72,6 +72,7 @@ services:
       - wdtt-panel-private:/var/lib/wdtt-panel-private   # бэкапы, расписания, настройки
       - wdtt-letsencrypt:/etc/letsencrypt         # сертификаты Let's Encrypt
       - tailscale-state:/var/lib/tailscale        # идентичность tailnet (переживает рестарты)
+      - wdtt-proxy-config:/opt/wdtt-proxy          # config.env шлюза SOCKS5 (переживает пересоздание)
       # Код панели из репозитория поверх запечённого в образ: обновление
       # Python-кода (панель, fleet, фронт) = git pull на хосте +
       # `docker compose restart wdtt`. Пересборка (`up -d --build`) нужна
@@ -105,3 +106,4 @@ volumes:
   wdtt-panel-private: {}
   wdtt-letsencrypt: {}
   tailscale-state: {}
+  wdtt-proxy-config: {}

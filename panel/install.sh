@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="2.1.0"
+PANEL_VERSION="2.2.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,6 +65,15 @@ WDTT_SERVICE="wdtt.service"
 WDTT_EXTENSIONS_SERVICE="wdtt-panel-wdtt-extensions.service"
 WDTT_EXTENSIONS_TIMER="wdtt-panel-wdtt-extensions.timer"
 WDTT_EXTENSION_MARKER="wdtt-panel-extension-v10"
+# wdtt-proxy: монолитно встроенный SOCKS5-шлюз (sing-box tun + policy routing).
+# Исходники лежат в репозитории (wdtt-proxy/), ставятся в /opt/wdtt-proxy —
+# рядом с панелью /opt/wdtt-panel. Панель (вкладка «Прокси») управляет
+# сервисом и правит config.env.
+WDTT_PROXY_DIR="/opt/wdtt-proxy"
+WDTT_PROXY_SERVICE="wdtt-proxy.service"
+WDTT_PROXY_SERVICE_FILE="/etc/systemd/system/wdtt-proxy.service"
+SINGBOX_BIN="/usr/local/bin/sing-box"
+SINGBOX_VERSION="${WDTT_SINGBOX_VERSION:-1.14.3}"
 # Панель всегда запускается от root и вызывает root-хелпер напрямую (без sudo).
 # Причина: юнит задаёт RestrictAddressFamilies=/LockPersonality=, а systemd для них
 # принудительно включает NoNewPrivileges=yes (его нельзя отключить), поэтому sudo
@@ -1015,6 +1024,16 @@ install_panel_files() {
       cp -a "$SCRIPT_DIR/../src" "$INSTALL_DIR/src"
     fi
   fi
+  # Монолит: исходники шлюза wdtt-proxy держим рядом с панелью (/opt/wdtt-panel),
+  # чтобы `install.sh install-wdtt-proxy` работал и после веб-обновления.
+  proxy_src="$(proxy_source_dir 2>/dev/null || true)"
+  if [ -n "$proxy_src" ] && [ "$proxy_src" != "$INSTALL_DIR/wdtt-proxy" ]; then
+    rm -rf "$INSTALL_DIR/wdtt-proxy"
+    cp -a "$proxy_src" "$INSTALL_DIR/wdtt-proxy"
+    find "$INSTALL_DIR/wdtt-proxy" -type f -exec chmod 0644 {} +
+    chmod 0755 "$INSTALL_DIR/wdtt-proxy/wdtt-proxy.sh"
+    chmod 0600 "$INSTALL_DIR/wdtt-proxy/config.env"
+  fi
   chown -R root:root "$INSTALL_DIR/wdtt_panel"
   find "$INSTALL_DIR/wdtt_panel" -type d -exec chmod 0755 {} +
   find "$INSTALL_DIR/wdtt_panel" -type f -exec chmod 0644 {} +
@@ -1404,6 +1423,123 @@ install_tailscale_runtime() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# wdtt-proxy (монолит): sing-box + tun + policy routing -> SOCKS5.
+# Файлы шлюза берутся из репозитория (wdtt-proxy/) и ставятся в
+# /opt/wdtt-proxy; sing-box — в /usr/local/bin/sing-box.
+# ---------------------------------------------------------------------------
+proxy_source_dir() {
+  local candidate
+  for candidate in "$SCRIPT_DIR/wdtt-proxy" "$INSTALL_DIR/wdtt-proxy" "$SCRIPT_DIR/../wdtt-proxy"; do
+    if [ -f "$candidate/wdtt-proxy.sh" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+singbox_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'amd64' ;;
+    aarch64|arm64) printf 'arm64' ;;
+    armv7l|armv7) printf 'armv7' ;;
+    *) return 1 ;;
+  esac
+}
+
+install_singbox_binary() {
+  local have="" arch="" work="" tarball="" unpacked=""
+  if command -v "$SINGBOX_BIN" >/dev/null 2>&1; then
+    have="$("$SINGBOX_BIN" version 2>/dev/null | sed -n 's/^sing-box version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+  fi
+  if [ "$have" = "$SINGBOX_VERSION" ]; then
+    log "sing-box $SINGBOX_VERSION уже установлен"
+    return 0
+  fi
+  command_exists curl || die "Для установки sing-box требуется curl"
+  arch="$(singbox_arch)" || die "sing-box не поддержан для архитектуры $(uname -m)"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-singbox.XXXXXX")"
+  tarball="sing-box-${SINGBOX_VERSION}-linux-${arch}.tar.gz"
+  unpacked="sing-box-${SINGBOX_VERSION}-linux-${arch}"
+  log "Загрузка sing-box $SINGBOX_VERSION ($arch)"
+  if ! curl -fsSL --retry 3 --max-time 600 \
+    "https://github.com/SAGernet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}" \
+    -o "$work/$tarball" >>"$LOG_FILE" 2>&1; then
+    rm -rf "$work"
+    die "Не удалось скачать sing-box $SINGBOX_VERSION"
+  fi
+  if ! tar -xzf "$work/$tarball" -C "$work" >>"$LOG_FILE" 2>&1; then
+    rm -rf "$work"
+    die "Повреждён архив sing-box"
+  fi
+  if [ ! -x "$work/$unpacked/sing-box" ]; then
+    rm -rf "$work"
+    die "В архиве sing-box нет бинарника"
+  fi
+  install -m 0755 "$work/$unpacked/sing-box" "$SINGBOX_BIN"
+  rm -rf "$work"
+  "$SINGBOX_BIN" version >/dev/null 2>&1 || die "sing-box не запускается"
+  log "sing-box $SINGBOX_VERSION установлен в $SINGBOX_BIN"
+}
+
+install_wdtt_proxy() {
+  require_root
+  local src="" was_active=0
+  src="$(proxy_source_dir)" || die "Каталог wdtt-proxy не найден рядом с install.sh"
+  # 1. Файлы шлюза. config.env не перетираем: в нём текущая настройка SOCKS5.
+  install -d -m 0755 "$WDTT_PROXY_DIR"
+  install -m 0755 "$src/wdtt-proxy.sh" "$WDTT_PROXY_DIR/wdtt-proxy.sh"
+  install -m 0644 "$src/wdtt-proxy.service" "$WDTT_PROXY_DIR/wdtt-proxy.service"
+  if [ -f "$src/README.md" ]; then
+    install -m 0644 "$src/README.md" "$WDTT_PROXY_DIR/README.md"
+  fi
+  if [ -f "$WDTT_PROXY_DIR/config.env" ]; then
+    log "config.env прокси сохранён без изменений"
+  else
+    install -m 0600 "$src/config.env" "$WDTT_PROXY_DIR/config.env"
+  fi
+  chmod 0600 "$WDTT_PROXY_DIR/config.env"
+  # 2. sing-box фиксированной версии.
+  install_singbox_binary
+  # 3. systemd-юнит. Сервис сам не поднимаем: если он был запущен — перезапускаем
+  #    с новыми файлами, иначе ждём кнопку «Запустить» во вкладке «Прокси».
+  if command_exists systemctl && [ -d /run/systemd/system ]; then
+    systemctl is-active --quiet "$WDTT_PROXY_SERVICE" 2>/dev/null && was_active=1
+    install -m 0644 "$src/wdtt-proxy.service" "$WDTT_PROXY_SERVICE_FILE"
+    systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+    if [ "$was_active" = "1" ]; then
+      systemctl restart "$WDTT_PROXY_SERVICE" >>"$LOG_FILE" 2>&1 || log "WARN: $WDTT_PROXY_SERVICE не перезапустился"
+      log "wdtt-proxy обновлён и перезапущен"
+    else
+      log "wdtt-proxy установлен в $WDTT_PROXY_DIR (юнит создан, сервис не запущен)"
+      log "Запуск: кнопка «Запустить» во вкладке «Прокси» либо systemctl start $WDTT_PROXY_SERVICE"
+    fi
+  else
+    log "systemd недоступен (Docker?): файлы wdtt-proxy готовы в $WDTT_PROXY_DIR, запуск — из вкладки «Прокси»"
+  fi
+}
+
+remove_wdtt_proxy() {
+  local keep_dir="${1:-0}"
+  if command_exists systemctl && [ -d /run/systemd/system ]; then
+    if [ -f "$WDTT_PROXY_SERVICE_FILE" ] || systemctl list-unit-files "$WDTT_PROXY_SERVICE" >/dev/null 2>&1; then
+      sys_timeout 60 systemctl disable --now "$WDTT_PROXY_SERVICE"
+      rm -f "$WDTT_PROXY_SERVICE_FILE"
+      systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+    fi
+  fi
+  if [ "$keep_dir" != "1" ]; then
+    # Без systemd (Docker) шлюз мог быть поднят скриптом — гасим его вместе с правилами.
+    if [ -x "$WDTT_PROXY_DIR/wdtt-proxy.sh" ]; then
+      if ! command_exists systemctl || ! systemctl is-active --quiet "$WDTT_PROXY_SERVICE" 2>/dev/null; then
+        "$WDTT_PROXY_DIR/wdtt-proxy.sh" stop >>"$LOG_FILE" 2>&1 || true
+      fi
+    fi
+    rm -rf "$WDTT_PROXY_DIR"
+  fi
+}
+
 write_panel_config() {
   PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
   python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" <<'PY'
@@ -1485,9 +1621,10 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 # Панель сама правит /etc/systemd/system (telegram.save переписывает
-# wdtt.service, backups.schedule — таймеры) и /etc/wdtt (bot.token):
-# без этих исключений mkstemp падает с EROFS [Errno 30].
-ReadWritePaths=$STATE_DIR $PRIVATE_STATE_DIR -/etc/wdtt -/etc/systemd/system
+# wdtt.service, backups.schedule — таймеры), /etc/wdtt (bot.token) и
+# /opt/wdtt-proxy (config.env шлюза SOCKS5): без этих исключений
+# mkstemp падает с EROFS [Errno 30].
+ReadWritePaths=$STATE_DIR $PRIVATE_STATE_DIR -/etc/wdtt -/etc/systemd/system -/opt/wdtt-proxy
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 LockPersonality=true
 
@@ -2052,6 +2189,8 @@ uninstall_panel() {
   rm -f "/etc/systemd/system/$PANEL_SERVICE" "/etc/systemd/system/$FLEET_SERVICE" "/etc/systemd/system/$FLEET_BOT_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
   log "Убираю обёртки панели и служебные файлы..."
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER"
+  log "Снимаю службу wdtt-proxy (шлюз SOCKS5) и её файлы..."
+  remove_wdtt_proxy
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
   log "Чищу правила фаервола панели и ядра..."
   remove_firewall_rule "$panel_port" tcp
@@ -2081,6 +2220,7 @@ update_panel() {
   backup_wdtt_database_before_update
   backup_panel_config_before_update
   install_panel_files
+  ( install_wdtt_proxy ) || log "WARN: wdtt-proxy не обновлён (детали выше); повторите: $0 install-wdtt-proxy"
   write_maintenance_scripts
   migrate_panel_config
   update_panel_config_metadata
@@ -2463,6 +2603,9 @@ install_panel() {
   install_panel_files
   remove_obsolete_fleet_agent
   install_wdtt_extensions
+  # Шлюз SOCKS5 ставим не критично: без github.com панель всё равно встанет,
+  # а кнопка «Установить wdtt-proxy» повторит попытку из панели.
+  ( install_wdtt_proxy ) || log "WARN: wdtt-proxy не установлен (детали выше); повторите: $0 install-wdtt-proxy"
   apply_telegram_settings
   write_maintenance_scripts
 
@@ -2507,6 +2650,7 @@ case "${1:-install}" in
   clean-system|--clean-system|clean-logs) clean_system_safe ;;
   uninstall|--uninstall|-u) require_root; uninstall_panel ;;
   install-tailscale-runtime) install_tailscale_runtime ;;
+  install-wdtt-proxy) install_wdtt_proxy ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-tailscale-runtime|enable-wdtt-extensions] [--mode node|controller]" ;;
+  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-tailscale-runtime|install-wdtt-proxy|enable-wdtt-extensions] [--mode node|controller]" ;;
 esac

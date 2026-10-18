@@ -27,6 +27,7 @@
 #                     [--https-port 9999] [--path /secret] [--wdtt-password '...']
 #                     [--telegram-token '123:...' --telegram-admin-id 123456]
 #   sudo ./install.sh status | update | renew-cert | change-password | clean-system | uninstall
+#   sudo ./install.sh install-wdtt-proxy     # поставить/обновить шлюз SOCKS5 (sing-box)
 #
 # Режим выбирается вопросом при старте, флагом --mode (node|controller) или
 # env WDTT_MODE. Нода = VPN + локальная панель; контроллер = панель управления
@@ -201,16 +202,17 @@ upgrade_existing_install() {
 wipe_previous_install() {
   info "Делаю полную очистку старой панели и WDTT..."
   info "Останавливаю службы..."
-  sys_timeout 180 systemctl stop wdtt wdtt-panel wdtt-app
-  sys_timeout 60 systemctl disable wdtt wdtt-panel wdtt-app
+  sys_timeout 180 systemctl stop wdtt wdtt-panel wdtt-app wdtt-proxy
+  sys_timeout 60 systemctl disable wdtt wdtt-panel wdtt-app wdtt-proxy
   pkill -x wdtt-server 2>/dev/null || true
   uninstall_wdtt_kernel
   rm -f /etc/systemd/system/wdtt.service /etc/systemd/system/wdtt-app.service \
-        /etc/systemd/system/wdtt-panel.service /etc/systemd/system/wdtt-panel-wdtt-extensions.* \
+        /etc/systemd/system/wdtt-panel.service /etc/systemd/system/wdtt-proxy.service \
+        /etc/systemd/system/wdtt-panel-wdtt-extensions.* \
         /etc/systemd/system/wdtt-auto-restart.* /etc/systemd/system/wdtt-fleet-agent.service 2>/dev/null || true
   sys_timeout 60 systemctl daemon-reload
   rm -f /usr/local/bin/wdtt-server /usr/local/bin/wdtt-app
-  rm -rf /opt/wdtt-panel /etc/wdtt-panel /var/lib/wdtt-panel /var/lib/wdtt-panel-private \
+  rm -rf /opt/wdtt-panel /opt/wdtt-proxy /etc/wdtt-panel /var/lib/wdtt-panel /var/lib/wdtt-panel-private \
          /etc/wdtt /var/lib/wdtt
   rm -f /etc/nginx/conf.d/wdtt-panel.conf
   rm -f /usr/local/sbin/wdtt-panel* /etc/sudoers.d/wdtt-panel
@@ -413,7 +415,7 @@ cmd_uninstall() {
   ts="$(date +%Y%m%d-%H%M%S)"
   backup_file="/var/lib/wdtt-uninstall-backup-${ts}.tar.gz"
   info "Создаю резервную копию: $backup_file"
-  tar -czf "$backup_file" /etc/wdtt /etc/wdtt-panel /opt/wdtt-panel \
+  tar -czf "$backup_file" /etc/wdtt /etc/wdtt-panel /opt/wdtt-panel /opt/wdtt-proxy \
       /var/lib/wdtt-panel /var/lib/wdtt-panel-private /var/lib/wdtt \
       /etc/nginx/conf.d/wdtt-panel.conf 2>/dev/null || true
 
@@ -425,6 +427,10 @@ cmd_uninstall() {
   info "Удаляю авто-рестарт, остатки ядра WDTT и лефтоверы..."
   sys_timeout 120 systemctl disable --now wdtt-auto-restart.timer wdtt-auto-restart.service
   rm -f /etc/systemd/system/wdtt-auto-restart.* 2>/dev/null || true
+  info "Снимаю шлюз wdtt-proxy..."
+  sys_timeout 120 systemctl disable --now wdtt-proxy
+  rm -f /etc/systemd/system/wdtt-proxy.service 2>/dev/null || true
+  rm -rf /opt/wdtt-proxy 2>/dev/null || true
   info "Останавливаю ядро WDTT..."
   sys_timeout 120 systemctl stop wdtt
   sys_timeout 60 systemctl disable wdtt
@@ -520,13 +526,15 @@ main() {
     clean-system|--clean-system|clean-logs) exec bash "$PANEL_INSTALL" "$@" ;;
     enable-wdtt-extensions)
       exec bash "$PANEL_INSTALL" "$@" ;;
+    install-wdtt-proxy)
+      exec bash "$PANEL_INSTALL" "$@" ;;
     *)
       if [[ "${1:-}" == -* ]]; then
         set -- install "$@"
         main "$@"
         return 0
       fi
-      die "Использование: $0 [--mode node|controller] [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|enable-wdtt-extensions]"
+      die "Использование: $0 [--mode node|controller] [install|update|restart|renew-cert|status|change-password|clean-system|uninstall|enable-wdtt-extensions|install-wdtt-proxy]"
       ;;
   esac
 }

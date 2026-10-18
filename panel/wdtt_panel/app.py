@@ -432,6 +432,7 @@ class Panel:
             "wdtt": "wdtt.settings",
             "wdtt/save": "wdtt.save",
             "proxy": "proxy.status",
+            "proxy/install": "proxy.install",
             "proxy/action": "proxy.action",
             "proxy/config": "proxy.config.save",
             "certificate/change-domain": "certificate.change_domain",

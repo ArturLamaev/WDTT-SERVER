@@ -441,4 +441,15 @@ echo "  Логи:    docker compose logs -f"
 echo "======================================================"
 unset PANEL_PASSWORD
 
+# ── 10. шлюз SOCKS5 (wdtt-proxy), если был включён во вкладке «Прокси» ───────
+start_wdtt_proxy_if_enabled() {
+  local dir="${WDTT_PROXY_DIR:-/opt/wdtt-proxy}"
+  [ -x "$dir/wdtt-proxy.sh" ] || return 0
+  [ -f "$dir/.enabled" ] || return 0
+  log "запускаю wdtt-proxy (маркер .enabled от панели)"
+  WDTT_PROXY_CONFIG="$dir/config.env" "$dir/wdtt-proxy.sh" start >>/var/log/wdtt-proxy-start.log 2>&1 \
+    || log "WARN: wdtt-proxy не запустился, смотрите /var/log/wdtt-proxy-start.log"
+}
+start_wdtt_proxy_if_enabled
+
 exec "${CMD_ARGS[@]}"

@@ -14,9 +14,34 @@ class InstallScriptTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         package = (ROOT / "wdtt_panel" / "__init__.py").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn('PANEL_VERSION="2.1.0"', installer)
-        self.assertIn('__version__ = "2.1.0"', package)
-        self.assertIn("Текущая версия: 2.1.0", readme)
+        self.assertIn('PANEL_VERSION="2.2.0"', installer)
+        self.assertIn('__version__ = "2.2.0"', package)
+        self.assertIn("Текущая версия: 2.2.0", readme)
+
+    def test_wdtt_proxy_is_bundled_monolith(self):
+        """Шлюз лежит в репозитории (wdtt-proxy/) и ставится install.sh в /opt."""
+        root = ROOT.parent
+        proxy_dir = root / "wdtt-proxy"
+        for name in ("wdtt-proxy.sh", "config.env", "wdtt-proxy.service", "README.md"):
+            self.assertTrue((proxy_dir / name).is_file(), name)
+        unit = (proxy_dir / "wdtt-proxy.service").read_text(encoding="utf-8")
+        self.assertIn("/opt/wdtt-proxy/wdtt-proxy.sh", unit)
+        self.assertNotIn("/root/wdtt-proxy", unit)
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('WDTT_PROXY_DIR="/opt/wdtt-proxy"', installer)
+        self.assertIn('SINGBOX_VERSION="${WDTT_SINGBOX_VERSION:-1.14.3}"', installer)
+        self.assertIn("install_wdtt_proxy()", installer)
+        self.assertIn("install_singbox_binary()", installer)
+        self.assertIn("install-wdtt-proxy) install_wdtt_proxy", installer)
+        self.assertIn("remove_wdtt_proxy", installer)
+        # Исходники шлюза всегда оказываются рядом с панелью в /opt.
+        self.assertIn('cp -a "$proxy_src" "$INSTALL_DIR/wdtt-proxy"', installer)
+        admin = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")
+        self.assertIn('os.environ.get("WDTT_PROXY_DIR", "/opt/wdtt-proxy")', admin)
+        self.assertIn('"proxy.install": proxy_install', admin)
+        dockerfile = (root / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("COPY wdtt-proxy /opt/wdtt-proxy", dockerfile)
+        self.assertIn("/usr/local/bin/sing-box", dockerfile)
 
     def test_bootstrap_has_interactive_management_menu(self):
         script = (ROOT / "bootstrap.sh").read_text(encoding="utf-8")
