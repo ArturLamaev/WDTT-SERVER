@@ -11,6 +11,28 @@ from wdtt_panel import app
 from wdtt_panel.security import csrf_token, hash_password, read_session
 
 
+class RemoteAddrTests(unittest.TestCase):
+    """2.3.0: из X-Forwarded-For берём последний элемент (добавляет edge-прокси)."""
+
+    def test_trusts_last_forwarded_element_not_first(self):
+        environ = {"HTTP_X_FORWARDED_FOR": "6.6.6.6, 8.8.8.8", "REMOTE_ADDR": "127.0.0.1"}
+        self.assertEqual(app.Panel.remote_addr(environ), "8.8.8.8")
+
+    def test_integration_shape_matches_nginx_proxy_add(self):
+        environ = {"HTTP_X_FORWARDED_FOR": "1.2.3.4", "REMOTE_ADDR": "127.0.0.1"}
+        self.assertEqual(app.Panel.remote_addr(environ), "1.2.3.4")
+
+    def test_prefers_remote_addr_without_forwarded(self):
+        self.assertEqual(app.Panel.remote_addr({"REMOTE_ADDR": "127.0.0.1"}), "127.0.0.1")
+
+    def test_unknown_when_nothing_given(self):
+        self.assertEqual(app.Panel.remote_addr({}), "unknown")
+
+    def test_tolerates_malformed_chain(self):
+        environ = {"HTTP_X_FORWARDED_FOR": "  ,  9.9.9.9 , , ", "REMOTE_ADDR": "127.0.0.1"}
+        self.assertEqual(app.Panel.remote_addr(environ), "9.9.9.9")
+
+
 class AppSmokeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

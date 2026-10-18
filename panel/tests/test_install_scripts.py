@@ -289,7 +289,8 @@ class InstallScriptTests(unittest.TestCase):
         change = script[script.index("change_panel_domain()"):]
         self.assertIn("request_certificate", change)
         self.assertIn("create_self_signed_certificate", change)
-        self.assertIn("write_final_nginx", change)
+        self.assertIn("caddy_select_tls_mode", change)
+        self.assertIn("write_final_web", change)
         self.assertIn('systemctl restart "$PANEL_SERVICE"', change)
 
     def test_acme_opens_port_80_before_certbot(self):

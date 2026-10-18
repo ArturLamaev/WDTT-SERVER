@@ -46,16 +46,20 @@ sudo ./install.sh install --domain panel.example.com \
 чистой, `--non-interactive` обновляет без вопросов.
 
 В мастере установки без параметров можно указать домен/IP, логин, пароль,
-HTTPS-порт, секретный URL-путь; опционально — главный пароль WDTT и Telegram-бот.
+HTTPS-порт, секретный URL-путь, веб-сервер перед панелью; опционально — главный
+пароль WDTT и Telegram-бот. Веб-сервер выбирается между **nginx** (по умолчанию;
+Let's Encrypt через certbot, self-signed как запасной вариант) и **caddy**
+(TLS и авто-продление делает сам, certbot не нужен; флаг/переменная
+`--web-server caddy` / `WDTT_WEB_SERVER=caddy`).
 
 Что делает установщик:
 
-1. ставит системные зависимости (`python3`, `nginx`, `certbot`, `iptables`, …);
+1. ставит системные зависимости (`python3`, `nginx` либо `caddy`, `certbot`, `iptables`, …);
 2. скачивает фиксированный Go toolchain в `env/` (только для сборки);
 3. берёт ядро из `src/`, накладывает расширение панели, собирает `wdtt-server`;
 4. запускает официальный `deploy.sh` ядра (systemd `wdtt.service`, `passwords.json`);
 5. ставит панель в `/opt/wdtt-panel` + локальную копию ядра в `/opt/wdtt-panel/src`;
-6. получает Let's Encrypt (или self-signed) сертификат, настраивает nginx;
+6. получает Let's Encrypt (или self-signed) сертификат, настраивает nginx (или Caddy — тогда TLS без certbot);
 7. ставит шлюз **wdtt-proxy** в `/opt/wdtt-proxy` вместе с sing-box
    (запуск/остановка и настройки SOCKS5 — во вкладке «Прокси» панели);
 8. включает Telegram-бот, авто-резервные копии и таймер продления сертификатов.

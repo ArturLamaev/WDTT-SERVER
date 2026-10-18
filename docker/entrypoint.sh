@@ -11,7 +11,7 @@
 #   5. сид VK-хешей;
 #   6. iptables/NAT (best-effort) + sysctl;
 #   7. TLS панели (self-signed или Let's Encrypt через venv-certbot);
-#   8. рендер nginx-конфига;
+#   8. рендер конфига веб-сервера (nginx или caddy — WDTT_WEB_SERVER);
 #   9. печать итоговых доступов в stdout (видно в docker compose logs).
 # =============================================================================
 set -Eeuo pipefail
@@ -37,7 +37,10 @@ random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+st
 : "${WDTT_RAW_PORT:=0}"
 : "${WDTT_DNS:=1.1.1.1,1.0.0.1}"
 : "${TLS_MODE:=self-signed}"
-export PANEL_USER PANEL_HTTPS_PORT PANEL_LISTEN_PORT TLS_MODE
+# Веб-сервер перед панелью: nginx (по умолчанию) или caddy (свой TLS: acme
+# для домена / internal для IP; certbot в caddy-режиме не используется).
+: "${WDTT_WEB_SERVER:=nginx}"
+export PANEL_USER PANEL_HTTPS_PORT PANEL_LISTEN_PORT TLS_MODE WDTT_WEB_SERVER
 export WDTT_DTLS_PORT WDTT_WG_PORT WDTT_ADMIN_PORT WDTT_DIRECT_PORT WDTT_RAW_PORT WDTT_DNS
 
 [[ "$PANEL_USER" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] || die "Некорректный PANEL_USER"
@@ -57,6 +60,10 @@ for pname in WDTT_DIRECT_PORT WDTT_RAW_PORT; do
   [[ "$pport" =~ ^[0-9]+$ ]] && [ "$pport" -le 65535 ] || die "Некорректный $pname"
 done
 case "$TLS_MODE" in self-signed|letsencrypt) ;; *) die "TLS_MODE должен быть self-signed или letsencrypt" ;; esac
+case "$WDTT_WEB_SERVER" in nginx|caddy) ;; *) die "WDTT_WEB_SERVER должен быть nginx или caddy" ;; esac
+if [ "$WDTT_WEB_SERVER" = "caddy" ] && [ "$TLS_MODE" = "letsencrypt" ]; then
+  log "TLS_MODE=letsencrypt игнорируется caddy-режимом: caddy получит Let's Encrypt сам"
+fi
 
 # PANEL_HOST: как в discover_host(), но без интерактива.
 if [ -z "${PANEL_HOST:-}" ]; then
@@ -334,7 +341,27 @@ os.replace(tmp, path)
 PY
   log "Самоподписанный сертификат выпущен"
 }
-if [ "$TLS_MODE" = "letsencrypt" ]; then
+if [ "$WDTT_WEB_SERVER" = "caddy" ]; then
+  # Caddy управляет TLS сам: certbot и self-signed не нужны.
+  if [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    TLS_MODE=internal
+  else
+    TLS_MODE=acme
+  fi
+  export TLS_MODE
+  python3 - <<'PY'
+import json, os
+path = "/etc/wdtt-panel/config.json"
+data = json.load(open(path, encoding="utf-8"))
+data["tls_mode"] = os.environ["TLS_MODE"]
+tmp = path + ".tmp"
+json.dump(data, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+open(tmp, "a", encoding="utf-8").write("\n")
+os.chmod(tmp, 0o640)
+os.replace(tmp, path)
+PY
+  log "TLS: Caddy выпустит сертификат сам ($TLS_MODE)"
+elif [ "$TLS_MODE" = "letsencrypt" ]; then
   if [ -f "/etc/letsencrypt/live/$PANEL_HOST/fullchain.pem" ] && [ -f "/etc/letsencrypt/live/$PANEL_HOST/privkey.pem" ]; then
     CERTIFICATE_PATH="/etc/letsencrypt/live/$PANEL_HOST/fullchain.pem"
     PRIVATE_KEY_PATH="/etc/letsencrypt/live/$PANEL_HOST/privkey.pem"
@@ -421,7 +448,11 @@ PY
 )" || die "Не удалось прочитать config.json для nginx"
 eval "$NGINX_VARS"
 export PANEL_PATH PANEL_HTTPS_PORT PANEL_LISTEN_PORT
-/usr/local/sbin/wdtt-gen-nginx-conf
+if [ "$WDTT_WEB_SERVER" = "caddy" ]; then
+  /usr/local/sbin/wdtt-gen-caddy-conf
+else
+  /usr/local/sbin/wdtt-gen-nginx-conf
+fi
 
 # ── 9. итог ─────────────────────────────────────────────────────────────────
 PANEL_PATH_SAVED="$(python3 -c 'import json; print(json.load(open("/etc/wdtt-panel/config.json"))["base_path"])')"

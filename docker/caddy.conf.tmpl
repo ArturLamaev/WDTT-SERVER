@@ -1,0 +1,53 @@
+# WDTT-SERVER (docker) — шаблон Caddy. Подстановки имён делает
+# /usr/local/sbin/wdtt-gen-caddy-conf из переменных окружения контейнера.
+# Структура повторяет write_caddy_config() из panel/install.sh: TLS управляет
+# сам Caddy (acme = автоматический Let's Encrypt, internal = self-signed),
+# certbot не используется.
+{
+	# Хранилище сертификатов на постоянном volume (/etc/wdtt-panel — volume).
+	storage file_system /etc/wdtt-panel/caddy
+	@@EMAIL_BLOCK@@
+}
+
+http://:80 {
+	@wdtt_client path /client/*
+	redir @wdtt_client https://@@PANEL_HOST@@:@@PANEL_HTTPS_PORT@@{uri} 302
+	# Всё остальное на секретный путь панели (ACME-challenge на :80 Caddy
+	# перехватывает сам — до этого маршрута дело не доходит).
+	redir https://@@PANEL_HOST@@:@@PANEL_HTTPS_PORT@@@@PANEL_PATH@@ 302
+}
+
+https://@@PANEL_HOST@@:@@PANEL_HTTPS_PORT@@ {
+	@@TLS_BLOCK@@
+	@@HSTS_BLOCK@@
+
+	# Сжатие ответов панели: под режущими провайдерами (обрыв после ~16 КБ)
+	# HTML/CSS/JSON влезают в один кусок, app.js добирается чанками boot.js.
+	encode gzip
+
+	@wdtt_base path @@PANEL_PATH_TRIM@@
+	redir @wdtt_base https://@@PANEL_HOST@@:@@PANEL_HTTPS_PORT@@@@PANEL_PATH@@ 302
+
+	@wdtt_panel path @@PANEL_PATH@@*
+	handle @wdtt_panel {
+		reverse_proxy 127.0.0.1:@@PANEL_LISTEN_PORT@@ {
+			header_up X-Real-IP {remote_host}
+			# Клиент может прислать свой X-Forwarded-For: затираем адресом
+			# реального соединения — последний элемент цепочки добавляет наш
+			# edge, и только ему панель верит (см. remote_addr в app.py).
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	@wdtt_client path /client/*
+	handle @wdtt_client {
+		reverse_proxy 127.0.0.1:@@PANEL_LISTEN_PORT@@ {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	respond 404
+}

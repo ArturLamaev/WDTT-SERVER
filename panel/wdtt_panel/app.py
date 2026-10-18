@@ -228,8 +228,15 @@ class Panel:
 
     @staticmethod
     def remote_addr(environ: dict[str, Any]) -> str:
-        forwarded = str(environ.get("HTTP_X_FORWARDED_FOR") or "").split(",", 1)[0].strip()
-        return forwarded or str(environ.get("REMOTE_ADDR") or "unknown")
+        # За edge-прокси (nginx/Caddy) X-Forwarded-For — цепочка: первый элемент
+        # контролирует клиент (можно подделать и обойти rate-limit, отравить
+        # аудит), последний дописывает наш edge по фактическому адресу
+        # соединения — верим только ему.
+        forwarded = str(environ.get("HTTP_X_FORWARDED_FOR") or "")
+        tokens = [token.strip() for token in forwarded.split(",") if token.strip()]
+        if tokens:
+            return tokens[-1]
+        return str(environ.get("REMOTE_ADDR") or "unknown")
 
     def __call__(self, environ: dict[str, Any], start_response: Any) -> Iterable[bytes]:
         path = str(environ.get("PATH_INFO") or "/")

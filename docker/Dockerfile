@@ -106,6 +106,27 @@ RUN set -e; arch="$(dpkg --print-architecture)"; \
   rm -rf /tmp/sing-box.tar.gz "/tmp/sing-box-${SINGBOX_VERSION}-linux-${sb}"; \
   sing-box version
 
+# Caddy (альтернатива nginx перед панелью, WDTT_WEB_SERVER=caddy):
+# фиксированная версия официального бинарника, как у sing-box. TLS Caddy
+# выпускает сам (acme/internal) — certbot в его режиме не используется.
+RUN set -e; case "$(dpkg --print-architecture)" in \
+	  amd64) caddy_arch=amd64 ;; \
+	  arm64) caddy_arch=arm64 ;; \
+	  *) echo "caddy: неподдерживаемая архитектура" ; exit 1 ;; \
+	esac; \
+	CADDY_VERSION=2.11.7; \
+	curl -fsSL --retry 3 --max-time 600 \
+	  "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_checksums.txt" \
+	  -o /tmp/caddy-checksums.txt; \
+	curl -fsSL --retry 3 --max-time 600 \
+	  "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz" \
+	  -o /tmp/caddy.tar.gz; \
+	grep "  caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz" /tmp/caddy-checksums.txt | (cd /tmp && sha256sum -c -); \
+	tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy; \
+	chmod 0755 /usr/local/bin/caddy; \
+	rm -f /tmp/caddy.tar.gz /tmp/caddy-checksums.txt; \
+	caddy version
+
 # Файлы шлюза: рабочий каталог /opt/wdtt-proxy + копия исходников рядом с
 # панелью, чтобы `install.sh install-wdtt-proxy` работал и внутри контейнера.
 COPY wdtt-proxy /opt/wdtt-proxy
@@ -126,9 +147,11 @@ RUN printf '#!/bin/sh\ncd /opt/wdtt-panel || exit 1\nexec python3 -m wdtt_panel.
 
 # Обвязка Docker: entrypoint, супервизор, генераторы конфигов, утилиты
 COPY docker/nginx.conf.tmpl        /etc/wdtt-docker/nginx.conf.tmpl
+COPY docker/caddy.conf.tmpl        /etc/wdtt-docker/caddy.conf.tmpl
 COPY docker/entrypoint.sh          /usr/local/sbin/wdtt-entrypoint
 COPY docker/supervisord.sh         /usr/local/sbin/wdtt-supervisord
 COPY docker/gen-nginx-conf.sh      /usr/local/sbin/wdtt-gen-nginx-conf
+COPY docker/gen-caddy-conf.sh      /usr/local/sbin/wdtt-gen-caddy-conf
 COPY docker/wdtt-exec-args.py      /usr/local/sbin/wdtt-exec-args
 COPY docker/healthcheck.sh         /usr/local/sbin/wdtt-healthcheck
 COPY docker/change-password.sh     /usr/local/sbin/wdtt-change-password
@@ -136,6 +159,7 @@ RUN chmod 0755 \
         /usr/local/sbin/wdtt-entrypoint \
         /usr/local/sbin/wdtt-supervisord \
         /usr/local/sbin/wdtt-gen-nginx-conf \
+        /usr/local/sbin/wdtt-gen-caddy-conf \
         /usr/local/sbin/wdtt-exec-args \
         /usr/local/sbin/wdtt-healthcheck \
         /usr/local/sbin/wdtt-change-password

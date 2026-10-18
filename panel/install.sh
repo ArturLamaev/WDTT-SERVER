@@ -77,6 +77,21 @@ WDTT_PROXY_SERVICE="wdtt-proxy.service"
 WDTT_PROXY_SERVICE_FILE="/etc/systemd/system/wdtt-proxy.service"
 SINGBOX_BIN="/usr/local/bin/sing-box"
 SINGBOX_VERSION="${WDTT_SINGBOX_VERSION:-1.14.3}"
+# Веб-сервер перед панелью: nginx (как раньше, Let's Encrypt через certbot)
+# или caddy (встроенный ACME: TLS и авто-продление без certbot).
+# Источники по приоритету: --web-server/--web-server=, env WDTT_WEB_SERVER,
+# config.json ("web_server"), интерактивный вопрос, иначе nginx (совместимость).
+WEB_SERVER_FROM_ARGS=0
+WEB_SERVER_ENV_GIVEN=0
+[ -n "${WDTT_WEB_SERVER:-}" ] && WEB_SERVER_ENV_GIVEN=1
+WEB_SERVER="${WDTT_WEB_SERVER:-nginx}"
+# Caddy ставим как sing-box: фиксированная версия официального бинарника,
+# собственный systemd-юнит и собственный конфиг — окружение системы не трогаем.
+CADDY_BIN="/usr/local/bin/caddy"
+CADDY_VERSION="${WDTT_CADDY_VERSION:-2.11.7}"
+CADDY_CONFIG="/etc/wdtt-panel/caddy/Caddyfile"
+CADDY_STATE_DIR="/var/lib/wdtt-caddy"
+CADDY_SERVICE="wdtt-caddy.service"
 # Панель всегда запускается от root и вызывает root-хелпер напрямую (без sudo).
 # Причина: юнит задаёт RestrictAddressFamilies=/LockPersonality=, а systemd для них
 # принудительно включает NoNewPrivileges=yes (его нельзя отключить), поэтому sudo
@@ -276,17 +291,28 @@ ensure_modern_python() {
 
 install_packages() {
   log "Установка системных зависимостей"
+  # При WEB_SERVER=caddy nginx из пакетов не ставим: он не нужен и
+  # с бесплатным :80 будет только мешать.
+  local -a BASE_PKGS=(python3 python3-venv python3-pip sudo curl ca-certificates openssl iproute2 iptables conntrack unzip)
   case "$PKG" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -y >>"$LOG_FILE" 2>&1
-      apt-get install -y -qq python3 python3-venv python3-pip nginx sudo curl ca-certificates openssl iproute2 iptables conntrack unzip >>"$LOG_FILE" 2>&1
+      if [ "$WEB_SERVER" = "nginx" ]; then
+        apt-get install -y -qq "${BASE_PKGS[@]}" nginx >>"$LOG_FILE" 2>&1
+      else
+        apt-get install -y -qq "${BASE_PKGS[@]}" >>"$LOG_FILE" 2>&1
+      fi
       ;;
     dnf|yum)
-      "$PKG" install -y python3 python3-pip nginx sudo curl ca-certificates openssl iproute iptables conntrack-tools unzip tar gzip >>"$LOG_FILE" 2>&1
+      local dnf_pkgs="python3 python3-pip sudo curl ca-certificates openssl iproute iptables conntrack-tools unzip tar gzip"
+      [ "$WEB_SERVER" = "nginx" ] && dnf_pkgs="$dnf_pkgs nginx"
+      "$PKG" install -y $dnf_pkgs >>"$LOG_FILE" 2>&1
       ;;
     pacman)
-      pacman -Sy --noconfirm --needed python python-pip nginx sudo curl ca-certificates openssl iproute2 iptables conntrack-tools unzip tar gzip >>"$LOG_FILE" 2>&1
+      local pacman_pkgs="python python-pip sudo curl ca-certificates openssl iproute2 iptables conntrack-tools unzip tar gzip"
+      [ "$WEB_SERVER" = "nginx" ] && pacman_pkgs="$pacman_pkgs nginx"
+      pacman -Sy --noconfirm --needed $pacman_pkgs >>"$LOG_FILE" 2>&1
       ;;
   esac
 }
@@ -312,8 +338,8 @@ validate_port_availability() {
     die "Внутренний порт $backend_port уже занят"
   fi
   listeners="$(ss -ltnp "( sport = :$PANEL_HTTPS_PORT )" 2>/dev/null || true)"
-  if grep -q LISTEN <<<"$listeners" && ! grep -qi nginx <<<"$listeners"; then
-    die "Внешний порт $PANEL_HTTPS_PORT занят не Nginx; задайте PANEL_HTTPS_PORT"
+  if grep -q LISTEN <<<"$listeners" && ! grep -qiE 'nginx|caddy' <<<"$listeners"; then
+    die "Внешний порт $PANEL_HTTPS_PORT занят не nginx/Caddy; задайте PANEL_HTTPS_PORT"
   fi
 }
 
@@ -372,11 +398,12 @@ for key, default in (
     ("certificate_path", ""),
     ("tls_mode", "self-signed"),
     ("certificate_email", ""),
+    ("web_server", "nginx"),
 ):
     print(d.get(key, default))
 PY
   )
-  [ "${#PANEL_CONFIG_VALUES[@]}" -eq 8 ] || die "Не удалось прочитать конфигурацию панели"
+  [ "${#PANEL_CONFIG_VALUES[@]}" -eq 9 ] || die "Не удалось прочитать конфигурацию панели"
   PANEL_USER="${PANEL_CONFIG_VALUES[0]}"
   PANEL_PATH="${PANEL_CONFIG_VALUES[1]}"
   PANEL_HOST="${PANEL_CONFIG_VALUES[2]}"
@@ -385,6 +412,12 @@ PY
   CERTIFICATE_PATH="${PANEL_CONFIG_VALUES[5]}"
   TLS_MODE="${PANEL_CONFIG_VALUES[6]}"
   PANEL_EMAIL="${PANEL_CONFIG_VALUES[7]}"
+  # web_server из config.json имеет наименьший приоритет: флаг --web-server
+  # и env WDTT_WEB_SERVER его перекрывают.
+  if [ "$WEB_SERVER_FROM_ARGS" = "0" ] && [ "$WEB_SERVER_ENV_GIVEN" = "0" ]; then
+    WEB_SERVER="${PANEL_CONFIG_VALUES[8]}"
+  fi
+  validate_web_server
   if [ "$TLS_MODE" = "letsencrypt" ]; then
     PRIVATE_KEY_PATH="/etc/letsencrypt/live/$PANEL_HOST/privkey.pem"
   else
@@ -1293,11 +1326,17 @@ EOF
 restart_services() {
   require_root
   log "Перезапуск панели, ядра WDTT и демонов"
-  local unit
+  local unit web_unit
+  # web_server из config.json: какой веб-сервер перезапускать (nginx/caddy).
+  web_unit="$([ -r "$CONFIG_FILE" ] && installed_web_server || echo nginx)"
+  case "$web_unit" in
+    caddy) web_unit="$CADDY_SERVICE" ;;
+    *) web_unit="nginx.service" ;;
+  esac
   for unit in "$WDTT_SERVICE" "$PANEL_SERVICE" wdtt-app.service; do
     systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
   done
-  for unit in nginx.service "$FLEET_SERVICE" "$FLEET_BOT_SERVICE"; do
+  for unit in "$web_unit" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE"; do
     if systemctl is-active --quiet "$unit" 2>/dev/null; then
       systemctl restart "$unit" >>"$LOG_FILE" 2>&1 || true
     fi
@@ -1566,9 +1605,9 @@ remove_wdtt_proxy() {
 
 write_panel_config() {
   PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
-  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" <<'PY'
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$PANEL_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" "$WEB_SERVER" <<'PY'
 import json, os, sys
-path, version, username, password_hash, session_secret, base_path, public_host, https_port, listen_port, certificate_path, tls_mode, certificate_email = sys.argv[1:]
+path, version, username, password_hash, session_secret, base_path, public_host, https_port, listen_port, certificate_path, tls_mode, certificate_email, web_server = sys.argv[1:]
 data = {
     "version": version,
     "username": username,
@@ -1582,6 +1621,7 @@ data = {
     "certificate_path": certificate_path,
     "tls_mode": tls_mode,
     "certificate_email": certificate_email,
+    "web_server": web_server,
 }
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
@@ -1638,11 +1678,11 @@ $panel_user_lines
 $panel_admin_env
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$PYTHON3_BIN -m wdtt_panel.app
+Environment=WDTT_WEB_SERVER=$WEB_SERVER
 Restart=on-failure
 RestartSec=3
 UMask=0027
 PrivateTmp=true
-ProtectHome=true
 ProtectSystem=strict
 # Панель сама правит /etc/systemd/system (telegram.save переписывает
 # wdtt.service, backups.schedule — таймеры), /etc/wdtt (bot.token) и
@@ -1669,7 +1709,10 @@ port_80_available_for_nginx() {
   local listeners
   listeners="$(ss -ltnp '( sport = :80 )' 2>/dev/null || true)"
   ! grep -q LISTEN <<<"$listeners" && return 0
-  grep -qi nginx <<<"$listeners"
+  case "$WEB_SERVER" in
+    caddy) grep -qi 'caddy' <<<"$listeners" ;;
+    *) grep -qi nginx <<<"$listeners" ;;
+  esac
 }
 
 write_acme_nginx() {
@@ -1794,6 +1837,199 @@ create_self_signed_certificate() {
   TLS_MODE="self-signed"
 }
 
+caddy_arch() {
+  case "$(uname -m)" in
+    x86_64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) echo ""; return 1 ;;
+  esac
+}
+
+install_caddy_binary() {
+  local have="" arch="" work="" tarball=""
+  if command -v "$CADDY_BIN" >/dev/null 2>&1; then
+    have="$("$CADDY_BIN" version 2>/dev/null | awk '{print $1}' | head -n 1)"
+  fi
+  if [ "$have" = "$CADDY_VERSION" ]; then
+    log "Caddy $CADDY_VERSION уже установлен"
+    return 0
+  fi
+  command_exists curl || die "Для установки Caddy требуется curl"
+  arch="$(caddy_arch)" || die "Caddy $CADDY_VERSION не поддерживает архитектуру $(uname -m)"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/wdtt-caddy.XXXXXX")"
+  tarball="caddy_${CADDY_VERSION}_linux_${arch}.tar.gz"
+  log "Загрузка Caddy $CADDY_VERSION ($arch)"
+  if ! curl -fsSL --retry 3 --max-time 600 \
+    "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/${tarball}" \
+    -o "$work/$tarball" >>"$LOG_FILE" 2>&1; then
+    rm -rf "$work"
+    die "Не удалось скачать Caddy $CADDY_VERSION"
+  fi
+  # Официальные контрольные суммы релиза: не доверяем скачанному файлу вслепую.
+  if ! curl -fsSL --retry 3 --max-time 300 \
+    "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_checksums.txt" \
+    -o "$work/checksums.txt" >>"$LOG_FILE" 2>&1 \
+    || ! (cd "$work" && grep " ${tarball}\$" checksums.txt | sha256sum -c - >>"$LOG_FILE" 2>&1); then
+    rm -rf "$work"
+    die "Не удалось проверить контрольную сумму Caddy $CADDY_VERSION"
+  fi
+  if ! tar -xzf "$work/$tarball" -C "$work" caddy >>"$LOG_FILE" 2>&1; then
+    rm -rf "$work"
+    die "Не удалось распаковать Caddy $CADDY_VERSION"
+  fi
+  install -m 0755 "$work/caddy" "$CADDY_BIN.new"
+  mv -f "$CADDY_BIN.new" "$CADDY_BIN"
+  rm -rf "$work"
+  log "Caddy $CADDY_VERSION установлен: $CADDY_BIN"
+}
+
+# IP-адрес: публичный ACME-сертификат невозможен, Caddy выпускает internal.
+# Домен: автоматический ACME (HTTP-01 на :80, TLS-ALPN на :443 держит сам Caddy).
+# Переопределить: WDTT_CADDY_TLS=internal|acme (например, домен без выхода :80/:443).
+caddy_select_tls_mode() {
+  if [ -n "${WDTT_CADDY_TLS:-}" ]; then
+    case "$WDTT_CADDY_TLS" in
+      acme|internal) TLS_MODE="$WDTT_CADDY_TLS" ;;
+      *) die "WDTT_CADDY_TLS должен быть acme или internal" ;;
+    esac
+  elif [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    TLS_MODE="internal"
+  else
+    TLS_MODE="acme"
+  fi
+  CERTIFICATE_PATH=""
+  PRIVATE_KEY_PATH=""
+}
+
+# Distro-пакет caddy.service держит :80/:443 и помешает нашему юниту.
+disable_conflicting_caddy_service() {
+  if systemctl list-unit-files caddy.service >/dev/null 2>&1; then
+    sys_timeout 60 systemctl disable --now caddy.service >/dev/null 2>&1 || true
+  fi
+}
+
+caddy_validate() {
+  "$CADDY_BIN" validate --config "$CADDY_CONFIG" --adapter caddyfile >>"$LOG_FILE" 2>&1
+}
+
+write_caddy_service() {
+  install -d -m 0700 "$CADDY_STATE_DIR"
+  cat > "/etc/systemd/system/$CADDY_SERVICE" <<EOF
+[Unit]
+Description=WDTT Panel web server (Caddy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=$CADDY_BIN run --config $CADDY_CONFIG --adapter caddyfile
+ExecReload=$CADDY_BIN reload --config $CADDY_CONFIG --adapter caddyfile
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=8192
+Environment=XDG_DATA_HOME=$CADDY_STATE_DIR
+Environment=XDG_CONFIG_HOME=$CADDY_STATE_DIR
+StateDirectory=wdtt-caddy
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+}
+
+write_caddy_config() {
+  local backend_port="$1"
+  local tls_block="" hsts_block="" email_block=""
+  HTTP_ENABLED=0
+  install -d -m 0755 "$(dirname "$CADDY_CONFIG")"
+  if [ "$TLS_MODE" = "internal" ]; then
+    tls_block="tls internal"
+  fi
+  if [ "$TLS_MODE" = "acme" ]; then
+    HTTP_ENABLED=1
+    hsts_block="header Strict-Transport-Security \"max-age=31536000\""
+    [ -n "${PANEL_EMAIL:-}" ] && email_block="email $PANEL_EMAIL"
+  fi
+  cat > "$CADDY_CONFIG" <<EOF
+{
+  # Хранилище сертификатов отдельно от distro-caddy (/var/lib/wdtt-caddy).
+  storage file_system $CADDY_STATE_DIR
+  $email_block
+}
+
+http://:80 {
+  @wdtt_client path /client/*
+  redir @wdtt_client https://$PANEL_HOST:$PANEL_HTTPS_PORT{uri} 302
+  # Всё остальное (включая /.well-known/acme-challenge — его перехватывает
+  # сам Caddy до этих маршрутов) на секретный путь панели.
+  redir https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH 302
+}
+
+https://$PANEL_HOST:$PANEL_HTTPS_PORT {
+  $tls_block
+  $hsts_block
+
+  # Сжатие ответов панели (см. комментарий у gzip в nginx-конфиге).
+  encode gzip
+
+  @wdtt_base path ${PANEL_PATH%/}
+  redir @wdtt_base https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH 302
+
+  @wdtt_panel path $PANEL_PATH*
+  handle @wdtt_panel {
+    reverse_proxy 127.0.0.1:$backend_port {
+      header_up X-Real-IP {remote_host}
+      # Клиент может прислать свой X-Forwarded-For: затираем адресом реального
+      # соединения — edge-прокси (наш Caddy) не врёт про источник, а панель
+      # берёт из XFF последний элемент (см. remote_addr в app.py).
+      header_up X-Forwarded-For {remote_host}
+      header_up X-Forwarded-Proto https
+    }
+  }
+
+  @wdtt_client path /client/*
+  handle @wdtt_client {
+    reverse_proxy 127.0.0.1:$backend_port {
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-For {remote_host}
+      header_up X-Forwarded-Proto https
+    }
+  }
+
+  respond 404
+}
+EOF
+  caddy_validate || die "Ошибка конфигурации Caddy, см. $LOG_FILE"
+  systemctl enable --now "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1
+  systemctl reload "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1 || systemctl restart "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1
+}
+
+# Диспетчер веб-сервера: все вызовы write_final_nginx/write_fleet_nginx в коде
+# заведены на обёртки ниже; новая установка с WEB_SERVER=caddy уходит в Caddy.
+write_final_web() {
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    write_final_caddy
+  else
+    write_final_nginx
+  fi
+}
+
+write_fleet_web() {
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    write_fleet_caddy
+  else
+    write_fleet_nginx
+  fi
+}
+
+write_final_caddy() {
+  write_caddy_config "$PANEL_LISTEN_PORT"
+}
+
+write_fleet_caddy() {
+  write_caddy_config "$FLEET_LISTEN_PORT"
+}
+
 write_final_nginx() {
   HTTP_BLOCK=""
   HSTS_HEADER=""
@@ -1864,10 +2100,12 @@ EOF
 }
 
 write_renew_timer() {
+  local renew_after="network-online.target nginx.service"
+  [ "$WEB_SERVER" = "caddy" ] && renew_after="network-online.target $CADDY_SERVICE"
   cat > /etc/systemd/system/wdtt-panel-cert-renew.service <<EOF
 [Unit]
 Description=Renew WDTT Panel TLS certificate
-After=network-online.target nginx.service
+After=$renew_after
 Wants=network-online.target
 
 [Service]
@@ -1925,6 +2163,17 @@ renew_certificates() {
   require_root
   load_panel_config
 
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    # Caddy продлевает ACME-сертификаты сам; таймер здесь только проверяет,
+    # что служба жива. При internal тоже ходить в certbot не нужно.
+    if systemctl is-active --quiet "$CADDY_SERVICE"; then
+      log "Caddy: авто-продление TLS активно ($TLS_MODE, unit $CADDY_SERVICE)"
+    else
+      die "Caddy не запущен: смотрите journalctl -u $CADDY_SERVICE"
+    fi
+    return 0
+  fi
+
   if [ "$TLS_MODE" = "letsencrypt" ]; then
     install_certbot || die "Не удалось подготовить Certbot"
     open_acme_firewall
@@ -1948,7 +2197,7 @@ renew_certificates() {
 
   if try_upgrade_certificate; then
     update_panel_config_metadata
-    write_final_nginx
+    write_final_web
     log "Self-signed сертификат заменен публичным сертификатом Let's Encrypt"
     return 0
   fi
@@ -1960,7 +2209,7 @@ renew_certificates() {
 
   create_self_signed_certificate
   update_panel_config_metadata
-  write_final_nginx
+  write_final_web
   log "Self-signed сертификат автоматически обновлен"
 }
 
@@ -2077,11 +2326,17 @@ print(value)
 PY
 )" || die "Некорректный PANEL_HOST"
   backup_panel_config_before_update
-  if request_certificate; then
-    log "Получен публично доверенный сертификат Let's Encrypt для $PANEL_HOST"
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    # Certbot не нужен: Caddy сам перевыпустит сертификат для нового домена/IP.
+    caddy_select_tls_mode
+    log "TLS $PANEL_HOST: Caddy выпустит сертификат сам ($TLS_MODE)"
   else
-    log "Let's Encrypt недоступен для $PANEL_HOST, создается self-signed сертификат"
-    create_self_signed_certificate
+    if request_certificate; then
+      log "Получен публично доверенный сертификат Let's Encrypt для $PANEL_HOST"
+    else
+      log "Let's Encrypt недоступен для $PANEL_HOST, создается self-signed сертификат"
+      create_self_signed_certificate
+    fi
   fi
   python3 - "$CONFIG_FILE" "$PANEL_HOST" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" <<'PY'
 import json, os, sys
@@ -2101,10 +2356,10 @@ PY
   chown root:wdtt-panel "$CONFIG_FILE"
   chmod 0640 "$CONFIG_FILE"
   if [ "$(installed_mode)" = "controller" ]; then
-    write_fleet_nginx
+    write_fleet_web
     systemctl restart "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить контроллер после смены домена"
   else
-    write_final_nginx
+    write_final_web
     systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 || die "Не удалось перезапустить панель после смены домена"
   fi
   log "Домен панели изменен на $PANEL_HOST (TLS: $TLS_MODE)"
@@ -2150,10 +2405,18 @@ status_panel() {
   [ -r "$CONFIG_FILE" ] && python3 - "$CONFIG_FILE" <<'PY'
 import json, sys
 d=json.load(open(sys.argv[1], encoding="utf-8"))
+web_server = d.get("web_server", "nginx")
+unit = "wdtt-caddy.service" if web_server == "caddy" else "nginx.service"
 print(f"Version: {d.get('version', 'unknown')}")
 print(f"URL: https://{d['public_host']}:{d['https_port']}{d['base_path']}")
 print(f"TLS: {d.get('tls_mode', 'unknown')}")
+print(f"Web server: {web_server} ({unit})")
 PY
+  if [ "${WEB_SERVER:-nginx}" = "caddy" ]; then
+    WEB_HINT="проверьте journalctl -u $CADDY_SERVICE"
+  else
+    WEB_HINT="проверьте nginx и journalctl -u nginx"
+  fi
   if [ -n "${PANEL_HTTPS_PORT:-}" ]; then
     for ((attempt = 1; attempt <= 10; attempt++)); do
       if curl --noproxy '*' -kfsS --connect-timeout 2 --max-time 5 "https://127.0.0.1:$PANEL_HTTPS_PORT$PANEL_PATH" >/dev/null 2>&1; then
@@ -2163,12 +2426,13 @@ PY
       sleep 0.5
     done
     if [ "$attempt" -gt 10 ]; then
-      echo "HTTPS local check: FAILED (проверьте nginx и journalctl -u nginx)"
+      echo "HTTPS local check: FAILED ($WEB_HINT)"
     fi
   else
     echo "HTTPS local check: FAILED (не найден HTTPS-порт панели)"
   fi
   [ "${TLS_MODE:-}" != "self-signed" ] || echo "Browser trust: self-signed требует ручного доверия; шифрование при этом работает"
+  [ "${TLS_MODE:-}" != "internal" ] || echo "Browser trust: tls internal (Caddy) — самоподписанный сертификат, доверяйте вручную; шифрование при этом работает"
 }
 
 remove_firewall_rule() {
@@ -2208,14 +2472,16 @@ uninstall_panel() {
   fi
   log "Удаление только web-панели; WDTT не затрагивается"
   log "Останавливаю и отключаю юниты панели..."
-  sys_timeout 180 systemctl disable --now "$PANEL_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service
+  sys_timeout 180 systemctl disable --now "$PANEL_SERVICE" "$FLEET_SERVICE" "$FLEET_BOT_SERVICE" "$CADDY_SERVICE" wdtt-fleet-agent.service wdtt-panel-cert-renew.timer wdtt-panel-cert-renew.service "$WDTT_EXTENSIONS_TIMER" "$WDTT_EXTENSIONS_SERVICE" wdtt-panel-backup.timer wdtt-panel-backup.service wdtt-panel-autoclean.timer wdtt-panel-autoclean.service
   log "Удаляю unit-файлы и каталоги панели..."
-  rm -f "/etc/systemd/system/$PANEL_SERVICE" "/etc/systemd/system/$FLEET_SERVICE" "/etc/systemd/system/$FLEET_BOT_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
+  rm -f "/etc/systemd/system/$PANEL_SERVICE" "/etc/systemd/system/$FLEET_SERVICE" "/etc/systemd/system/$FLEET_BOT_SERVICE" "/etc/systemd/system/$CADDY_SERVICE" /etc/systemd/system/wdtt-fleet-agent.service /etc/systemd/system/wdtt-panel-cert-renew.service /etc/systemd/system/wdtt-panel-cert-renew.timer "/etc/systemd/system/$WDTT_EXTENSIONS_SERVICE" "/etc/systemd/system/$WDTT_EXTENSIONS_TIMER" /etc/systemd/system/wdtt-panel-backup.service /etc/systemd/system/wdtt-panel-backup.timer /etc/systemd/system/wdtt-panel-autoclean.service /etc/systemd/system/wdtt-panel-autoclean.timer "$STATE_DIR/fleet-agent.json"
   log "Убираю обёртки панели и служебные файлы..."
   rm -f "$NGINX_FILE" "$ADMIN_WRAPPER" "$SUDOERS_FILE" "$MANAGER_WRAPPER" /usr/local/sbin/wddt-panel /usr/local/sbin/wdtt-pane "$UPDATE_WRAPPER" "$UNINSTALL_WRAPPER" "$STATUS_WRAPPER" "$BACKUP_RUNNER" "$AUTOCLEAN_RUNNER"
   log "Снимаю службу wdtt-proxy (шлюз SOCKS5) и её файлы..."
   remove_wdtt_proxy
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
+  log "Убираю каталог состояния Caddy..."
+  rm -rf "$CADDY_STATE_DIR"
   log "Чищу правила фаервола панели и ядра..."
   remove_firewall_rule "$panel_port" tcp
   # Порты ядра WDTT (56000/56001 — DTLS/WG, 56002 — admin; открывает deploy.sh).
@@ -2249,7 +2515,10 @@ update_panel() {
   migrate_panel_config
   update_panel_config_metadata
   write_panel_service
-  write_final_nginx
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    write_caddy_service
+  fi
+  write_final_web
   write_renew_timer
   write_wdtt_extensions_timer
   write_autoclean_timer
@@ -2285,6 +2554,59 @@ validate_mode() {
     node|controller) ;;
     *) die "--mode должен быть node или controller (получено: $WDTT_MODE)" ;;
   esac
+}
+
+parse_web_server_arg() {
+  FILTERED_ARGS=()
+  local next_is_web=0 a
+  for a in "$@"; do
+    if [ "$next_is_web" = "1" ]; then
+      WEB_SERVER="$a"; WEB_SERVER_FROM_ARGS=1; next_is_web=0; continue
+    fi
+    case "$a" in
+      --web-server=*) WEB_SERVER="${a#--web-server=}"; WEB_SERVER_FROM_ARGS=1 ;;
+      --web-server) next_is_web=1 ;;
+      *) FILTERED_ARGS+=("$a") ;;
+    esac
+  done
+  if [ "$next_is_web" = "1" ]; then
+    die "--web-server требует значение: nginx или caddy"
+  fi
+}
+
+validate_web_server() {
+  case "$WEB_SERVER" in
+    nginx|caddy) ;;
+    *) die "--web-server должен быть nginx или caddy (получено: $WEB_SERVER)" ;;
+  esac
+}
+
+ask_web_server() {
+  printf 'Веб-сервер перед панелью:\n'
+  printf '  1) nginx  — как раньше: Let%s Encrypt через certbot, self-signed как запасной вариант\n' "'"
+  printf '  2) caddy  — встроенный ACME: TLS-сертификат и продление без certbot (нужны открытые TCP 80/443)\n'
+  local answer=""
+  read -r -p "Вариант [1]: " answer
+  case "$answer" in
+    2|caddy|Caddy|CADDY) WEB_SERVER="caddy" ;;
+    *) WEB_SERVER="nginx" ;;
+  esac
+}
+
+# Для установки: флаг/env → интерактивный вопрос (если есть tty) → nginx.
+resolve_web_server() {
+  [ "$WEB_SERVER_FROM_ARGS" = "1" ] || [ "$WEB_SERVER_ENV_GIVEN" = "1" ] || {
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+      ask_web_server
+    fi
+  }
+  WEB_SERVER="${WEB_SERVER:-nginx}"
+  validate_web_server
+}
+
+# Для update/status/restart: web_server из config.json (см. load_panel_config).
+installed_web_server() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("web_server", "nginx"))' "$CONFIG_FILE" 2>/dev/null || echo nginx
 }
 
 ask_install_mode() {
@@ -2338,11 +2660,11 @@ prepare_controller_secrets() {
 
 write_fleet_config() {
   PASSWORD_HASH="$(PYTHONPATH="$INSTALL_DIR" python3 -c 'import sys; from wdtt_panel.security import hash_password; print(hash_password(sys.argv[1]))' "$PANEL_PASSWORD")"
-  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$FLEET_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" "$FLEET_STORE_FILE" "$FLEET_CONFIG_FILE" <<'PY'
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "$PANEL_USER" "$PASSWORD_HASH" "$SESSION_SECRET" "$PANEL_PATH" "$PANEL_HOST" "$PANEL_HTTPS_PORT" "$FLEET_LISTEN_PORT" "$CERTIFICATE_PATH" "$TLS_MODE" "$PANEL_EMAIL" "$FLEET_STORE_FILE" "$FLEET_CONFIG_FILE" "$WEB_SERVER" <<'PY'
 import json, os, sys
 (path, version, username, password_hash, session_secret, base_path, public_host,
  https_port, fleet_listen_port, certificate_path, tls_mode, certificate_email,
- fleet_store, fleet_config) = sys.argv[1:]
+ fleet_store, fleet_config, web_server) = sys.argv[1:]
 data = {
     "version": version,
     "mode": "controller",
@@ -2360,6 +2682,7 @@ data = {
     "certificate_path": certificate_path,
     "tls_mode": tls_mode,
     "certificate_email": certificate_email,
+    "web_server": web_server,
 }
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
@@ -2517,7 +2840,11 @@ install_controller() {
   detect_os
   install_packages
   ensure_modern_python
-  if [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    disable_conflicting_caddy_service
+    install_caddy_binary
+  fi
+  if [ "$WEB_SERVER" = "nginx" ] && [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
     rm -f /etc/nginx/sites-enabled/default
   fi
   validate_inputs
@@ -2527,18 +2854,26 @@ install_controller() {
   install_panel_files
   remove_obsolete_fleet_agent
 
-  if request_certificate; then
-    log "Получен публично доверенный сертификат Let's Encrypt"
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    caddy_select_tls_mode
+    log "TLS: Caddy выпустит сертификат сам ($TLS_MODE); certbot не требуется"
   else
-    log "Let's Encrypt недоступен, создается автоматический self-signed сертификат"
-    create_self_signed_certificate
+    if request_certificate; then
+      log "Получен публично доверенный сертификат Let's Encrypt"
+    else
+      log "Let's Encrypt недоступен, создается автоматический self-signed сертификат"
+      create_self_signed_certificate
+    fi
   fi
 
   write_fleet_config
   seed_fleet_bot_settings
   write_fleet_service
   write_fleet_bot_service
-  write_fleet_nginx
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    write_caddy_service
+  fi
+  write_fleet_web
   write_renew_timer
   record_source_repo
   write_self_update_wrapper
@@ -2568,7 +2903,10 @@ update_controller() {
   update_controller_config_metadata
   write_fleet_service
   write_fleet_bot_service
-  write_fleet_nginx
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    write_caddy_service
+  fi
+  write_fleet_web
   write_renew_timer
   record_source_repo
   write_self_update_wrapper
@@ -2609,6 +2947,7 @@ PY
 install_panel() {
   require_root
   resolve_install_mode
+  resolve_web_server
   if [ "$WDTT_MODE" = "controller" ]; then
     install_controller
     return 0
@@ -2616,7 +2955,11 @@ install_panel() {
   detect_os
   install_packages
   ensure_modern_python
-  if [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    disable_conflicting_caddy_service
+    install_caddy_binary
+  fi
+  if [ "$WEB_SERVER" = "nginx" ] && [ "$NGINX_WAS_INSTALLED" = "0" ] && ! port_80_available_for_nginx; then
     rm -f /etc/nginx/sites-enabled/default
   fi
   validate_inputs
@@ -2633,16 +2976,24 @@ install_panel() {
   apply_telegram_settings
   write_maintenance_scripts
 
-  if request_certificate; then
-    log "Получен публично доверенный сертификат Let's Encrypt"
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    caddy_select_tls_mode
+    log "TLS: Caddy выпустит сертификат сам ($TLS_MODE); certbot не требуется"
   else
-    log "Let's Encrypt недоступен, создается автоматический self-signed сертификат"
-    create_self_signed_certificate
+    if request_certificate; then
+      log "Получен публично доверенный сертификат Let's Encrypt"
+    else
+      log "Let's Encrypt недоступен, создается автоматический self-signed сертификат"
+      create_self_signed_certificate
+    fi
   fi
 
   write_panel_config
   write_panel_service
-  write_final_nginx
+  if [ "$WEB_SERVER" = "caddy" ]; then
+    write_caddy_service
+  fi
+  write_final_web
   write_renew_timer
   write_wdtt_extensions_timer
   write_autoclean_timer
@@ -2655,12 +3006,14 @@ install_panel() {
   printf 'Login: %s\n' "$PANEL_USER"
   printf 'Password: %s\n' "$PANEL_PASSWORD"
   printf 'TLS: %s\n' "$TLS_MODE"
+  printf 'Web server: %s\n' "$WEB_SERVER"
   if [ -n "$WDTT_MAIN_PASSWORD" ]; then printf 'WDTT main password: %s\n' "$WDTT_MAIN_PASSWORD"; fi
   printf 'Install log: %s\n' "$LOG_FILE"
 }
 
-# --mode/--mode= вынимаем из аргументов до диспетча (остальное едет дальше как было).
+# --mode/--web-server вынимаем из аргументов до диспетча (остальное едет дальше как было).
 parse_mode_arg "$@"
+parse_web_server_arg "${FILTERED_ARGS[@]}"
 set -- "${FILTERED_ARGS[@]}"
 
 case "${1:-install}" in
@@ -2676,5 +3029,5 @@ case "${1:-install}" in
   install-tailscale-runtime) install_tailscale_runtime ;;
   install-wdtt-proxy) install_wdtt_proxy ;;
   enable-wdtt-extensions) install_wdtt_extensions ;;
-  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-tailscale-runtime|install-wdtt-proxy|enable-wdtt-extensions] [--mode node|controller]" ;;
+  *) die "Использование: $0 [install|update|restart|renew-cert|status|change-password|change-domain|clean-system|uninstall|install-tailscale-runtime|install-wdtt-proxy|enable-wdtt-extensions] [--mode node|controller] [--web-server nginx|caddy]" ;;
 esac

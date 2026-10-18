@@ -1,6 +1,6 @@
 # WDTT-SERVER в Docker Compose
 
-Запуск всего стека (ядро qWDTT + веб-панель + nginx) одним контейнером.
+Запуск всего стека (ядро qWDTT + веб-панель + nginx/Caddy) одним контейнером.
 Ядро собирается **из замороженных исходников форка** (`src/` + расширение
 панели), как в `build.sh` — с GitHub при сборке качаются только Go toolchain
 и Go-модули. Панель — чистый Python без pip-зависимостей.
@@ -70,7 +70,8 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `PANEL_HOST` | *(авто-IP)* | Домен или публичный IPv4 |
 | `PANEL_HTTPS_PORT` | `9999` | Внешний HTTPS-порт |
 | `PANEL_EMAIL` | — | Email для Let's Encrypt |
-| `TLS_MODE` | `self-signed` | `self-signed` \| `letsencrypt` (нужны домен + открытый `:80`) |
+| `TLS_MODE` | `self-signed` | `self-signed` \| `letsencrypt` (нужны домен + открытый `:80`) — только для nginx |
+| `WDTT_WEB_SERVER` | `nginx` | `caddy` — TLS и продление без certbot: домен → автоматический Let's Encrypt, IP → self-signed (`TLS_MODE` игнорируется) |
 | `WDTT_MAIN_PASSWORD` | *(генерируется)* | Главный пароль ядра (12–64 `[A-Za-z0-9._~-]`) |
 | `WDTT_DTLS_PORT` / `WDTT_WG_PORT` / `WDTT_ADMIN_PORT` | `56000/56001/56002` | Порты ядра |
 | `WDTT_DNS` | `1.1.1.1,1.0.0.1` | DNS для клиентов |
@@ -87,8 +88,9 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 это правка `PANEL_HOST` (+ `PANEL_EMAIL` для LE) в `.env` и
 `docker compose up -d`; self-signed с чужим SAN при этом перевыпускается
 автоматически. Кнопка «Привязать домен» в панели тоже работает: меняет
-volume, перевыпускает сертификат (LE через работающий nginx, иначе
-self-signed), делает reload nginx и рестарт панели — после неё
+volume, перевыпускает сертификат, делает reload веб-сервера
+(nginx: LE через работающий nginx, иначе self-signed; caddy: свой ACME,
+без certbot) и рестарт панели — после неё
 продублируйте домен в `.env` на хосте, иначе следующий рестарт вернёт
 старый.
 
@@ -176,4 +178,5 @@ docker run --rm -v wdtt-server_wdtt-data:/d -v wdtt-server_wdtt-panel-config:/c 
   (`nc -u`), IP-forward (`docker compose exec wdtt sysctl net.ipv4.ip_forward`)
   и NAT-правила (`docker compose exec wdtt iptables -t nat -L POSTROUTING -n`).
 - `HTTPS local check` падает — смотрите `docker compose exec wdtt nginx -t`
+  (или `journalctl`/logs caddy при `WDTT_WEB_SERVER=caddy`)
   и логи `docker compose logs wdtt`.
