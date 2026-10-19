@@ -28,7 +28,7 @@ server {
     gzip_proxied any;
     gzip_min_length 1024;
     gzip_comp_level 6;
-    gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
+    gzip_types text/css text/javascript application/javascript application/json text/plain image/svg+xml;
     location = @@PANEL_PATH_TRIM@@ { return 302 @@PANEL_PATH@@; }
     location ^~ @@PANEL_PATH@@ {
         proxy_pass http://127.0.0.1:@@PANEL_LISTEN_PORT@@;

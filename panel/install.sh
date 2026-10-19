@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # и оставалось лишь гадать, на каком шаге всё встало.
 trap 'printf "\n[wdtt-panel] ОШИБКА (код %s), строка %s: %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2; printf "[wdtt-panel] Лог установки: %s\n" "${LOG_FILE:-/var/log/wdtt-panel-install.log}" >&2' ERR
 
-PANEL_VERSION="2.3.1"
+PANEL_VERSION="2.3.2"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1699,6 +1699,11 @@ server {
 EOF
   nginx -t >>"$LOG_FILE" 2>&1 || { log "Nginx не принял временную ACME-конфигурацию"; return 1; }
   systemctl enable --now nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось запустить Nginx для ACME"; return 1; }
+  # Astra ставит nginx с SysV-скриптом: `enable --now` включает юнит, но не
+  # запускает его («Synchronizing state ... with SysV service script»), и ACME
+  # уходит в пустоту. Явный start это закрывает.
+  systemctl is-active --quiet nginx || systemctl start nginx >>"$LOG_FILE" 2>&1 \
+    || { log "Не удалось запустить Nginx для ACME"; return 1; }
   nginx_reload_or_restart || {
     log "Не удалось применить временную ACME-конфигурацию Nginx (journalctl -u nginx, $LOG_FILE)"
     return 1
@@ -1712,26 +1717,67 @@ ufw_allow() {
   if with_timeout 60 ufw allow "$spec" comment "$comment" >/dev/null 2>&1; then
     return 0
   fi
-  with_timeout 60 ufw allow "$spec" >/dev/null 2>&1 || log "WARN: ufw не открыл $spec"
+  with_timeout 60 ufw allow "$spec" >/dev/null 2>&1 && return 0
+  log "WARN: ufw не открыл $spec"
+  return 1
+}
+
+ufw_active() {
+  command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'
+}
+
+# Запасной путь, если ufw «активен», но правила менять не может (на Astra:
+# `initcaps: iptables: Chain already exists`). Правило встаёт в начало INPUT —
+# перед ufw-цепочками — и снимается uninstall'ом по комментарию.
+iptables_allow_tcp() {
+  local port="$1" comment="$2"
+  command_exists iptables || return 1
+  iptables -C INPUT -p tcp --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null && return 0
+  iptables -I INPUT 1 -p tcp --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null
 }
 
 open_acme_firewall() {
-  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw_allow "80/tcp" "WDTT Panel ACME"
+  if ufw_active; then
+    ufw_allow "80/tcp" "WDTT Panel ACME" || {
+      log "Открываю 80/tcp напрямую через iptables (ufw не справился)"
+      iptables_allow_tcp 80 "WDTT_PANEL_ACME" || true
+    }
   elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
     firewall-cmd --permanent --add-port=80/tcp >/dev/null || true
     firewall-cmd --reload >/dev/null || true
   elif command_exists iptables; then
-    iptables -C INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
-      iptables -I INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT || true
+    iptables_allow_tcp 80 "WDTT_PANEL" || true
   fi
 }
 
+panel_host_is_ip() {
+  [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# certbot 5.x (профиль shortlived — единственный способ получить сертификат
+# Let's Encrypt на голый IP) требует Python 3.10+. На Astra штатно собирается
+# 3.9.22 (3.10+ теряет ssl с OpenSSL 1.1.0), поэтому для IP честно сообщаем
+# причину, а для домена ставим любую certbot, совместимую с Python хоста.
+python_supports_certbot5() {
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
+}
+
 install_certbot() {
+  local requirement
+  CERTBOT_PROBLEM=""
+  if panel_host_is_ip; then
+    if ! python_supports_certbot5; then
+      CERTBOT_PROBLEM="сертификат на IP-адрес выдаётся только через certbot 5.4+ (нужен Python 3.10+), а на хосте Python $(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo '?'). Используйте домен (A-запись на $PANEL_HOST) или self-signed сертификат"
+      return 1
+    fi
+    requirement='certbot>=5.4,<6'
+  else
+    requirement='certbot>=2,<6'
+  fi
   if [ ! -x "$INSTALL_DIR/certbot/bin/certbot" ]; then
     python3 -m venv "$INSTALL_DIR/certbot" >>"$LOG_FILE" 2>&1 || return 1
     "$INSTALL_DIR/certbot/bin/pip" install --upgrade pip >>"$LOG_FILE" 2>&1 || return 1
-    "$INSTALL_DIR/certbot/bin/pip" install 'certbot>=5.4,<6' >>"$LOG_FILE" 2>&1 || return 1
+    "$INSTALL_DIR/certbot/bin/pip" install "$requirement" >>"$LOG_FILE" 2>&1 || return 1
   fi
 }
 
@@ -1742,7 +1788,11 @@ request_certificate() {
   write_acme_nginx || return 1
   open_acme_firewall
   if ! run_certbot_request; then
-    log "Не удалось получить Let's Encrypt: убедитесь, что $PANEL_HOST доступен из интернета по TCP 80; подробности в $LOG_FILE"
+    if [ -n "${CERTBOT_PROBLEM:-}" ]; then
+      log "Let's Encrypt пропущен: $CERTBOT_PROBLEM"
+    else
+      log "Не удалось получить Let's Encrypt: убедитесь, что $PANEL_HOST доступен из интернета по TCP 80; подробности в $LOG_FILE"
+    fi
     return 1
   fi
 }
@@ -1794,7 +1844,11 @@ try_upgrade_certificate() {
   grep -q '/.well-known/acme-challenge/' "$NGINX_FILE" || { log "Публичный сертификат не запрошен: в Nginx отсутствует ACME location"; return 1; }
   open_acme_firewall
   if ! run_certbot_request; then
-    log "Не удалось получить Let's Encrypt: проверьте DNS и публичную доступность $PANEL_HOST:80; подробности в $LOG_FILE"
+    if [ -n "${CERTBOT_PROBLEM:-}" ]; then
+      log "Let's Encrypt пропущен: $CERTBOT_PROBLEM"
+    else
+      log "Не удалось получить Let's Encrypt: проверьте DNS и публичную доступность $PANEL_HOST:80; подробности в $LOG_FILE"
+    fi
     return 1
   fi
 }
@@ -1880,7 +1934,7 @@ $HSTS_HEADER
     gzip_proxied any;
     gzip_min_length 1024;
     gzip_comp_level 6;
-    gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
+    gzip_types text/css text/javascript application/javascript application/json text/plain image/svg+xml;
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
     location ^~ $PANEL_PATH {
@@ -2017,14 +2071,16 @@ renew_certificates() {
 
 open_firewall() {
   [ "${HTTP_ENABLED:-0}" = "1" ] && open_acme_firewall
-  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw_allow "$PANEL_HTTPS_PORT/tcp" "WDTT Panel HTTPS"
+  if ufw_active; then
+    ufw_allow "$PANEL_HTTPS_PORT/tcp" "WDTT Panel HTTPS" || {
+      log "Открываю $PANEL_HTTPS_PORT/tcp напрямую через iptables (ufw не справился)"
+      iptables_allow_tcp "$PANEL_HTTPS_PORT" "WDTT_PANEL" || true
+    }
   elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
     firewall-cmd --permanent --add-port="$PANEL_HTTPS_PORT/tcp" >/dev/null || true
     firewall-cmd --reload >/dev/null || true
   elif command_exists iptables; then
-    iptables -C INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
-      iptables -I INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT || true
+    iptables_allow_tcp "$PANEL_HTTPS_PORT" "WDTT_PANEL" || true
   fi
 }
 
@@ -2547,7 +2603,7 @@ $HSTS_HEADER
     gzip_proxied any;
     gzip_min_length 1024;
     gzip_comp_level 6;
-    gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
+    gzip_types text/css text/javascript application/javascript application/json text/plain image/svg+xml;
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
     location ^~ $PANEL_PATH {

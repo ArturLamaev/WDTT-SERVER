@@ -11,6 +11,27 @@
 - новый функционал/фича → минор (`+0.1`), например `1.0.0 → 1.1.0`;
 - мажорная обнова → мажор (`+1.0`), например `1.0.0 → 2.0.0`.
 
+## 2.3.2
+
+Astra Linux: nginx, ufw и certbot больше не мешают установке.
+
+- `install_certbot`: версия подбирается под Python хоста. Домен — любая
+  `certbot>=2,<6` (работает на Python 3.9); сертификат на голый IP требует
+  профиль `shortlived` (certbot ≥5.4, Python ≥3.10) — при Python 3.9 установка
+  больше не пытается ставить несовместимую версию, а пишет причину
+  («используйте домен или self-signed») вместо ложного «проверьте TCP 80»;
+- `write_acme_nginx`: на Astra nginx ставится с SysV-скриптом, и
+  `systemctl enable --now nginx` только включает юнит, не запуская его
+  (`nginx.service is not active, cannot reload`) — добавлен явный `start`
+  перед ACME-проверкой;
+- `open_firewall`/`open_acme_firewall`: если ufw «активен», но не может менять
+  правила (`initcaps: iptables: Chain already exists`), порт открывается
+  напрямую через `iptables -I INPUT` с комментарием (`WDTT_PANEL` /
+  `WDTT_PANEL_ACME`) — раньше установка только писала WARN, оставляя панель
+  недоступной снаружи;
+- `gzip_types` без `text/html` (install.sh и docker/nginx.conf.tmpl) — убрано
+  предупреждение nginx о дубликате MIME.
+
 ## 2.3.1
 
 Установка не обрывается молча (Astra Linux, `systemctl reload nginx`).

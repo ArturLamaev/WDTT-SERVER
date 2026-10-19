@@ -513,6 +513,24 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("journalctl -u $PANEL_SERVICE -n 50", installer)
         self.assertIn("journalctl -u $FLEET_SERVICE -n 50", installer)
 
+    def test_nginx_ufw_and_certbot_survive_astra_quirks(self):
+        """Astra: SysV-nginx не стартует через `enable --now`; ufw не умеет
+        менять правила; certbot 5.x не ставится на Python 3.9."""
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        # ufw сломан — открываем порт напрямую
+        self.assertIn("iptables_allow_tcp()", installer)
+        self.assertIn('iptables -I INPUT 1 -p tcp --dport "$port"', installer)
+        self.assertIn("ufw не справился", installer)
+        # certbot под версию Python: домен — 2.x, IP — 5.4+ (нужен 3.10+)
+        self.assertIn("python_supports_certbot5()", installer)
+        self.assertIn("requirement='certbot>=5.4,<6'", installer)
+        self.assertIn("requirement='certbot>=2,<6'", installer)
+        self.assertIn("Let's Encrypt пропущен: $CERTBOT_PROBLEM", installer)
+        # nginx на SysV запускается отдельно, иначе ACME некуда идти
+        self.assertIn("systemctl is-active --quiet nginx || systemctl start nginx", installer)
+        # без предупреждения nginx о дубликате MIME
+        self.assertNotIn("text/html text/plain", installer)
+
     def test_root_uninstall_removes_kernel_via_deploy(self):
         root_installer = (ROOT.parent / "install.sh").read_text(encoding="utf-8")
         self.assertIn("uninstall_wdtt_kernel()", root_installer)
