@@ -50,7 +50,6 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `56001` (`WDTT_WG_PORT`) | UDP | WireGuard (только loopback внутри контейнера) |
 | `56001` (`WDTT_WG_PORT`) | UDP | WireGuard ядра. Как и в оригинальном `deploy.sh`, внутри контейнера открыт только с loopback — внешние клиенты ходят через DTLS 56000; проброс оставлен для паритета с bare-metal |
 | `56002` (`WDTT_ADMIN_PORT`) | TCP | Admin API ядра — **наружу не публикуется** (только loopback) |
-| `41641` (`WDTT_TAILSCALE_PORT`) | UDP | Tailscale direct-соединения — **по умолчанию закомментирован** (порт часто занят демоном хоста; без него работают DERP-релеи). Раскомментируйте в compose при свободном порте |
 
 Экспериментальные порты ядра (`WDTT_DIRECT_PORT`, `WDTT_RAW_PORT`) выключены
 по умолчанию; чтобы открыть — задайте переменные и раскомментируйте строки
@@ -75,7 +74,6 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `WDTT_DTLS_PORT` / `WDTT_WG_PORT` / `WDTT_ADMIN_PORT` | `56000/56001/56002` | Порты ядра |
 | `WDTT_DNS` | `1.1.1.1,1.0.0.1` | DNS для клиентов |
 | `WDTT_DIRECT_PORT` / `WDTT_RAW_PORT` | `0` | Direct (RTP-obfs без DTLS, клиент: `go_client -notls`) и RAW (без WireGuard, клиент: Android rawtun) листенеры ядра, `0` — выкл. Включаются и во вкладке «WDTT»; мониторинг — строки Direct/RAW UDP в Диагностике. Публикация наружу — раскомментом в compose; на хосте откройте UDP в фаерволе провайдера как `56000/56001` |
-| `WDTT_TAILSCALE_PORT` | `41641` | UDP-порт Tailscale для прямых соединений (действует при раскомментированном маппинге в compose) |
 | `WDTT_TELEGRAM_BOT_TOKEN` / `WDTT_TELEGRAM_ADMIN_ID` | — | Telegram-бот ядра |
 | `TZ` | `UTC` | Часовой пояс |
 | `AUTO_RESTART_HOURS` | `6` | Авто-рестарт ядра+панели, `0` — выкл. (аналог `wdtt-auto-restart.timer`) |
@@ -101,7 +99,6 @@ self-signed), делает reload nginx и рестарт панели — по�
 | `wdtt-panel-state` | `/var/lib/wdtt-panel` — sqlite-состояние панели |
 | `wdtt-panel-private` | `/var/lib/wdtt-panel-private` — бэкапы/расписания/настройки |
 | `wdtt-letsencrypt` | `/etc/letsencrypt` — сертификаты LE |
-| `tailscale-state` | `/var/lib/tailscale` — идентичность в tailnet (переживает рестарты) |
 | `wdtt-proxy-config` | `/opt/wdtt-proxy` — файлы шлюза SOCKS5 и `config.env` |
 
 Свой сид VK-хешей вместо вшитого в образ: раскомментируйте монтирование
@@ -134,6 +131,26 @@ compose монтирует их из репозитория хоста толь�
 
 Контейнеру нужны `NET_ADMIN`/`NET_RAW` и `/dev/net/tun` (уже в compose) — без них
 sing-box не создаст tun-интерфейс.
+
+## Tailscale
+
+В контейнере Tailscale **не устанавливается и не запускается** — им управляет
+хост (свой пакет `tailscale`/`tailscaled`), а контейнер ходит в tailnet через
+маршрутизацию хоста. Так адреса вида `100.66.0.3` (например, SOCKS5-сервер для
+шлюза) доступны из контейнера без второй, «пустой» tailnet-ноды: раньше
+собственный `tailscaled` в контейнере поднимался `Logged out` и tailnet из
+контейнера был недоступен.
+
+Вкладка **«Система» → Tailscale** в панели под Docker показывает «на хосте» и
+не даёт управлять: `tailscale up` и статус — на самом хосте:
+
+```bash
+tailscale status          # на хосте, не в контейнере
+sudo tailscale up
+```
+
+Если хост не в tailnet, а SOCKS5-сервер доступен по публичному адресу —
+просто укажите этот адрес во вкладке «Прокси».
 
 ## Обслуживание
 

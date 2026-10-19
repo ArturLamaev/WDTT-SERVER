@@ -11,6 +11,31 @@
 - новый функционал/фича → минор (`+0.1`), например `1.0.0 → 1.1.0`;
 - мажорная обнова → мажор (`+1.0`), например `1.0.0 → 2.0.0`.
 
+## 2.3.0
+
+Docker: Tailscale вырезан из контейнера — он остаётся на хосте.
+
+- `docker/Dockerfile`: больше не ставит `tailscale`/`tailscaled` (вместе с
+  apt-ключом и `gnupg`). Собственный tailscaled в контейнере поднимался
+  `Logged out` (свежий volume = новая нода), и tailnet из контейнера был
+  недоступен — из-за этого шлюз SOCKS5 на `100.66.0.3` не отвечал, и «Прокси»
+  писала «работает», а интернета у клиентов не было. Контейнеру tailnet нужен
+  только на маршрутизации, её даёт хост;
+- `docker/docker-compose.yml`: убраны volume `tailscale-state` и
+  закомментированный проброс 41641/udp (`WDTT_TAILSCALE_PORT`);
+- `docker/supervisord.sh`: убран `run_tailscaled` (и его `tailscaled.pid`);
+- панель под Docker: `tailscale.status` отдаёт `docker: true` + подсказку «на
+  хосте», операции `tailscale.install|connect|check|disconnect|logout` отвечают
+  понятной ошибкой вместо тихого «test»-состояния; вкладка «Система → Tailscale»
+  показывает «на хосте» и прячет кнопки;
+- `docker/README.md`: раздел «Tailscale» (управление — на хосте), убраны строки
+  про 41641/`tailscale-state`;
+- тесты: Docker-статус и запрет операций, отсутствие tailscale в образе/compose/
+  супервизоре, ветка фронта «на хосте».
+
+На хостах (bare-metal) Tailscale-вкладка не меняется: `install.sh
+install-tailscale-runtime` и `tailscale up` работают как раньше.
+
 ## 2.2.3
 
 Починка установки шлюза из панели в Docker: вкладка «Прокси» отвечала

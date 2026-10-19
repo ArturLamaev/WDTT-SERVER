@@ -2932,6 +2932,19 @@ def save_tailscale_settings(settings: dict[str, Any]) -> None:
     save_private_json(TAILSCALE_SETTINGS, settings)
 
 
+TAILSCALE_DOCKER_HINT = (
+    "В Docker Tailscale в контейнер не входит: он работает на хосте, и контейнер "
+    "ходит в tailnet через маршрутизацию хоста. Управляйте Tailscale на самом "
+    "хосте (tailscale up, systemctl status tailscaled) — здесь настраивать нечего."
+)
+
+
+def tailscale_require_available() -> None:
+    """В контейнере компонента нет: операции Tailscale адресуют хост."""
+    if is_docker():
+        raise ValidationError(TAILSCALE_DOCKER_HINT)
+
+
 def tailscale_status_raw() -> dict[str, Any]:
     """Сырой `tailscale status --json` + признак доступности демона.
 
@@ -2961,6 +2974,23 @@ def tailscale_status_raw() -> dict[str, Any]:
 
 
 def tailscale_status(payload: dict[str, Any]) -> dict[str, Any]:
+    if is_docker():
+        # Контейнер не держит свой tailscaled (см. docker/Dockerfile): tailnet —
+        # на хосте. Отдаём понятное состояние, чтобы вкладка не врала «не установлен».
+        return {
+            "docker": True,
+            "installed": False,
+            "daemon": False,
+            "online": False,
+            "hostname": "",
+            "tailscale_ips": [],
+            "dns_name": "",
+            "tailnet": "",
+            "authkey_set": False,
+            "authkey_hint": "",
+            "accept_dns": True,
+            "hint": TAILSCALE_DOCKER_HINT,
+        }
     raw = tailscale_status_raw()
     data = raw["raw"] if isinstance(raw["raw"], dict) else {}
     self_node = data.get("Self") if isinstance(data.get("Self"), dict) else {}
@@ -2984,6 +3014,7 @@ def tailscale_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def schedule_tailscale_runtime(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if SKIP_SYSTEMD:
         return {"scheduled": True, "state": "test"}
     unit = f"wdtt-tailscale-install-{int(time.time())}"
@@ -3007,6 +3038,7 @@ def ensure_tailscaled_running() -> None:
 
 
 def tailscale_connect(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     try:
@@ -3049,6 +3081,7 @@ def tailscale_connect(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def tailscale_disconnect(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     stopped = run(["tailscale", "down"], timeout=30)
@@ -3058,6 +3091,7 @@ def tailscale_disconnect(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def tailscale_logout(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     forgotten = run(["tailscale", "logout"], timeout=30)
@@ -3067,6 +3101,7 @@ def tailscale_logout(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def tailscale_check(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     if not tailscale_status_raw()["online"]:

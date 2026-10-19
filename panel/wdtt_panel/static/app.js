@@ -325,6 +325,16 @@
 
   function renderTailscale(result) {
     state.tailscale = result;
+    const buttons = ["install-tailscale", "connect-tailscale", "check-tailscale", "disconnect-tailscale", "logout-tailscale"];
+    if (result.docker) {
+      // В Docker Tailscale не входит в контейнер: tailnet — на хосте.
+      $("#tailscale-status").className = "badge warn";
+      $("#tailscale-status").textContent = "на хосте";
+      $("#tailscale-info").textContent = result.hint || "Tailscale в контейнере не используется: он работает на хосте.";
+      for (const id of buttons) $(`#${id}`).hidden = true;
+      return;
+    }
+    for (const id of buttons) $(`#${id}`).hidden = false;
     const online = Boolean(result.online);
     $("#tailscale-status").className = `badge ${online ? "ok" : (result.installed ? "warn" : "bad")}`;
     $("#tailscale-status").textContent = online ? "в сети" : (result.daemon ? "отключён" : (result.installed ? "демон не отвечает" : "не установлен"));

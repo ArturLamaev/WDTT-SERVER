@@ -1,5 +1,6 @@
 """Tailscale в панели: статус, подключение, проверка (mock'и, без демона)."""
 import json
+import os
 import subprocess
 import unittest
 from unittest import mock
@@ -57,6 +58,25 @@ class NormalizeTests(unittest.TestCase):
 
 
 class StatusTests(unittest.TestCase):
+    def test_docker_reports_host_managed(self):
+        """Docker: своего tailscaled в контейнере нет — вкладка шлёт на хост."""
+        with mock.patch.dict(os.environ, {"WDTT_DOCKER": "1"}):
+            result = admin.tailscale_status({})
+        self.assertTrue(result["docker"])
+        self.assertFalse(result["installed"])
+        self.assertFalse(result["online"])
+        self.assertIn("на хосте", result["hint"])
+        with mock.patch.dict(os.environ, {"WDTT_DOCKER": "1"}):
+            for operation in (
+                admin.tailscale_connect,
+                admin.tailscale_disconnect,
+                admin.tailscale_logout,
+                admin.tailscale_check,
+                admin.schedule_tailscale_runtime,
+            ):
+                with self.assertRaises(admin.ValidationError, msg=operation.__name__):
+                    operation({})
+
     def test_not_installed(self):
         with mock.patch.object(admin.shutil, "which", return_value=None):
             result = admin.tailscale_status({})

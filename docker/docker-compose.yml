@@ -12,8 +12,8 @@
 #   * контейнеру даны привилегии NET_ADMIN/NET_RAW (см. ниже)
 #   * опубликованные порты: 9999 (панель), 80 (ACME/редирект),
 #     56000/udp+tcp (DTLS/API), 56001/udp (WireGuard) — откройте их и в фаерволе VPS.
-#     Tailscale 41641/udp по умолчанию НЕ публикуется (часто занят демоном хоста;
-#     без него работают DERP-релеи) — при свободном порте раскомментируйте в ports.
+#     Tailscale в контейнер не входит: tailnet — на хосте, контейнер ходит в него
+#     через хостовую маршрутизацию (см. docker/README.md).
 #
 # Если Docker-хост не отдаёт /dev/net/tun — раскомментируйте `privileged: true`
 # (проще всего на большинстве «облачных» докер-хостингов).
@@ -50,11 +50,6 @@ services:
       - "${WDTT_DTLS_PORT:-56000}:${WDTT_DTLS_PORT:-56000}/udp"   # DTLS-туннель
       - "${WDTT_DTLS_PORT:-56000}:${WDTT_DTLS_PORT:-56000}/tcp"   # API ядра
       - "${WDTT_WG_PORT:-56001}:${WDTT_WG_PORT:-56001}/udp"       # WireGuard
-      # Tailscale direct-соединения. По умолчанию ВЫКЛЮЧЕН: порт 41641 часто
-      # уже занят tailscaled самого хоста, а без маппинга контейнер всё равно
-      # в сети (DERP-релеи + UDP hole punching через NAT). Раскомментируйте,
-      # только если хост-порт свободен и нужны прямые соединения:
-      # - "${WDTT_TAILSCALE_PORT:-41641}:${WDTT_TAILSCALE_PORT:-41641}/udp"
       # Admin API ядра (56002) НАРУЖУ НЕ ОТКРЫВАЙТЕ — он нужен только
       # самой панели/приложению на локальной петле:
       # - "${WDTT_ADMIN_PORT:-56002}:${WDTT_ADMIN_PORT:-56002}"
@@ -71,7 +66,6 @@ services:
       - wdtt-panel-state:/var/lib/wdtt-panel      # sqlite-состояние панели
       - wdtt-panel-private:/var/lib/wdtt-panel-private   # бэкапы, расписания, настройки
       - wdtt-letsencrypt:/etc/letsencrypt         # сертификаты Let's Encrypt
-      - tailscale-state:/var/lib/tailscale        # идентичность tailnet (переживает рестарты)
       - wdtt-proxy-config:/opt/wdtt-proxy          # config.env шлюза SOCKS5 (переживает пересоздание)
       # Код панели из репозитория поверх запечённого в образ: обновление
       # Python-кода (панель, fleet, фронт) = git pull на хосте +
@@ -112,5 +106,4 @@ volumes:
   wdtt-panel-state: {}
   wdtt-panel-private: {}
   wdtt-letsencrypt: {}
-  tailscale-state: {}
   wdtt-proxy-config: {}
