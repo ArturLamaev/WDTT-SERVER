@@ -1318,9 +1318,54 @@ LOG_LEVEL="warn"
     def test_install_requires_installer_file(self):
         (self.proxy_dir / "wdtt-proxy.sh").unlink()
         missing = self.proxy_dir / "nope-install.sh"
-        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", missing):
-            with self.assertRaises(admin.AdminError):
+        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", missing), mock.patch.object(
+            admin, "PROXY_INSTALL_FALLBACK_COMMAND", self.proxy_dir / "also-missing.sh"
+        ):
+            with self.assertRaises(admin.AdminError) as ctx:
                 admin.proxy_install({})
+        self.assertIn("Установщик не найден", str(ctx.exception))
+
+    def test_install_falls_back_to_standard_installer(self):
+        """Путь из окружения может не существовать (Docker) — берём штатный install.sh."""
+        (self.proxy_dir / "wdtt-proxy.sh").unlink()
+        fallback = self.proxy_dir / "install.sh"
+        fallback.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+        def fake_run(command, **kwargs):
+            (self.proxy_dir / "wdtt-proxy.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "installed", "")
+
+        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", self.proxy_dir / "nope.sh"), mock.patch.object(
+            admin, "PROXY_INSTALL_FALLBACK_COMMAND", fallback
+        ), mock.patch.object(admin, "run", side_effect=fake_run) as runner:
+            result = admin.proxy_install({})
+        self.assertTrue(result["installed"])
+        self.assertEqual(Path(runner.call_args.args[0][1]), fallback)
+
+    def test_status_reports_resolved_installer(self):
+        fallback = self.proxy_dir / "install.sh"
+        fallback.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", self.proxy_dir / "nope.sh"), mock.patch.object(
+            admin, "PROXY_INSTALL_FALLBACK_COMMAND", fallback
+        ):
+            status = admin.proxy_status({})
+        self.assertEqual(status["install_command"], str(fallback))
+        # Ничего не нашлось — показываем штатный путь, а не «None».
+        with mock.patch.object(admin, "PROXY_INSTALL_COMMAND", self.proxy_dir / "nope.sh"), mock.patch.object(
+            admin, "PROXY_INSTALL_FALLBACK_COMMAND", self.proxy_dir / "nope2.sh"
+        ):
+            status = admin.proxy_status({})
+        self.assertEqual(status["install_command"], str(self.proxy_dir / "nope.sh"))
+
+    def test_installer_missing_message_is_docker_aware(self):
+        with mock.patch.dict(os.environ, {"WDTT_DOCKER": "1"}):
+            message = admin.proxy_installer_missing_message()
+        self.assertIn("docker compose up -d", message)
+        with mock.patch.dict(os.environ, {"WDTT_DOCKER": ""}):
+            message = admin.proxy_installer_missing_message()
+        self.assertIn("install.sh update", message)
+        with mock.patch.dict(os.environ, {"WDTT_DOCKER": "1"}):
+            self.assertIn("docker compose up -d", admin.proxy_install_hint())
 
     def test_logs_include_proxy_source(self):
         payload = {"limit": 20, "source": "proxy"}

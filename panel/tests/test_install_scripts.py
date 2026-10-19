@@ -43,9 +43,17 @@ class InstallScriptTests(unittest.TestCase):
         admin = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")
         self.assertIn('os.environ.get("WDTT_PROXY_DIR", "/opt/wdtt-proxy")', admin)
         self.assertIn('"proxy.install": proxy_install', admin)
+        # Установщик ищется среди кандидатов: в Docker путь приходит из
+        # монтирования, а не только из образа (иначе «Установщик не найден»).
+        self.assertIn("def proxy_installer_path()", admin)
+        self.assertIn('PROXY_INSTALL_FALLBACK_COMMAND = Path("/opt/wdtt-panel/install.sh")', admin)
+        self.assertNotIn('AdminError(f"Установщик не найден', admin)
         dockerfile = (root / "docker" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY wdtt-proxy /opt/wdtt-proxy", dockerfile)
         self.assertIn("/usr/local/bin/sing-box", dockerfile)
+        compose = (root / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("../wdtt-proxy:/opt/wdtt-panel/wdtt-proxy:ro", compose)
+        self.assertIn("../panel/install.sh:/opt/wdtt-panel/install.sh:ro", compose)
 
     def test_wdtt_proxy_keeps_backward_compatibility(self):
         """Прежняя установка в /root/wdtt-proxy: настройки переносятся, чужое не сносим."""

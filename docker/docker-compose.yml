@@ -79,6 +79,13 @@ services:
       # только для Go-ядра и системных пакетов. Монт rw: рантайм пишет
       # только в volumes, __pycache__/ *.pyc прикрыты .gitignore.
       - ../panel/wdtt_panel:/opt/wdtt-panel/wdtt_panel
+      # Исходники шлюза и установщик панели из репозитория: кнопка «Установить
+      # wdtt-proxy» во вкладке «Прокси» работает и в образе, собранном до 2.2.0
+      # (там своих копий нет). Это только чтение — рабочие файлы шлюза живут в
+      # volume wdtt-proxy-config (/opt/wdtt-proxy). После git pull достаточно
+      # `docker compose up -d`, пересборка образа не нужна.
+      - ../wdtt-proxy:/opt/wdtt-panel/wdtt-proxy:ro
+      - ../panel/install.sh:/opt/wdtt-panel/install.sh:ro
       # Свой сид VK-хешей вместо вшитого в образ:
       # - ../userdata:/opt/userdata:ro
 

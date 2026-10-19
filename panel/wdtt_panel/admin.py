@@ -102,6 +102,10 @@ TAILSCALED_SERVICE = os.environ.get("WDTT_TAILSCALED_SERVICE", "tailscaled.servi
 PROXY_SERVICE = os.environ.get("WDTT_PROXY_SERVICE", "wdtt-proxy.service")
 PROXY_DIR = Path(os.environ.get("WDTT_PROXY_DIR", "/opt/wdtt-proxy"))
 PROXY_INSTALL_COMMAND = Path(os.environ.get("WDTT_PROXY_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh"))
+# В Docker установщик приходит не только из образа, но и монтированием из
+# репозитория (docker/docker-compose.yml), поэтому путь по умолчанию — лишь
+# первый кандидат: панель берёт первый реально существующий install.sh.
+PROXY_INSTALL_FALLBACK_COMMAND = Path("/opt/wdtt-panel/install.sh")
 INSTALL_LOG_FILE = Path(os.environ.get("WDTT_INSTALL_LOG_FILE", "/var/log/wdtt-panel-install.log"))
 NGINX_ACCESS_LOG = Path(os.environ.get("WDTT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log"))
 NGINX_ERROR_LOG = Path(os.environ.get("WDTT_NGINX_ERROR_LOG", "/var/log/nginx/error.log"))
@@ -3205,6 +3209,43 @@ def proxy_config_path() -> Path:
     return PROXY_DIR / "config.env"
 
 
+def proxy_installer_candidates() -> tuple[Path, ...]:
+    """Пути, откуда панель может запустить установщик (install.sh).
+
+    Первый — переопределяемый (`WDTT_PROXY_INSTALL_COMMAND`), затем штатный
+    /opt/wdtt-panel/install.sh. Дубликаты убираем: окружение часто совпадает
+    с умолчанием.
+    """
+    candidates: list[Path] = []
+    for candidate in (PROXY_INSTALL_COMMAND, PROXY_INSTALL_FALLBACK_COMMAND):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+def proxy_installer_path() -> Path | None:
+    """Первый доступный установщик панели или None, если его нет вовсе."""
+    for candidate in proxy_installer_candidates():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def proxy_installer_missing_message() -> str:
+    if is_docker():
+        return (
+            "Установщик не найден: "
+            + " / ".join(str(path) for path in proxy_installer_candidates())
+            + ". Образ собран до 2.2.0 (ни установщика, ни sing-box в нём нет) — "
+            "обновите образ: `git pull` в репозитории, затем `docker compose up -d --build`."
+        )
+    return (
+        "Установщик не найден: "
+        + " / ".join(str(path) for path in proxy_installer_candidates())
+        + ". Обновите панель (install.sh update)."
+    )
+
+
 def proxy_installed() -> bool:
     return (PROXY_DIR / "wdtt-proxy.sh").is_file()
 
@@ -3453,6 +3494,12 @@ def proxy_runtime_snapshot(mark: str = "0x100", tun: str = "sbtun0", table: str 
 
 
 def proxy_install_hint() -> str:
+    if is_docker():
+        return (
+            "Установите компонент кнопкой «Установить wdtt-proxy». Если она отвечает "
+            "«Установщик не найден» — контейнер поднят по старому compose-файлу: "
+            "выполните `git pull` и затем `docker compose up -d`."
+        )
     return (
         "Установите компонент кнопкой «Установить wdtt-proxy» "
         "(или вручную: sudo /opt/wdtt-panel/install.sh install-wdtt-proxy "
@@ -3496,7 +3543,7 @@ def proxy_status(payload: dict[str, Any]) -> dict[str, Any]:
         "mode": "systemd" if systemd_mode else "script",
         "autostart": proxy_autostart_enabled() if installed else False,
         "install_hint": "" if installed else proxy_install_hint(),
-        "install_command": str(PROXY_INSTALL_COMMAND),
+        "install_command": str(proxy_installer_path() or PROXY_INSTALL_COMMAND),
         "config_dir": str(PROXY_DIR),
         "service": PROXY_SERVICE,
         "singbox_found": shutil.which(singbox_bin) is not None or Path(singbox_bin).is_file(),
@@ -3564,9 +3611,9 @@ def proxy_install(payload: dict[str, Any]) -> dict[str, Any]:
     """Ставит шлюз монолитно: файлы в /opt/wdtt-proxy + sing-box + юнит."""
     if proxy_installed() and payload.get("force") is not True:
         return {"installed": True, "already": True, "state": "present", **proxy_status({})}
-    command = PROXY_INSTALL_COMMAND
-    if not command.is_file():
-        raise AdminError(f"Установщик не найден: {command}. Обновите панель (install.sh update).")
+    command = proxy_installer_path()
+    if command is None:
+        raise AdminError(proxy_installer_missing_message())
     if not proxy_uses_systemd():
         # Docker: systemd-run нет — ставим прямо в текущем окружении.
         try:

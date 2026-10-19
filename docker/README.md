@@ -115,6 +115,23 @@ systemd в контейнере нет, поэтому панель управл
 (`wdtt-proxy.sh start|stop|restart`, nohup + pidfile), а не юнитом. Правки
 `config.env` сохраняются в томе `wdtt-proxy-config`.
 
+Кнопка **«Установить wdtt-proxy»** запускает в контейнере
+`bash /opt/wdtt-panel/install.sh install-wdtt-proxy`. Чтобы она работала и в
+образе, собранном до 2.2.0 (там нет ни установщика, ни исходников шлюза),
+compose монтирует их из репозитория хоста только для чтения:
+
+```yaml
+- ../wdtt-proxy:/opt/wdtt-panel/wdtt-proxy:ro
+- ../panel/install.sh:/opt/wdtt-panel/install.sh:ro
+```
+
+После `git pull` достаточно `docker compose up -d` (контейнер пересоздастся с
+новыми монтированиями) — пересборка образа не нужна. Если панель отвечает
+«Установщик не найден», значит контейнер поднят со старым compose-файлом: для
+образа, собранного до 2.2.0, в нём нет ещё и `sing-box`, поэтому такому образу
+нужна пересборка — `docker compose up -d --build` (без неё `sing-box`,
+скачанный кнопкой, исчезнет при следующем пересоздании контейнера).
+
 Контейнеру нужны `NET_ADMIN`/`NET_RAW` и `/dev/net/tun` (уже в compose) — без них
 sing-box не создаст tun-интерфейс.
 
@@ -177,3 +194,6 @@ docker run --rm -v wdtt-server_wdtt-data:/d -v wdtt-server_wdtt-panel-config:/c 
   и NAT-правила (`docker compose exec wdtt iptables -t nat -L POSTROUTING -n`).
 - `HTTPS local check` падает — смотрите `docker compose exec wdtt nginx -t`
   и логи `docker compose logs wdtt`.
+- Вкладка «Прокси» пишет «Установщик не найден: /opt/wdtt-panel/install.sh» —
+  контейнер поднят по старому `docker-compose.yml` (без монтирования исходников
+  шлюза): `git pull`, затем `docker compose up -d`.
