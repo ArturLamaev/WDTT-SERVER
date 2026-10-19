@@ -500,6 +500,19 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('ufw_allow_port udp "$port"', deploy)
         self.assertIn('ufw_allow_port tcp "$port"', deploy)
 
+    def test_installer_reports_silent_failures_and_survives_reload_without_execreload(self):
+        """Astra Linux: `systemctl reload nginx` может не поддерживаться — установка
+        не должна из-за этого обрываться молча (было: лог кончался на self-signed)."""
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("trap 'printf \"\\n[wdtt-panel] ОШИБКА", installer)
+        self.assertIn("nginx_reload_or_restart()", installer)
+        self.assertEqual(installer.count('systemctl reload nginx >>"$LOG_FILE" 2>&1'), 1)
+        self.assertIn("systemctl restart nginx", installer)
+        self.assertIn('openssl req -x509 -newkey rsa:3072', installer)
+        self.assertIn("subjectAltName = $SAN", installer)  # откат без -addext
+        self.assertIn("journalctl -u $PANEL_SERVICE -n 50", installer)
+        self.assertIn("journalctl -u $FLEET_SERVICE -n 50", installer)
+
     def test_root_uninstall_removes_kernel_via_deploy(self):
         root_installer = (ROOT.parent / "install.sh").read_text(encoding="utf-8")
         self.assertIn("uninstall_wdtt_kernel()", root_installer)
