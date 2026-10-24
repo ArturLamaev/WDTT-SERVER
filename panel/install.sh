@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="2.2.2"
+# Необработанная ошибка не должна обрывать установку молча: `set -e` раньше
+# просто завершал скрипт (так было на Astra Linux на `systemctl reload nginx`),
+# и оставалось лишь гадать, на каком шаге всё встало.
+trap 'printf "\n[wdtt-panel] ОШИБКА (код %s), строка %s: %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2; printf "[wdtt-panel] Лог установки: %s\n" "${LOG_FILE:-/var/log/wdtt-panel-install.log}" >&2' ERR
+
+PANEL_VERSION="2.3.2"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -1696,7 +1701,8 @@ LockPersonality=true
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1
+  systemctl enable --now "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 \
+    || die "сервис $PANEL_SERVICE не запустился: journalctl -u $PANEL_SERVICE -n 50 (лог: $LOG_FILE)"
 }
 
 remove_obsolete_fleet_agent() {
@@ -1715,6 +1721,15 @@ port_80_available_for_nginx() {
   esac
 }
 
+# Astra и старые сборки: у nginx может не быть ExecReload (или сервис успел
+# упасть) — `systemctl reload` возвращает ошибку, хотя `restart` работает.
+nginx_reload_or_restart() {
+  if systemctl reload nginx >>"$LOG_FILE" 2>&1; then
+    return 0
+  fi
+  systemctl restart nginx >>"$LOG_FILE" 2>&1
+}
+
 write_acme_nginx() {
   cat > "$NGINX_FILE" <<EOF
 server {
@@ -1727,7 +1742,15 @@ server {
 EOF
   nginx -t >>"$LOG_FILE" 2>&1 || { log "Nginx не принял временную ACME-конфигурацию"; return 1; }
   systemctl enable --now nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось запустить Nginx для ACME"; return 1; }
-  systemctl reload nginx >>"$LOG_FILE" 2>&1 || { log "Не удалось применить временную ACME-конфигурацию Nginx"; return 1; }
+  # Astra ставит nginx с SysV-скриптом: `enable --now` включает юнит, но не
+  # запускает его («Synchronizing state ... with SysV service script»), и ACME
+  # уходит в пустоту. Явный start это закрывает.
+  systemctl is-active --quiet nginx || systemctl start nginx >>"$LOG_FILE" 2>&1 \
+    || { log "Не удалось запустить Nginx для ACME"; return 1; }
+  nginx_reload_or_restart || {
+    log "Не удалось применить временную ACME-конфигурацию Nginx (journalctl -u nginx, $LOG_FILE)"
+    return 1
+  }
 }
 
 # Старый ufw (Debian 9 / Astra 2.12, ufw 0.35) не знает ключевое слово comment:
@@ -1737,26 +1760,67 @@ ufw_allow() {
   if with_timeout 60 ufw allow "$spec" comment "$comment" >/dev/null 2>&1; then
     return 0
   fi
-  with_timeout 60 ufw allow "$spec" >/dev/null 2>&1 || log "WARN: ufw не открыл $spec"
+  with_timeout 60 ufw allow "$spec" >/dev/null 2>&1 && return 0
+  log "WARN: ufw не открыл $spec"
+  return 1
+}
+
+ufw_active() {
+  command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'
+}
+
+# Запасной путь, если ufw «активен», но правила менять не может (на Astra:
+# `initcaps: iptables: Chain already exists`). Правило встаёт в начало INPUT —
+# перед ufw-цепочками — и снимается uninstall'ом по комментарию.
+iptables_allow_tcp() {
+  local port="$1" comment="$2"
+  command_exists iptables || return 1
+  iptables -C INPUT -p tcp --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null && return 0
+  iptables -I INPUT 1 -p tcp --dport "$port" -m comment --comment "$comment" -j ACCEPT 2>/dev/null
 }
 
 open_acme_firewall() {
-  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw_allow "80/tcp" "WDTT Panel ACME"
+  if ufw_active; then
+    ufw_allow "80/tcp" "WDTT Panel ACME" || {
+      log "Открываю 80/tcp напрямую через iptables (ufw не справился)"
+      iptables_allow_tcp 80 "WDTT_PANEL_ACME" || true
+    }
   elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
     firewall-cmd --permanent --add-port=80/tcp >/dev/null || true
     firewall-cmd --reload >/dev/null || true
   elif command_exists iptables; then
-    iptables -C INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
-      iptables -I INPUT -p tcp --dport 80 -m comment --comment WDTT_PANEL -j ACCEPT || true
+    iptables_allow_tcp 80 "WDTT_PANEL" || true
   fi
 }
 
+panel_host_is_ip() {
+  [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# certbot 5.x (профиль shortlived — единственный способ получить сертификат
+# Let's Encrypt на голый IP) требует Python 3.10+. На Astra штатно собирается
+# 3.9.22 (3.10+ теряет ssl с OpenSSL 1.1.0), поэтому для IP честно сообщаем
+# причину, а для домена ставим любую certbot, совместимую с Python хоста.
+python_supports_certbot5() {
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
+}
+
 install_certbot() {
+  local requirement
+  CERTBOT_PROBLEM=""
+  if panel_host_is_ip; then
+    if ! python_supports_certbot5; then
+      CERTBOT_PROBLEM="сертификат на IP-адрес выдаётся только через certbot 5.4+ (нужен Python 3.10+), а на хосте Python $(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo '?'). Используйте домен (A-запись на $PANEL_HOST) или self-signed сертификат"
+      return 1
+    fi
+    requirement='certbot>=5.4,<6'
+  else
+    requirement='certbot>=2,<6'
+  fi
   if [ ! -x "$INSTALL_DIR/certbot/bin/certbot" ]; then
     python3 -m venv "$INSTALL_DIR/certbot" >>"$LOG_FILE" 2>&1 || return 1
     "$INSTALL_DIR/certbot/bin/pip" install --upgrade pip >>"$LOG_FILE" 2>&1 || return 1
-    "$INSTALL_DIR/certbot/bin/pip" install 'certbot>=5.4,<6' >>"$LOG_FILE" 2>&1 || return 1
+    "$INSTALL_DIR/certbot/bin/pip" install "$requirement" >>"$LOG_FILE" 2>&1 || return 1
   fi
 }
 
@@ -1767,7 +1831,11 @@ request_certificate() {
   write_acme_nginx || return 1
   open_acme_firewall
   if ! run_certbot_request; then
-    log "Не удалось получить Let's Encrypt: убедитесь, что $PANEL_HOST доступен из интернета по TCP 80; подробности в $LOG_FILE"
+    if [ -n "${CERTBOT_PROBLEM:-}" ]; then
+      log "Let's Encrypt пропущен: $CERTBOT_PROBLEM"
+    else
+      log "Не удалось получить Let's Encrypt: убедитесь, что $PANEL_HOST доступен из интернета по TCP 80; подробности в $LOG_FILE"
+    fi
     return 1
   fi
 }
@@ -1819,7 +1887,11 @@ try_upgrade_certificate() {
   grep -q '/.well-known/acme-challenge/' "$NGINX_FILE" || { log "Публичный сертификат не запрошен: в Nginx отсутствует ACME location"; return 1; }
   open_acme_firewall
   if ! run_certbot_request; then
-    log "Не удалось получить Let's Encrypt: проверьте DNS и публичную доступность $PANEL_HOST:80; подробности в $LOG_FILE"
+    if [ -n "${CERTBOT_PROBLEM:-}" ]; then
+      log "Let's Encrypt пропущен: $CERTBOT_PROBLEM"
+    else
+      log "Не удалось получить Let's Encrypt: проверьте DNS и публичную доступность $PANEL_HOST:80; подробности в $LOG_FILE"
+    fi
     return 1
   fi
 }
@@ -1829,9 +1901,38 @@ create_self_signed_certificate() {
   CERTIFICATE_PATH="$CONFIG_DIR/tls/fullchain.pem"
   PRIVATE_KEY_PATH="$CONFIG_DIR/tls/privkey.pem"
   if [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then SAN="IP:$PANEL_HOST"; else SAN="DNS:$PANEL_HOST"; fi
-  openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes \
-    -keyout "$PRIVATE_KEY_PATH" -out "$CERTIFICATE_PATH" \
-    -subj "/CN=$PANEL_HOST" -addext "subjectAltName=$SAN" >>"$LOG_FILE" 2>&1
+  local out="" cnf=""
+  if ! out="$(openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes \
+      -keyout "$PRIVATE_KEY_PATH" -out "$CERTIFICATE_PATH" \
+      -subj "/CN=$PANEL_HOST" -addext "subjectAltName=$SAN" 2>&1)"; then
+    # OpenSSL < 1.1.1 (Debian 9, часть сборок Astra) не знает -addext:
+    # повторяем через временный конфиг с расширениями.
+    printf '%s\n' "$out" >>"$LOG_FILE"
+    log "openssl не принял -addext (старая версия) — выпускаю сертификат через конфиг"
+    cnf="$(mktemp)"
+    cat > "$cnf" <<EOF
+[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = $PANEL_HOST
+[ext]
+subjectAltName = $SAN
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+EOF
+    if ! out="$(openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes \
+        -keyout "$PRIVATE_KEY_PATH" -out "$CERTIFICATE_PATH" \
+        -config "$cnf" 2>&1)"; then
+      printf '%s\n' "$out" >>"$LOG_FILE"
+      rm -f "$cnf"
+      die "Не удалось выпустить self-signed сертификат: $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"
+    fi
+    rm -f "$cnf"
+  fi
+  printf '%s\n' "$out" >>"$LOG_FILE"
   chmod 0600 "$PRIVATE_KEY_PATH"
   chmod 0644 "$CERTIFICATE_PATH"
   TLS_MODE="self-signed"
@@ -2069,7 +2170,7 @@ $HSTS_HEADER
     gzip_proxied any;
     gzip_min_length 1024;
     gzip_comp_level 6;
-    gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
+    gzip_types text/css text/javascript application/javascript application/json text/plain image/svg+xml;
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
     location ^~ $PANEL_PATH {
@@ -2095,8 +2196,10 @@ $HSTS_HEADER
 }
 EOF
   nginx -t >>"$LOG_FILE" 2>&1 || die "Ошибка конфигурации Nginx, см. $LOG_FILE"
-  systemctl enable --now nginx >>"$LOG_FILE" 2>&1
-  systemctl reload nginx >>"$LOG_FILE" 2>&1
+  systemctl enable --now nginx >>"$LOG_FILE" 2>&1 \
+    || log "WARN: Nginx не запустился (journalctl -u nginx, $LOG_FILE)"
+  nginx_reload_or_restart \
+    || log "WARN: Nginx не принял конфигурацию (journalctl -u nginx, $LOG_FILE)"
 }
 
 write_renew_timer() {
@@ -2126,7 +2229,8 @@ Persistent=true
 WantedBy=timers.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now wdtt-panel-cert-renew.timer >>"$LOG_FILE" 2>&1
+  systemctl enable --now wdtt-panel-cert-renew.timer >>"$LOG_FILE" 2>&1 \
+    || log "WARN: таймер продления сертификата не включился (лог: $LOG_FILE)"
 }
 
 write_autoclean_timer() {
@@ -2155,7 +2259,8 @@ Unit=$AUTOCLEAN_SERVICE
 WantedBy=timers.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "$AUTOCLEAN_TIMER" >>"$LOG_FILE" 2>&1
+  systemctl enable --now "$AUTOCLEAN_TIMER" >>"$LOG_FILE" 2>&1 \
+    || log "WARN: таймер $AUTOCLEAN_TIMER не включился (лог: $LOG_FILE)"
 }
 
 renew_certificates() {
@@ -2215,14 +2320,16 @@ renew_certificates() {
 
 open_firewall() {
   [ "${HTTP_ENABLED:-0}" = "1" ] && open_acme_firewall
-  if command_exists ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw_allow "$PANEL_HTTPS_PORT/tcp" "WDTT Panel HTTPS"
+  if ufw_active; then
+    ufw_allow "$PANEL_HTTPS_PORT/tcp" "WDTT Panel HTTPS" || {
+      log "Открываю $PANEL_HTTPS_PORT/tcp напрямую через iptables (ufw не справился)"
+      iptables_allow_tcp "$PANEL_HTTPS_PORT" "WDTT_PANEL" || true
+    }
   elif command_exists firewall-cmd && systemctl is-active --quiet firewalld; then
     firewall-cmd --permanent --add-port="$PANEL_HTTPS_PORT/tcp" >/dev/null || true
     firewall-cmd --reload >/dev/null || true
   elif command_exists iptables; then
-    iptables -C INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT 2>/dev/null || \
-      iptables -I INPUT -p tcp --dport "$PANEL_HTTPS_PORT" -m comment --comment WDTT_PANEL -j ACCEPT || true
+    iptables_allow_tcp "$PANEL_HTTPS_PORT" "WDTT_PANEL" || true
   fi
 }
 
@@ -2259,7 +2366,8 @@ Unit=$WDTT_EXTENSIONS_SERVICE
 WantedBy=timers.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "$WDTT_EXTENSIONS_TIMER" >>"$LOG_FILE" 2>&1
+  systemctl enable --now "$WDTT_EXTENSIONS_TIMER" >>"$LOG_FILE" 2>&1 \
+    || log "WARN: таймер $WDTT_EXTENSIONS_TIMER не включился (лог: $LOG_FILE)"
 }
 
 change_panel_password() {
@@ -2523,7 +2631,8 @@ update_panel() {
   write_wdtt_extensions_timer
   write_autoclean_timer
   schedule_wdtt_extensions
-  systemctl restart "$PANEL_SERVICE"
+  systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1 \
+    || die "панель не запустилась: journalctl -u $PANEL_SERVICE -n 50 (лог: $LOG_FILE)"
   log "Панель обновлена; адрес, пароль, сертификаты и данные сохранены"
   status_panel
 }
@@ -2743,7 +2852,8 @@ UMask=0027
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1
+  systemctl enable --now "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1 \
+    || die "сервис $FLEET_SERVICE не запустился: journalctl -u $FLEET_SERVICE -n 50 (лог: $LOG_FILE)"
 }
 
 write_fleet_bot_service() {
@@ -2771,7 +2881,8 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   if fleet_bot_token_available; then
-    systemctl enable --now "$FLEET_BOT_SERVICE" >>"$LOG_FILE" 2>&1
+    systemctl enable --now "$FLEET_BOT_SERVICE" >>"$LOG_FILE" 2>&1 \
+      || log "WARN: бот не запустился: journalctl -u $FLEET_BOT_SERVICE -n 50 (лог: $LOG_FILE)"
     log "Telegram-бот контроллера запущен"
   else
     log "Токен бота не задан: задайте его на странице «Бот» панели или WDTT_FLEET_BOT_TOKEN, затем systemctl enable --now $FLEET_BOT_SERVICE"
@@ -2815,7 +2926,7 @@ $HSTS_HEADER
     gzip_proxied any;
     gzip_min_length 1024;
     gzip_comp_level 6;
-    gzip_types text/css text/javascript application/javascript application/json text/html text/plain image/svg+xml;
+    gzip_types text/css text/javascript application/javascript application/json text/plain image/svg+xml;
 
     location = ${PANEL_PATH%/} { return 302 $PANEL_PATH; }
     location ^~ $PANEL_PATH {
@@ -2832,8 +2943,10 @@ $HSTS_HEADER
 }
 EOF
   nginx -t >>"$LOG_FILE" 2>&1 || die "Ошибка конфигурации Nginx, см. $LOG_FILE"
-  systemctl enable --now nginx >>"$LOG_FILE" 2>&1
-  systemctl reload nginx >>"$LOG_FILE" 2>&1
+  systemctl enable --now nginx >>"$LOG_FILE" 2>&1 \
+    || log "WARN: Nginx не запустился (journalctl -u nginx, $LOG_FILE)"
+  nginx_reload_or_restart \
+    || log "WARN: Nginx не принял конфигурацию (journalctl -u nginx, $LOG_FILE)"
 }
 
 install_controller() {
@@ -2878,7 +2991,9 @@ install_controller() {
   record_source_repo
   write_self_update_wrapper
   open_firewall
-  systemctl restart "$FLEET_SERVICE"
+  if ! systemctl restart "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1; then
+    die "контроллер не запустился: journalctl -u $FLEET_SERVICE -n 50 (лог: $LOG_FILE)"
+  fi
 
   printf '\n'
   log "Установка контроллера завершена (ядро WDTT не ставится в этом режиме)"
@@ -2910,7 +3025,8 @@ update_controller() {
   write_renew_timer
   record_source_repo
   write_self_update_wrapper
-  systemctl restart "$FLEET_SERVICE"
+  systemctl restart "$FLEET_SERVICE" >>"$LOG_FILE" 2>&1 \
+    || die "контроллер не запустился: journalctl -u $FLEET_SERVICE -n 50 (лог: $LOG_FILE)"
   if systemctl is-enabled --quiet "$FLEET_BOT_SERVICE" 2>/dev/null; then
     systemctl restart "$FLEET_BOT_SERVICE" >>"$LOG_FILE" 2>&1 || true
   fi
@@ -2998,7 +3114,9 @@ install_panel() {
   write_wdtt_extensions_timer
   write_autoclean_timer
   open_firewall
-  systemctl restart "$PANEL_SERVICE"
+  if ! systemctl restart "$PANEL_SERVICE" >>"$LOG_FILE" 2>&1; then
+    die "панель не запустилась: journalctl -u $PANEL_SERVICE -n 50 (лог: $LOG_FILE)"
+  fi
 
   printf '\n'
   log "Установка завершена"

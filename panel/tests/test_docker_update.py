@@ -39,6 +39,18 @@ class DockerUpdateTests(unittest.TestCase):
     def test_supervisord_exports_docker_flag(self):
         self.assertIn("WDTT_DOCKER", SUPERVISORD)
 
+    def test_docker_image_has_no_tailscale(self):
+        """Tailscale — на хосте: в контейнере свой tailscaled давал «Logged out»
+        и недоступный tailnet (SOCKS5 по 100.66.0.3 не отвечал)."""
+        dockerfile = (REPO / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("pkgs.tailscale.com", dockerfile)
+        self.assertNotIn("tailscale-archive-keyring", dockerfile)
+        self.assertNotIn("tailscale-state", COMPOSE)
+        self.assertNotIn("WDTT_TAILSCALE_PORT", COMPOSE)
+        self.assertNotIn("run_tailscaled", SUPERVISORD)
+        self.assertNotIn("tailscaled", SUPERVISORD)
+        self.assertIn("на хосте", APP_JS)
+
     def test_frontend_docker_banner(self):
         self.assertIn("result.docker", APP_JS)
         self.assertIn("docker compose restart", APP_JS)

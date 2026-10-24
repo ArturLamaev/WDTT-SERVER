@@ -43,9 +43,17 @@ class InstallScriptTests(unittest.TestCase):
         admin = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")
         self.assertIn('os.environ.get("WDTT_PROXY_DIR", "/opt/wdtt-proxy")', admin)
         self.assertIn('"proxy.install": proxy_install', admin)
+        # Установщик ищется среди кандидатов: в Docker путь приходит из
+        # монтирования, а не только из образа (иначе «Установщик не найден»).
+        self.assertIn("def proxy_installer_path()", admin)
+        self.assertIn('PROXY_INSTALL_FALLBACK_COMMAND = Path("/opt/wdtt-panel/install.sh")', admin)
+        self.assertNotIn('AdminError(f"Установщик не найден', admin)
         dockerfile = (root / "docker" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY wdtt-proxy /opt/wdtt-proxy", dockerfile)
         self.assertIn("/usr/local/bin/sing-box", dockerfile)
+        compose = (root / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("../wdtt-proxy:/opt/wdtt-panel/wdtt-proxy:ro", compose)
+        self.assertIn("../panel/install.sh:/opt/wdtt-panel/install.sh:ro", compose)
 
     def test_wdtt_proxy_keeps_backward_compatibility(self):
         """Прежняя установка в /root/wdtt-proxy: настройки переносятся, чужое не сносим."""
@@ -492,6 +500,37 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn("ufw_allow_port()", deploy)
         self.assertIn('ufw_allow_port udp "$port"', deploy)
         self.assertIn('ufw_allow_port tcp "$port"', deploy)
+
+    def test_installer_reports_silent_failures_and_survives_reload_without_execreload(self):
+        """Astra Linux: `systemctl reload nginx` может не поддерживаться — установка
+        не должна из-за этого обрываться молча (было: лог кончался на self-signed)."""
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("trap 'printf \"\\n[wdtt-panel] ОШИБКА", installer)
+        self.assertIn("nginx_reload_or_restart()", installer)
+        self.assertEqual(installer.count('systemctl reload nginx >>"$LOG_FILE" 2>&1'), 1)
+        self.assertIn("systemctl restart nginx", installer)
+        self.assertIn('openssl req -x509 -newkey rsa:3072', installer)
+        self.assertIn("subjectAltName = $SAN", installer)  # откат без -addext
+        self.assertIn("journalctl -u $PANEL_SERVICE -n 50", installer)
+        self.assertIn("journalctl -u $FLEET_SERVICE -n 50", installer)
+
+    def test_nginx_ufw_and_certbot_survive_astra_quirks(self):
+        """Astra: SysV-nginx не стартует через `enable --now`; ufw не умеет
+        менять правила; certbot 5.x не ставится на Python 3.9."""
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        # ufw сломан — открываем порт напрямую
+        self.assertIn("iptables_allow_tcp()", installer)
+        self.assertIn('iptables -I INPUT 1 -p tcp --dport "$port"', installer)
+        self.assertIn("ufw не справился", installer)
+        # certbot под версию Python: домен — 2.x, IP — 5.4+ (нужен 3.10+)
+        self.assertIn("python_supports_certbot5()", installer)
+        self.assertIn("requirement='certbot>=5.4,<6'", installer)
+        self.assertIn("requirement='certbot>=2,<6'", installer)
+        self.assertIn("Let's Encrypt пропущен: $CERTBOT_PROBLEM", installer)
+        # nginx на SysV запускается отдельно, иначе ACME некуда идти
+        self.assertIn("systemctl is-active --quiet nginx || systemctl start nginx", installer)
+        # без предупреждения nginx о дубликате MIME
+        self.assertNotIn("text/html text/plain", installer)
 
     def test_root_uninstall_removes_kernel_via_deploy(self):
         root_installer = (ROOT.parent / "install.sh").read_text(encoding="utf-8")

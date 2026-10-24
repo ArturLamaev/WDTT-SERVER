@@ -102,6 +102,10 @@ TAILSCALED_SERVICE = os.environ.get("WDTT_TAILSCALED_SERVICE", "tailscaled.servi
 PROXY_SERVICE = os.environ.get("WDTT_PROXY_SERVICE", "wdtt-proxy.service")
 PROXY_DIR = Path(os.environ.get("WDTT_PROXY_DIR", "/opt/wdtt-proxy"))
 PROXY_INSTALL_COMMAND = Path(os.environ.get("WDTT_PROXY_INSTALL_COMMAND", "/opt/wdtt-panel/install.sh"))
+# В Docker установщик приходит не только из образа, но и монтированием из
+# репозитория (docker/docker-compose.yml), поэтому путь по умолчанию — лишь
+# первый кандидат: панель берёт первый реально существующий install.sh.
+PROXY_INSTALL_FALLBACK_COMMAND = Path("/opt/wdtt-panel/install.sh")
 INSTALL_LOG_FILE = Path(os.environ.get("WDTT_INSTALL_LOG_FILE", "/var/log/wdtt-panel-install.log"))
 NGINX_ACCESS_LOG = Path(os.environ.get("WDTT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log"))
 NGINX_ERROR_LOG = Path(os.environ.get("WDTT_NGINX_ERROR_LOG", "/var/log/nginx/error.log"))
@@ -2962,6 +2966,19 @@ def save_tailscale_settings(settings: dict[str, Any]) -> None:
     save_private_json(TAILSCALE_SETTINGS, settings)
 
 
+TAILSCALE_DOCKER_HINT = (
+    "В Docker Tailscale в контейнер не входит: он работает на хосте, и контейнер "
+    "ходит в tailnet через маршрутизацию хоста. Управляйте Tailscale на самом "
+    "хосте (tailscale up, systemctl status tailscaled) — здесь настраивать нечего."
+)
+
+
+def tailscale_require_available() -> None:
+    """В контейнере компонента нет: операции Tailscale адресуют хост."""
+    if is_docker():
+        raise ValidationError(TAILSCALE_DOCKER_HINT)
+
+
 def tailscale_status_raw() -> dict[str, Any]:
     """Сырой `tailscale status --json` + признак доступности демона.
 
@@ -2991,6 +3008,23 @@ def tailscale_status_raw() -> dict[str, Any]:
 
 
 def tailscale_status(payload: dict[str, Any]) -> dict[str, Any]:
+    if is_docker():
+        # Контейнер не держит свой tailscaled (см. docker/Dockerfile): tailnet —
+        # на хосте. Отдаём понятное состояние, чтобы вкладка не врала «не установлен».
+        return {
+            "docker": True,
+            "installed": False,
+            "daemon": False,
+            "online": False,
+            "hostname": "",
+            "tailscale_ips": [],
+            "dns_name": "",
+            "tailnet": "",
+            "authkey_set": False,
+            "authkey_hint": "",
+            "accept_dns": True,
+            "hint": TAILSCALE_DOCKER_HINT,
+        }
     raw = tailscale_status_raw()
     data = raw["raw"] if isinstance(raw["raw"], dict) else {}
     self_node = data.get("Self") if isinstance(data.get("Self"), dict) else {}
@@ -3014,6 +3048,7 @@ def tailscale_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def schedule_tailscale_runtime(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if SKIP_SYSTEMD:
         return {"scheduled": True, "state": "test"}
     unit = f"wdtt-tailscale-install-{int(time.time())}"
@@ -3037,6 +3072,7 @@ def ensure_tailscaled_running() -> None:
 
 
 def tailscale_connect(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     try:
@@ -3079,6 +3115,7 @@ def tailscale_connect(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def tailscale_disconnect(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     stopped = run(["tailscale", "down"], timeout=30)
@@ -3088,6 +3125,7 @@ def tailscale_disconnect(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def tailscale_logout(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     forgotten = run(["tailscale", "logout"], timeout=30)
@@ -3097,6 +3135,7 @@ def tailscale_logout(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def tailscale_check(payload: dict[str, Any]) -> dict[str, Any]:
+    tailscale_require_available()
     if not shutil.which("tailscale"):
         raise ValidationError("Сначала установите компонент Tailscale")
     if not tailscale_status_raw()["online"]:
@@ -3237,6 +3276,43 @@ PROXY_INTERFACE_RE = re.compile(r"^[a-zA-Z0-9._-]{1,15}$")
 
 def proxy_config_path() -> Path:
     return PROXY_DIR / "config.env"
+
+
+def proxy_installer_candidates() -> tuple[Path, ...]:
+    """Пути, откуда панель может запустить установщик (install.sh).
+
+    Первый — переопределяемый (`WDTT_PROXY_INSTALL_COMMAND`), затем штатный
+    /opt/wdtt-panel/install.sh. Дубликаты убираем: окружение часто совпадает
+    с умолчанием.
+    """
+    candidates: list[Path] = []
+    for candidate in (PROXY_INSTALL_COMMAND, PROXY_INSTALL_FALLBACK_COMMAND):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+def proxy_installer_path() -> Path | None:
+    """Первый доступный установщик панели или None, если его нет вовсе."""
+    for candidate in proxy_installer_candidates():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def proxy_installer_missing_message() -> str:
+    if is_docker():
+        return (
+            "Установщик не найден: "
+            + " / ".join(str(path) for path in proxy_installer_candidates())
+            + ". Образ собран до 2.2.0 (ни установщика, ни sing-box в нём нет) — "
+            "обновите образ: `git pull` в репозитории, затем `docker compose up -d --build`."
+        )
+    return (
+        "Установщик не найден: "
+        + " / ".join(str(path) for path in proxy_installer_candidates())
+        + ". Обновите панель (install.sh update)."
+    )
 
 
 def proxy_installed() -> bool:
@@ -3487,6 +3563,12 @@ def proxy_runtime_snapshot(mark: str = "0x100", tun: str = "sbtun0", table: str 
 
 
 def proxy_install_hint() -> str:
+    if is_docker():
+        return (
+            "Установите компонент кнопкой «Установить wdtt-proxy». Если она отвечает "
+            "«Установщик не найден» — контейнер поднят по старому compose-файлу: "
+            "выполните `git pull` и затем `docker compose up -d`."
+        )
     return (
         "Установите компонент кнопкой «Установить wdtt-proxy» "
         "(или вручную: sudo /opt/wdtt-panel/install.sh install-wdtt-proxy "
@@ -3530,7 +3612,7 @@ def proxy_status(payload: dict[str, Any]) -> dict[str, Any]:
         "mode": "systemd" if systemd_mode else "script",
         "autostart": proxy_autostart_enabled() if installed else False,
         "install_hint": "" if installed else proxy_install_hint(),
-        "install_command": str(PROXY_INSTALL_COMMAND),
+        "install_command": str(proxy_installer_path() or PROXY_INSTALL_COMMAND),
         "config_dir": str(PROXY_DIR),
         "service": PROXY_SERVICE,
         "singbox_found": shutil.which(singbox_bin) is not None or Path(singbox_bin).is_file(),
@@ -3598,9 +3680,9 @@ def proxy_install(payload: dict[str, Any]) -> dict[str, Any]:
     """Ставит шлюз монолитно: файлы в /opt/wdtt-proxy + sing-box + юнит."""
     if proxy_installed() and payload.get("force") is not True:
         return {"installed": True, "already": True, "state": "present", **proxy_status({})}
-    command = PROXY_INSTALL_COMMAND
-    if not command.is_file():
-        raise AdminError(f"Установщик не найден: {command}. Обновите панель (install.sh update).")
+    command = proxy_installer_path()
+    if command is None:
+        raise AdminError(proxy_installer_missing_message())
     if not proxy_uses_systemd():
         # Docker: systemd-run нет — ставим прямо в текущем окружении.
         try:

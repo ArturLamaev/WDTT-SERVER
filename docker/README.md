@@ -50,7 +50,6 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `56001` (`WDTT_WG_PORT`) | UDP | WireGuard (только loopback внутри контейнера) |
 | `56001` (`WDTT_WG_PORT`) | UDP | WireGuard ядра. Как и в оригинальном `deploy.sh`, внутри контейнера открыт только с loopback — внешние клиенты ходят через DTLS 56000; проброс оставлен для паритета с bare-metal |
 | `56002` (`WDTT_ADMIN_PORT`) | TCP | Admin API ядра — **наружу не публикуется** (только loopback) |
-| `41641` (`WDTT_TAILSCALE_PORT`) | UDP | Tailscale direct-соединения — **по умолчанию закомментирован** (порт часто занят демоном хоста; без него работают DERP-релеи). Раскомментируйте в compose при свободном порте |
 
 Экспериментальные порты ядра (`WDTT_DIRECT_PORT`, `WDTT_RAW_PORT`) выключены
 по умолчанию; чтобы открыть — задайте переменные и раскомментируйте строки
@@ -76,7 +75,6 @@ WDTT_BASE_IMAGE=debian:13 docker compose up -d --build
 | `WDTT_DTLS_PORT` / `WDTT_WG_PORT` / `WDTT_ADMIN_PORT` | `56000/56001/56002` | Порты ядра |
 | `WDTT_DNS` | `1.1.1.1,1.0.0.1` | DNS для клиентов |
 | `WDTT_DIRECT_PORT` / `WDTT_RAW_PORT` | `0` | Direct (RTP-obfs без DTLS, клиент: `go_client -notls`) и RAW (без WireGuard, клиент: Android rawtun) листенеры ядра, `0` — выкл. Включаются и во вкладке «WDTT»; мониторинг — строки Direct/RAW UDP в Диагностике. Публикация наружу — раскомментом в compose; на хосте откройте UDP в фаерволе провайдера как `56000/56001` |
-| `WDTT_TAILSCALE_PORT` | `41641` | UDP-порт Tailscale для прямых соединений (действует при раскомментированном маппинге в compose) |
 | `WDTT_TELEGRAM_BOT_TOKEN` / `WDTT_TELEGRAM_ADMIN_ID` | — | Telegram-бот ядра |
 | `TZ` | `UTC` | Часовой пояс |
 | `AUTO_RESTART_HOURS` | `6` | Авто-рестарт ядра+панели, `0` — выкл. (аналог `wdtt-auto-restart.timer`) |
@@ -103,7 +101,6 @@ volume, перевыпускает сертификат, делает reload в�
 | `wdtt-panel-state` | `/var/lib/wdtt-panel` — sqlite-состояние панели |
 | `wdtt-panel-private` | `/var/lib/wdtt-panel-private` — бэкапы/расписания/настройки |
 | `wdtt-letsencrypt` | `/etc/letsencrypt` — сертификаты LE |
-| `tailscale-state` | `/var/lib/tailscale` — идентичность в tailnet (переживает рестарты) |
 | `wdtt-proxy-config` | `/opt/wdtt-proxy` — файлы шлюза SOCKS5 и `config.env` |
 
 Свой сид VK-хешей вместо вшитого в образ: раскомментируйте монтирование
@@ -117,8 +114,45 @@ systemd в контейнере нет, поэтому панель управл
 (`wdtt-proxy.sh start|stop|restart`, nohup + pidfile), а не юнитом. Правки
 `config.env` сохраняются в томе `wdtt-proxy-config`.
 
+Кнопка **«Установить wdtt-proxy»** запускает в контейнере
+`bash /opt/wdtt-panel/install.sh install-wdtt-proxy`. Чтобы она работала и в
+образе, собранном до 2.2.0 (там нет ни установщика, ни исходников шлюза),
+compose монтирует их из репозитория хоста только для чтения:
+
+```yaml
+- ../wdtt-proxy:/opt/wdtt-panel/wdtt-proxy:ro
+- ../panel/install.sh:/opt/wdtt-panel/install.sh:ro
+```
+
+После `git pull` достаточно `docker compose up -d` (контейнер пересоздастся с
+новыми монтированиями) — пересборка образа не нужна. Если панель отвечает
+«Установщик не найден», значит контейнер поднят со старым compose-файлом: для
+образа, собранного до 2.2.0, в нём нет ещё и `sing-box`, поэтому такому образу
+нужна пересборка — `docker compose up -d --build` (без неё `sing-box`,
+скачанный кнопкой, исчезнет при следующем пересоздании контейнера).
+
 Контейнеру нужны `NET_ADMIN`/`NET_RAW` и `/dev/net/tun` (уже в compose) — без них
 sing-box не создаст tun-интерфейс.
+
+## Tailscale
+
+В контейнере Tailscale **не устанавливается и не запускается** — им управляет
+хост (свой пакет `tailscale`/`tailscaled`), а контейнер ходит в tailnet через
+маршрутизацию хоста. Так адреса вида `100.66.0.3` (например, SOCKS5-сервер для
+шлюза) доступны из контейнера без второй, «пустой» tailnet-ноды: раньше
+собственный `tailscaled` в контейнере поднимался `Logged out` и tailnet из
+контейнера был недоступен.
+
+Вкладка **«Система» → Tailscale** в панели под Docker показывает «на хосте» и
+не даёт управлять: `tailscale up` и статус — на самом хосте:
+
+```bash
+tailscale status          # на хосте, не в контейнере
+sudo tailscale up
+```
+
+Если хост не в tailnet, а SOCKS5-сервер доступен по публичному адресу —
+просто укажите этот адрес во вкладке «Прокси».
 
 ## Обслуживание
 
@@ -180,3 +214,6 @@ docker run --rm -v wdtt-server_wdtt-data:/d -v wdtt-server_wdtt-panel-config:/c 
 - `HTTPS local check` падает — смотрите `docker compose exec wdtt nginx -t`
   (или `journalctl`/logs caddy при `WDTT_WEB_SERVER=caddy`)
   и логи `docker compose logs wdtt`.
+- Вкладка «Прокси» пишет «Установщик не найден: /opt/wdtt-panel/install.sh» —
+  контейнер поднят по старому `docker-compose.yml` (без монтирования исходников
+  шлюза): `git pull`, затем `docker compose up -d`.
