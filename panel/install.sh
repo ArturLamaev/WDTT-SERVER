@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # и оставалось лишь гадать, на каком шаге всё встало.
 trap 'printf "\n[wdtt-panel] ОШИБКА (код %s), строка %s: %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2; printf "[wdtt-panel] Лог установки: %s\n" "${LOG_FILE:-/var/log/wdtt-panel-install.log}" >&2' ERR
 
-PANEL_VERSION="2.3.2"
+PANEL_VERSION="2.4.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -298,7 +298,7 @@ install_packages() {
   log "Установка системных зависимостей"
   # При WEB_SERVER=caddy nginx из пакетов не ставим: он не нужен и
   # с бесплатным :80 будет только мешать.
-  local -a BASE_PKGS=(python3 python3-venv python3-pip sudo curl ca-certificates openssl iproute2 iptables conntrack unzip)
+  local -a BASE_PKGS=(python3 python3-venv python3-pip sudo curl ca-certificates openssl iproute2 iptables conntrack unzip tar gzip)
   case "$PKG" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
@@ -1403,6 +1403,8 @@ defaults = {
     "certificate_path": "",
     "tls_mode": "self-signed",
     "certificate_email": "",
+    # Старые установки (до 2.4.0) остаются на nginx.
+    "web_server": "nginx",
 }
 added = []
 for key, value in defaults.items():
@@ -1640,9 +1642,9 @@ PY
 }
 
 update_panel_config_metadata() {
-  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "${CERTIFICATE_PATH:-}" "${TLS_MODE:-}" "${PANEL_EMAIL:-}" <<'PY'
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "${CERTIFICATE_PATH:-}" "${TLS_MODE:-}" "${PANEL_EMAIL:-}" "${WEB_SERVER:-nginx}" <<'PY'
 import json, os, sys
-path, version, certificate_path, tls_mode, certificate_email = sys.argv[1:]
+path, version, certificate_path, tls_mode, certificate_email, web_server = sys.argv[1:]
 data = json.load(open(path, encoding="utf-8"))
 data["version"] = version
 if certificate_path:
@@ -1651,6 +1653,8 @@ if tls_mode:
     data["tls_mode"] = tls_mode
 if certificate_email:
     data["certificate_email"] = certificate_email
+if web_server:
+    data["web_server"] = web_server
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(data, handle, ensure_ascii=False, indent=2)
@@ -1688,6 +1692,7 @@ Restart=on-failure
 RestartSec=3
 UMask=0027
 PrivateTmp=true
+ProtectHome=true
 ProtectSystem=strict
 # Панель сама правит /etc/systemd/system (telegram.save переписывает
 # wdtt.service, backups.schedule — таймеры), /etc/wdtt (bot.token) и
@@ -1950,6 +1955,7 @@ install_caddy_binary() {
   local have="" arch="" work="" tarball=""
   if command -v "$CADDY_BIN" >/dev/null 2>&1; then
     have="$("$CADDY_BIN" version 2>/dev/null | awk '{print $1}' | head -n 1)"
+    have="${have#v}"
   fi
   if [ "$have" = "$CADDY_VERSION" ]; then
     log "Caddy $CADDY_VERSION уже установлен"
@@ -2022,12 +2028,21 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=exec
+# Type=exec появился в systemd 240, а проект ставится и на Debian 9/Astra
+# (systemd 232) — используем совместимый Type=simple.
+Type=simple
 ExecStart=$CADDY_BIN run --config $CADDY_CONFIG --adapter caddyfile
 ExecReload=$CADDY_BIN reload --config $CADDY_CONFIG --adapter caddyfile
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=8192
+UMask=0027
+# Caddy работает от root (нужны :80 для ACME и :443 для TLS-ALPN), но
+# песочница не даёт ему писать вне state-каталога и читать home.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
 Environment=XDG_DATA_HOME=$CADDY_STATE_DIR
 Environment=XDG_CONFIG_HOME=$CADDY_STATE_DIR
 StateDirectory=wdtt-caddy
@@ -2040,16 +2055,33 @@ EOF
 
 write_caddy_config() {
   local backend_port="$1"
-  local tls_block="" hsts_block="" email_block=""
+  local tls_block="" hsts_block="" email_block="" http_block="" base_redirect=""
   HTTP_ENABLED=0
   install -d -m 0755 "$(dirname "$CADDY_CONFIG")"
   if [ "$TLS_MODE" = "internal" ]; then
     tls_block="tls internal"
   fi
   if [ "$TLS_MODE" = "acme" ]; then
+    # Публичный домен: Caddy сам выпускает и продлевает ACME-сертификат;
+    # для HTTP-01 нужен открытый снаружи TCP 80.
     HTTP_ENABLED=1
     hsts_block="header Strict-Transport-Security \"max-age=31536000\""
     [ -n "${PANEL_EMAIL:-}" ] && email_block="email $PANEL_EMAIL"
+    http_block="http://:80 {
+  @wdtt_client path /client/*
+  redir @wdtt_client https://$PANEL_HOST:$PANEL_HTTPS_PORT{uri} 302
+  # Всё остальное (включая /.well-known/acme-challenge — его перехватывает
+  # сам Caddy до этих маршрутов) на секретный путь панели.
+  redir https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH 302
+}"
+    # HTTP-01 должен быть доступен снаружи до первого запуска Caddy.
+    open_acme_firewall
+  fi
+  # Панель на корне (/): редирект «/» → «/» зациклил бы запросы, а пустой
+  # path-matcher Caddy не принимает.
+  if [ "$PANEL_PATH" != "/" ]; then
+    base_redirect="  @wdtt_base path ${PANEL_PATH%/}
+  redir @wdtt_base https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH 302"
   fi
   cat > "$CADDY_CONFIG" <<EOF
 {
@@ -2058,13 +2090,7 @@ write_caddy_config() {
   $email_block
 }
 
-http://:80 {
-  @wdtt_client path /client/*
-  redir @wdtt_client https://$PANEL_HOST:$PANEL_HTTPS_PORT{uri} 302
-  # Всё остальное (включая /.well-known/acme-challenge — его перехватывает
-  # сам Caddy до этих маршрутов) на секретный путь панели.
-  redir https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH 302
-}
+$http_block
 
 https://$PANEL_HOST:$PANEL_HTTPS_PORT {
   $tls_block
@@ -2073,8 +2099,7 @@ https://$PANEL_HOST:$PANEL_HTTPS_PORT {
   # Сжатие ответов панели (см. комментарий у gzip в nginx-конфиге).
   encode gzip
 
-  @wdtt_base path ${PANEL_PATH%/}
-  redir @wdtt_base https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH 302
+$base_redirect
 
   @wdtt_panel path $PANEL_PATH*
   handle @wdtt_panel {
@@ -2101,8 +2126,11 @@ https://$PANEL_HOST:$PANEL_HTTPS_PORT {
 }
 EOF
   caddy_validate || die "Ошибка конфигурации Caddy, см. $LOG_FILE"
-  systemctl enable --now "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1
-  systemctl reload "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1 || systemctl restart "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1
+  systemctl enable --now "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1 \
+    || die "Caddy не запустился: journalctl -u $CADDY_SERVICE -n 50 (лог: $LOG_FILE)"
+  systemctl reload "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1 \
+    || systemctl restart "$CADDY_SERVICE" >>"$LOG_FILE" 2>&1 \
+    || die "Caddy не принял конфигурацию: journalctl -u $CADDY_SERVICE -n 50 (лог: $LOG_FILE)"
 }
 
 # Диспетчер веб-сервера: все вызовы write_final_nginx/write_fleet_nginx в коде
@@ -2609,6 +2637,15 @@ update_panel() {
   require_root
   resolve_python_bin
   load_panel_config
+  # Смена веб-сервера — только при установке: для перехода nginx → Caddy нужны
+  # пакеты, свободные :80/:9999 и снятие старого конфига. На обновлении
+  # остаёмся на том, что записан в config.json.
+  local installed_web
+  installed_web="$(installed_web_server)"
+  if [ "$WEB_SERVER" != "$installed_web" ]; then
+    log "WARN: смена веб-сервера выполняется только при установке; остаётся $installed_web"
+    WEB_SERVER="$installed_web"
+  fi
   if [ "$(installed_mode)" = "controller" ]; then
     update_controller
     return 0
@@ -2704,11 +2741,12 @@ ask_web_server() {
 
 # Для установки: флаг/env → интерактивный вопрос (если есть tty) → nginx.
 resolve_web_server() {
-  [ "$WEB_SERVER_FROM_ARGS" = "1" ] || [ "$WEB_SERVER_ENV_GIVEN" = "1" ] || {
+  if [ "$WEB_SERVER_FROM_ARGS" != "1" ] && [ "$WEB_SERVER_ENV_GIVEN" != "1" ] \
+      && [ "${NON_INTERACTIVE:-0}" != "1" ]; then
     if [ -r /dev/tty ] && [ -w /dev/tty ]; then
       ask_web_server
     fi
-  }
+  fi
   WEB_SERVER="${WEB_SERVER:-nginx}"
   validate_web_server
 }
@@ -3035,9 +3073,9 @@ update_controller() {
 }
 
 update_controller_config_metadata() {
-  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "${CERTIFICATE_PATH:-}" "${TLS_MODE:-}" "${PANEL_EMAIL:-}" <<'PY'
+  python3 - "$CONFIG_FILE" "$PANEL_VERSION" "${CERTIFICATE_PATH:-}" "${TLS_MODE:-}" "${PANEL_EMAIL:-}" "${WEB_SERVER:-nginx}" <<'PY'
 import json, os, sys
-path, version, certificate_path, tls_mode, certificate_email = sys.argv[1:]
+path, version, certificate_path, tls_mode, certificate_email, web_server = sys.argv[1:]
 data = json.load(open(path, encoding="utf-8"))
 data["version"] = version
 data["mode"] = "controller"
@@ -3049,6 +3087,8 @@ if tls_mode:
     data["tls_mode"] = tls_mode
 if certificate_email:
     data["certificate_email"] = certificate_email
+if web_server:
+    data["web_server"] = web_server
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(data, handle, ensure_ascii=False, indent=2)
@@ -3132,6 +3172,13 @@ install_panel() {
 # --mode/--web-server вынимаем из аргументов до диспетча (остальное едет дальше как было).
 parse_mode_arg "$@"
 parse_web_server_arg "${FILTERED_ARGS[@]}"
+# В неинтерактивном режиме (--non-interactive из корневого install.sh, -y/--yes)
+# не задаём вопрос о веб-сервере — остаётся nginx, как до 2.4.0.
+NON_INTERACTIVE=0
+for _arg in "${FILTERED_ARGS[@]}"; do
+  case "$_arg" in --non-interactive|-y|--yes|--assume-yes) NON_INTERACTIVE=1 ;; esac
+done
+unset _arg
 set -- "${FILTERED_ARGS[@]}"
 
 case "${1:-install}" in

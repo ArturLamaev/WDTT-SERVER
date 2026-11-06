@@ -149,6 +149,26 @@ class ApplyDomainChangeTests(unittest.TestCase):
             with self.assertRaises(admin.AdminError):
                 admin._apply_docker_domain_change("new.example.com", "")
 
+    def test_caddy_mode_uses_caddy_generator(self):
+        self.cfg.write_text(json.dumps(base_config(web_server="caddy")), encoding="utf-8")
+        root = Path(self.temp.name)
+        env = dict(
+            self.env,
+            WDTT_CADDY_GEN=str(root / "gen-caddy-conf"),
+            WDTT_CADDY_CONFIG=str(root / "Caddyfile"),
+        )
+        with mock.patch.dict("os.environ", env, clear=False), mock.patch.object(
+            admin, "run", side_effect=self._run()
+        ), mock.patch.object(admin.os, "kill") as kill:
+            result = admin._apply_docker_domain_change("203.0.113.10", "")
+        saved = json.loads(self.cfg.read_text(encoding="utf-8"))
+        self.assertTrue(any("gen-caddy-conf" in c for c in self.calls))
+        self.assertTrue(any(c.startswith("caddy reload") for c in self.calls))
+        self.assertEqual(saved["tls_mode"], "internal")
+        self.assertEqual(saved["certificate_path"], "")
+        self.assertEqual(result["tls_mode"], "internal")
+        kill.assert_called_once()
+
 
 class EntrypointAndDocsTests(unittest.TestCase):
     def test_entrypoint_syncs_env_to_volume(self):

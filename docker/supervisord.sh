@@ -2,7 +2,7 @@
 # =============================================================================
 # WDTT-SERVER (docker) — супервизор (PID 1). Заменяет systemd-юниты и таймеры
 # оригинальной установки:
-#   wdtt.service / wdtt-panel.service / nginx        → циклы перезапуска;
+#   wdtt.service / wdtt-panel.service / nginx|Caddy  → циклы перезапуска;
 #   wdtt-auto-restart.timer (каждые 6ч)               → AUTO_RESTART_HOURS;
 #   wdtt-panel-backup.timer                           → расписание из панели;
 #   wdtt-panel-autoclean.timer                        → каждые 6ч при enabled;
@@ -205,7 +205,6 @@ mkdir -p /run/wdtt
 run_wdtt &
 run_panel &
 run_web &
-run_tailscaled &
 run_auto_restart &
 run_backup_scheduler &
 run_autoclean &

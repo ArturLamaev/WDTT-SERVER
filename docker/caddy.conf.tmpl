@@ -25,8 +25,7 @@ https://@@PANEL_HOST@@:@@PANEL_HTTPS_PORT@@ {
 	# HTML/CSS/JSON влезают в один кусок, app.js добирается чанками boot.js.
 	encode gzip
 
-	@wdtt_base path @@PANEL_PATH_TRIM@@
-	redir @wdtt_base https://@@PANEL_HOST@@:@@PANEL_HTTPS_PORT@@@@PANEL_PATH@@ 302
+	@@BASE_REDIRECT@@
 
 	@wdtt_panel path @@PANEL_PATH@@*
 	handle @wdtt_panel {

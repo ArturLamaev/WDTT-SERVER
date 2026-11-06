@@ -19,6 +19,12 @@ TLS_MODE="${TLS_MODE:-internal}"
 PANEL_EMAIL="${PANEL_EMAIL:-}"
 
 PANEL_PATH_TRIM="${PANEL_PATH%/}"
+BASE_REDIRECT=""
+# Панель на корне (/): редирект «/» → «/» зациклил бы запросы.
+if [ -n "$PANEL_PATH_TRIM" ]; then
+  BASE_REDIRECT="	@wdtt_base path $PANEL_PATH_TRIM
+	redir @wdtt_base https://$PANEL_HOST:$PANEL_HTTPS_PORT$PANEL_PATH 302"
+fi
 
 TLS_BLOCK=""
 HSTS_BLOCK=""
@@ -38,10 +44,10 @@ case "$TLS_MODE" in
     ;;
 esac
 
-export TLS_BLOCK HSTS_BLOCK EMAIL_BLOCK PANEL_PATH_TRIM
+export TLS_BLOCK HSTS_BLOCK EMAIL_BLOCK BASE_REDIRECT
 sed -e "s|@@PANEL_HOST@@|$PANEL_HOST|g" \
 	-e "s|@@PANEL_PATH@@|$PANEL_PATH|g" \
-	-e "s|@@PANEL_PATH_TRIM@@|$PANEL_PATH_TRIM|g" \
+	-e "s|@@BASE_REDIRECT@@|$BASE_REDIRECT|g" \
 	-e "s|@@PANEL_HTTPS_PORT@@|$PANEL_HTTPS_PORT|g" \
 	-e "s|@@PANEL_LISTEN_PORT@@|$PANEL_LISTEN_PORT|g" \
 	-e "s|@@TLS_BLOCK@@|$TLS_BLOCK|g" \

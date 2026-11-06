@@ -37,10 +37,11 @@ random_password() { python3 -c 'import secrets,string; a=string.ascii_letters+st
 : "${WDTT_RAW_PORT:=0}"
 : "${WDTT_DNS:=1.1.1.1,1.0.0.1}"
 : "${TLS_MODE:=self-signed}"
+: "${PANEL_EMAIL:=}"
 # Веб-сервер перед панелью: nginx (по умолчанию) или caddy (свой TLS: acme
 # для домена / internal для IP; certbot в caddy-режиме не используется).
 : "${WDTT_WEB_SERVER:=nginx}"
-export PANEL_USER PANEL_HTTPS_PORT PANEL_LISTEN_PORT TLS_MODE WDTT_WEB_SERVER
+export PANEL_USER PANEL_HTTPS_PORT PANEL_LISTEN_PORT TLS_MODE WDTT_WEB_SERVER PANEL_EMAIL
 export WDTT_DTLS_PORT WDTT_WG_PORT WDTT_ADMIN_PORT WDTT_DIRECT_PORT WDTT_RAW_PORT WDTT_DNS
 
 [[ "$PANEL_USER" =~ ^[A-Za-z0-9_.-]{3,32}$ ]] || die "Некорректный PANEL_USER"
@@ -308,7 +309,7 @@ else
 fi
 
 # ── 7. TLS панели ────────────────────────────────────────────────────────────
-if [ "$TLS_MODE" = "letsencrypt" ]; then
+if [ "$WDTT_WEB_SERVER" != "caddy" ] && [ "$TLS_MODE" = "letsencrypt" ]; then
   [[ "$PANEL_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
     && die "TLS_MODE=letsencrypt требует доменное имя в PANEL_HOST (получен IP)"
   [ -n "${PANEL_EMAIL:-}" ] || log "WARN: PANEL_EMAIL пуст — сертификат запросится без email"

@@ -1,4 +1,4 @@
-"""2.3.0: Caddy как альтернатива nginx перед панелью (install.sh и Docker)."""
+"""2.4.0: Caddy как альтернатива nginx перед панелью (install.sh и Docker)."""
 import unittest
 from pathlib import Path
 
@@ -111,3 +111,54 @@ class AdminWebServerTests(unittest.TestCase):
     def test_logs_source_uses_web_service(self):
         source = (ROOT / "wdtt_panel" / "admin.py").read_text(encoding="utf-8")
         self.assertIn('"nginx": ([WEB_SERVICE], WEB_TITLE),', source)
+
+    def test_export_certificate_explains_caddy_storage(self):
+        from unittest import mock
+
+        from wdtt_panel import admin
+
+        with mock.patch.object(admin, "WEB_SERVER", "caddy"):
+            with self.assertRaises(admin.ValidationError) as ctx:
+                admin.export_certificate({"certificate_path": ""})
+        self.assertIn("Caddy", str(ctx.exception))
+
+
+class CaddyCompatibilityTests(unittest.TestCase):
+    """Принятие PR #4 не должно откатывать решения 2.3.x."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    def test_panel_service_keeps_protect_home(self):
+        self.assertIn("ProtectHome=true", self.script)
+
+    def test_caddy_unit_is_sandboxed(self):
+        start = self.script.index("write_caddy_service() {")
+        block = self.script[start:self.script.index("write_caddy_config() {", start)]
+        for line in ("NoNewPrivileges=true", "ProtectHome=true", "ProtectSystem=full"):
+            self.assertIn(line, block)
+
+    def test_port_80_listener_is_acme_only(self):
+        start = self.script.index("write_caddy_config() {")
+        block = self.script[start:self.script.index("write_final_web() {", start)]
+        acme = block.index('if [ "$TLS_MODE" = "acme" ]; then')
+        self.assertLess(acme, block.index("http://:80"))
+        self.assertIn("open_acme_firewall", block[acme:])
+
+    def test_docker_supervisor_has_no_tailscaled_regression(self):
+        supervisord = (REPO / "docker" / "supervisord.sh").read_text(encoding="utf-8")
+        self.assertNotIn("run_tailscaled", supervisord)
+        self.assertIn("run_web()", supervisord)
+
+    def test_update_keeps_installed_web_server(self):
+        start = self.script.index("update_panel() {")
+        block = self.script[start:self.script.index("update_controller() {", start)]
+        self.assertIn("смена веб-сервера выполняется только при установке", block)
+        self.assertIn("installed_web_server", block)
+
+    def test_noninteractive_install_does_not_ask_web_server(self):
+        self.assertIn("NON_INTERACTIVE=0", self.script)
+        start = self.script.index("resolve_web_server() {")
+        block = self.script[start:self.script.index("installed_web_server() {", start)]
+        self.assertIn("NON_INTERACTIVE", block)

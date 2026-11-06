@@ -1911,10 +1911,13 @@ def schedule_certificate_renew(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def export_certificate(payload: dict[str, Any]) -> dict[str, Any]:
-    path = Path(str(payload.get("certificate_path") or ""))
+    requested = str(payload.get("certificate_path") or "").strip()
+    if not requested and WEB_SERVER == "caddy":
+        raise ValidationError("Скачивать нечего: TLS-сертификатом управляет Caddy в собственном хранилище")
+    if not requested:
+        raise ValidationError("Путь сертификата не указан")
+    path = Path(requested)
     if not path.is_file():
-        if not str(path) and WEB_SERVER == "caddy":
-            raise ValidationError("Скачивать нечего: TLS-сертификатом управляет Caddy в собственном хранилище")
         raise ValidationError("Файл сертификата не найден")
     return {"name": "wdtt-panel-certificate.pem", "content": path.read_text(encoding="utf-8")}
 
@@ -2733,7 +2736,7 @@ def _docker_domain_paths() -> dict[str, Any]:
         "le_live": Path(os.environ.get("WDTT_LE_LIVE_DIR", "/etc/letsencrypt/live")),
         "certbot": os.environ.get("WDTT_CERTBOT_BIN", "/opt/wdtt-panel/certbot/bin/certbot"),
         "nginx_gen": os.environ.get("WDTT_NGINX_GEN", "/usr/local/sbin/wdtt-gen-nginx-conf"),
-        "web_gen": os.environ.get("WDTT_WEB_GEN", "/usr/local/sbin/wdtt-gen-nginx-conf"),
+        "caddy_gen": os.environ.get("WDTT_CADDY_GEN", "/usr/local/sbin/wdtt-gen-caddy-conf"),
         "backups": Path(
             os.environ.get("WDTT_DOCKER_CONFIG_BACKUPS", "/var/lib/wdtt-panel-private/config-backups")
         ),
@@ -2822,9 +2825,13 @@ def _write_docker_panel_config(config_path: Path, config: dict[str, Any]) -> Non
 def _reload_docker_nginx(
     paths: dict[str, Any], config: dict[str, Any], host: str, cert: str, key: str, tls_mode: str
 ) -> None:
-    """Перерендер конфига веб-сервера из нового config и reload без дауна."""
+    """Перерендер конфига веб-сервера (nginx/Caddy) из нового config и reload без дауна."""
     use_caddy = str(config.get("web_server") or os.environ.get("WDTT_WEB_SERVER") or "nginx") == "caddy"
-    generate_target = paths["web_gen"] if use_caddy else paths["nginx_gen"]
+    generate_target = (
+        paths.get("caddy_gen", "/usr/local/sbin/wdtt-gen-caddy-conf")
+        if use_caddy
+        else paths["nginx_gen"]
+    )
     env = {
         "PANEL_HOST": host,
         "PANEL_PATH": str(config.get("base_path") or "/"),
