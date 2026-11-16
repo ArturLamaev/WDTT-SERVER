@@ -390,6 +390,26 @@ class AdminDatabaseTests(unittest.TestCase):
             created = admin.create_user({"password": "DerivedUser123", "days": 30})
         self.assertEqual(created["vk_hash"], "hash_aaa,hash_bbb,hash_ccc,hash_dddd")
 
+    def test_create_user_keeps_up_to_six_hashes(self):
+        library = self.write_hash_library(
+            "hash_bbb", "hash_ccc", "hash_ddd", "hash_eeee", "hash_ffff", "hash_gggg"
+        )
+        with mock.patch.object(admin, "PANEL_STATE_DB", library):
+            created = admin.create_user(
+                {"password": "SixHashUser12", "days": 30, "vk_hash": "hash_aaa"}
+            )
+        self.assertEqual(
+            created["vk_hash"], "hash_aaa,hash_bbb,hash_ccc,hash_ddd,hash_eeee,hash_ffff"
+        )
+
+    def test_diag_key_is_encoded_for_qwdtt_links(self):
+        path = Path(self.temp.name) / "diag.key"
+        path.write_text(bytes(range(32)).hex() + "\n", encoding="utf-8")
+        with mock.patch.object(admin, "DIAG_KEY_FILE", path):
+            token = admin.read_diag_key()
+        # Тот же вектор, что в upstream server/netdiag_test.go.
+        self.assertEqual(token, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+
     def test_create_user_without_hashes_or_library_is_rejected(self):
         with mock.patch.object(admin, "PANEL_STATE_DB", Path(self.temp.name) / "missing.db"):
             with self.assertRaises(admin.ValidationError):

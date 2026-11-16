@@ -22,9 +22,12 @@ class CoreTests(unittest.TestCase):
         value = normalize_hashes("https://vk.com/call/join/abc_DEF, abc_DEF, xyz-123")
         self.assertEqual(value, "abc_DEF,xyz-123")
 
-    def test_rejects_more_than_four_hashes(self):
+    def test_accepts_six_hashes(self):
+        self.assertEqual(normalize_hashes("one,two,three,four,five,six"), "one,two,three,four,five,six")
+
+    def test_rejects_more_than_six_hashes(self):
         with self.assertRaises(ValidationError):
-            normalize_hashes("one,two,three,four,five")
+            normalize_hashes("one,two,three,four,five,six,seven")
 
     def test_password_is_safe_for_colon_delimited_quick_link(self):
         self.assertEqual(validate_password("Good.Pass-123"), "Good.Pass-123")

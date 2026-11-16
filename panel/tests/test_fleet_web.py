@@ -298,6 +298,26 @@ class FleetWebTests(unittest.TestCase):
         link = _user_link(node, {"password": "K2"})
         self.assertTrue(link.startswith("wdtt://9.9.9.9:56000:56001:9000:K2:"))
 
+    def test_user_link_uses_qwdtt_when_node_has_diag_key(self):
+        from wdtt_panel.fleet.web import _user_link
+        node = Node(id="n", base_url="https://9.9.9.9:9999", password="p")
+        link = _user_link(
+            node,
+            {
+                "password": "K",
+                "label": "Имя",
+                "ports": "1,2,3",
+                "vk_hash": "h",
+                "diag_key": "dk-token",
+                "dtls_port": 56010,
+                "raw_port": 56003,
+            },
+        )
+        self.assertTrue(link.startswith("qwdtt://config?"))
+        self.assertIn("dk=dk-token", link)
+        self.assertIn("peer=9.9.9.9%3A56010", link)
+        self.assertIn("raw=56003", link)
+
     def test_server_host_prefers_public_host(self):
         from wdtt_panel.fleet.web import _server_host
         # в реестре внутренний адрес, а нода через info отдаёт внешний

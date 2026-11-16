@@ -419,27 +419,47 @@ def patch_spaceneurox_tree(root: Path) -> None:
     )
 
     admin = sources["admin_api.go"]
-    admin = _replace_once(
-        admin,
-        '\tActiveDevices int      `json:"active_devices"`\n}',
-        '\tActiveDevices int      `json:"active_devices"`\n'
+    quota_fields = (
         '\tLastUploadAt   int64    `json:"last_upload_at,omitempty"`\n'
         '\tLastDownloadAt int64    `json:"last_download_at,omitempty"`\n'
         '\tTrafficManaged bool     `json:"traffic_managed,omitempty"`\n'
         '\tTrafficUnlimited bool   `json:"traffic_unlimited,omitempty"`\n'
-        '\tQuotaExhausted bool     `json:"quota_exhausted,omitempty"`\n}',
-        "admin quota view fields",
+        '\tQuotaExhausted bool     `json:"quota_exhausted,omitempty"`\n'
     )
-    admin = _replace_once(
-        admin,
-        "\t\tActiveDevices: active,\n\t}\n",
-        "\t\tActiveDevices: active,\n"
+    quota_values = (
         "\t\tLastUploadAt: entry.LastUploadAt,\n\t\tLastDownloadAt: entry.LastDownloadAt,\n"
         "\t\tTrafficManaged: entry.TrafficManaged,\n"
         "\t\tTrafficUnlimited: entry.TrafficUnlimited || !entry.TrafficManaged,\n"
-        "\t\tQuotaExhausted: trafficQuotaExhausted(entry),\n\t}\n",
-        "admin quota view",
+        "\t\tQuotaExhausted: trafficQuotaExhausted(entry),\n"
     )
+    # Якоря различаются: локальный форк уже несёт поля диагностики qWDTT 1.4.5
+    # (diag_key/raw_port/direct_port), а архив upstream v1.4.3 — ещё нет.
+    if 'json:"diag_key,omitempty"' in admin:
+        admin = _replace_once(
+            admin,
+            '\tDirectPort int    `json:"direct_port,omitempty"`\n}',
+            '\tDirectPort int    `json:"direct_port,omitempty"`\n' + quota_fields + '}',
+            "admin quota view fields",
+        )
+        admin = _replace_once(
+            admin,
+            "\t\tDirectPort:    serverDiag.Port(\"direct\"),\n\t}\n",
+            "\t\tDirectPort:    serverDiag.Port(\"direct\"),\n" + quota_values + "\t}\n",
+            "admin quota view",
+        )
+    else:
+        admin = _replace_once(
+            admin,
+            '\tActiveDevices int      `json:"active_devices"`\n}',
+            '\tActiveDevices int      `json:"active_devices"`\n' + quota_fields + '}',
+            "admin quota view fields",
+        )
+        admin = _replace_once(
+            admin,
+            "\t\tActiveDevices: active,\n\t}\n",
+            "\t\tActiveDevices: active,\n" + quota_values + "\t}\n",
+            "admin quota view",
+        )
     admin = _replace_once(
         admin,
         "\tentry := &PasswordEntry{\n\t\tLabel:      label,\n",

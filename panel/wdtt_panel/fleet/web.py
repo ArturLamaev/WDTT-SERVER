@@ -20,7 +20,7 @@ import os
 import subprocess
 import time
 from typing import Any, Callable, Iterable
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from http import cookies as http_cookies
 from wsgiref.simple_server import make_server
 
@@ -97,12 +97,34 @@ def _server_host(node: Node, infos: dict | None = None) -> str:
 
 
 def _user_link(node: Node, user: dict, server_host: str | None = None) -> str:
-    """Ссылка подключения как в нодовой панели: wdtt://host:p1:p2:p3:key:hashes."""
+    """Ссылка подключения как в нодовой панели.
+
+    Если нодовая панель отдала ключ диагностики (`diag_key`, qWDTT 1.4.5+),
+    собираем qwdtt://config — клиент сможет проверить подключение. Иначе
+    остаётся legacy wdtt://host:p1:p2:p3:key:hashes.
+    """
     password = str(user.get("password") or "")
     if password:
         parts = [p.strip() for p in str(user.get("ports") or "56000,56001,9000").split(",")]
         parts += ["56000", "56001", "9000"]
-        return (f"wdtt://{server_host or _node_host(node)}:{parts[0]}:{parts[1]}:{parts[2]}"
+        host = server_host or _node_host(node)
+        diag_key = str(user.get("diag_key") or "")
+        if diag_key:
+            params: dict[str, Any] = {
+                "name": str(user.get("label") or password),
+                "peer": f"{host}:{user.get('dtls_port') or parts[0]}",
+                "hashes": str(user.get("vk_hash") or ""),
+                "workers": "9",
+                "port": parts[2],
+                "pass": password,
+                "dk": diag_key,
+            }
+            if int(user.get("raw_port") or 0) > 0:
+                params["raw"] = str(user["raw_port"])
+            if int(user.get("direct_port") or 0) > 0:
+                params["direct"] = str(user["direct_port"])
+            return "qwdtt://config?" + urlencode(params)
+        return (f"wdtt://{host}:{parts[0]}:{parts[1]}:{parts[2]}"
                 f":{password}:{user.get('vk_hash') or ''}")
     for field in ("link", "url"):
         if user.get(field):

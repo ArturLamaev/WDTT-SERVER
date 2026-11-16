@@ -14,6 +14,7 @@ MAX_USERS = 10000  # WDTT-SERVER: лимит пользователей/ключ
 DEFAULT_MAX_DEVICES = 10000  # WDTT-SERVER: лимит устройств на новый ключ; 10000 = практический безлимит
 PASSWORD_RE = re.compile(r"^[A-Za-z0-9._~-]{8,64}$")
 HASH_RE = re.compile(r"^[A-Za-z0-9_-]{3,256}$")
+VK_HASH_LIMIT = 6  # qWDTT 1.4.5: до шести VK-хешей на ключ
 MAX_USER_LABEL_LENGTH = 64
 GIB = 1024**3
 DEFAULT_TRAFFIC_GIB_PER_MONTH = 35
@@ -84,8 +85,8 @@ def normalize_hashes(value: str) -> str:
     items = [normalize_hash(item) for item in raw if item]
     if not items:
         raise ValidationError("Укажите хотя бы один VK-хеш")
-    if len(items) > 4:
-        raise ValidationError("WDTT поддерживает не более четырех VK-хешей")
+    if len(items) > VK_HASH_LIMIT:
+        raise ValidationError(f"WDTT поддерживает не более {VK_HASH_LIMIT} VK-хешей")
     return ",".join(dict.fromkeys(items))
 
 

@@ -224,7 +224,7 @@
     const input = $(inputId);
     const hashes = input.value.trim() ? input.value.trim().split(/[,\s]+/).filter(Boolean) : [];
     if (hashes.includes(hash)) return;
-    if (hashes.length >= 4) { toast("WDTT поддерживает не более четырех VK-хешей", true); return; }
+    if (hashes.length >= 6) { toast("WDTT поддерживает не более шести VK-хешей", true); return; }
     input.value = [...hashes, hash].join(",");
   }
 
@@ -935,8 +935,8 @@
     if (button.dataset.delete) userAction("users/delete", button.dataset.delete, "Удалить пользователя и его устройство без возможности отмены?");
     if (button.dataset.copy) {
       const user = find(button.dataset.copy);
-      await navigator.clipboard.writeText(quickLink(user));
-      toast("Ссылка wdtt:// скопирована");
+      await navigator.clipboard.writeText(userLink(user));
+      toast(user.diag_key ? "Ссылка qwdtt:// скопирована" : "Ссылка wdtt:// скопирована");
     }
     if (button.dataset.personal) {
       const user = find(button.dataset.personal);
@@ -1096,7 +1096,7 @@
     setBusy(button, true);
     try {
       const user = await api("users/create-auto", { method: "POST", body: { label } });
-      $("#bulk-result-links").value = quickLink(user);
+      $("#bulk-result-links").value = userLink(user);
       $("#auto-user-dialog").close();
       $("#bulk-result-dialog").showModal();
       toast("Пользователь создан автоматически");
@@ -1142,7 +1142,7 @@
     try {
       const result = await api("users/create-bulk", { method: "POST", body: payload });
       const users = result.users || [];
-      $("#bulk-result-links").value = users.map(quickLink).join("\n");
+      $("#bulk-result-links").value = users.map(userLink).join("\n");
       $("#bulk-user-dialog").close();
       $("#bulk-result-dialog").showModal();
       toast(`Создано пользователей: ${users.length}`);
@@ -1198,6 +1198,28 @@
   function quickLink(user) {
     const ports = (user.ports || "56000,56001,9000").split(",");
     return `wdtt://${PUBLIC_HOST}:${ports[0]}:${ports[1]}:${ports[2]}:${user.password}:${user.vk_hash}`;
+  }
+
+  function qwdttLink(user) {
+    const ports = (user.ports || "56000,56001,9000").split(",");
+    const dtls = String(user.dtls_port || ports[0] || "56000");
+    const params = new URLSearchParams();
+    params.set("name", user.label || user.password);
+    params.set("peer", `${PUBLIC_HOST}:${dtls}`);
+    params.set("hashes", user.vk_hash || "");
+    params.set("workers", "9");
+    params.set("port", ports[2] || "9000");
+    params.set("pass", user.password);
+    if (user.diag_key) params.set("dk", user.diag_key);
+    if (user.raw_port) params.set("raw", String(user.raw_port));
+    if (user.direct_port) params.set("direct", String(user.direct_port));
+    return `qwdtt://config?${params.toString()}`;
+  }
+
+  // qwdtt:// несёт ключ диагностики (dk=), поэтому клиент 1.4.5+ сможет
+  // проверить подключение; без ключа остаётся legacy-ссылка.
+  function userLink(user) {
+    return user.diag_key ? qwdttLink(user) : quickLink(user);
   }
 
   async function loadLogs() {

@@ -247,7 +247,7 @@
       <div class="form-grid">
         <label class="wide">Пароль<input id="edit-password" pattern="[A-Za-z0-9._~-]{8,64}" placeholder="Оставьте пустым для автогенерации"></label>
         <label class="wide">Метка пользователя<input id="edit-label" maxlength="64" placeholder="Например: Иван — Pixel 8"></label>
-        <label class="wide">VK-хеши<input id="edit-hashes" required placeholder="До 4 хешей через запятую"></label>
+        <label class="wide">VK-хеши<input id="edit-hashes" required placeholder="До 6 хешей через запятую"></label>
         <label class="wide">Добавить сохранённый VK-хеш<select id="edit-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
         <div id="edit-access-plan" class="wide access-plan">
           <label>Дата окончания<input id="edit-expires" type="date" required></label>
@@ -272,7 +272,7 @@
       <div class="form-grid">
         <label>Количество<input id="bulk-count" type="number" min="1" max="10000" value="2" required></label>
         <label>Назначение хешей<select id="bulk-hash-mode"><option value="shared">Все хеши каждому</option><option value="rotate">По одному по кругу</option></select></label>
-        <label class="wide">VK-хеши<input id="bulk-hashes" required placeholder="Один или до 4 хешей через запятую"></label>
+        <label class="wide">VK-хеши<input id="bulk-hashes" required placeholder="Один или до 6 хешей через запятую"></label>
         <label class="wide">Добавить сохранённый VK-хеш<select id="bulk-saved-hash"><option value="">Выберите хеш из библиотеки</option></select></label>
         <label class="wide">Префикс меток<input id="bulk-label-prefix" maxlength="61" placeholder="Например: Семья — будут «Семья 1», «Семья 2»"></label>
         <div class="wide access-plan">

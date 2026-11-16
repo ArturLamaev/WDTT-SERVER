@@ -16,7 +16,7 @@
 ## Состав
 
 ```
-├── src/proxy-turn-vk-android-1.4.3/   замороженное ядро qWDTT v1.4.3 (форк с лимитами)
+├── src/proxy-turn-vk-android-1.4.3/   замороженное ядро qWDTT v1.4.3 + диагностика/ссылки из 1.4.5 (форк с лимитами)
 ├── panel/                             замороженная панель 0.12.3 (форк) + её install.sh
 ├── wdtt-proxy/                        SOCKS5-шлюз (sing-box tun + policy routing) → /opt/wdtt-proxy
 ├── patches/                            диффы изменений относительно upstream
@@ -129,7 +129,7 @@ sudo systemctl restart wdtt
 
 ## Ссылки на upstream
 
-- Ядро: https://github.com/SpaceNeuroX/proxy-turn-vk-android (v1.4.3)
+- Ядро: https://github.com/SpaceNeuroX/proxy-turn-vk-android (v1.4.3 + диагностика из v1.4.5)
 - Панель: https://github.com/lebrit/wdtt-control-panel (0.12.3)
 - Проект-предок (svariant): https://github.com/ildarmaga/wdtt
 

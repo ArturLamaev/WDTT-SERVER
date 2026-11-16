@@ -50,7 +50,7 @@ from .core import (
 
 DB_FILE = Path(os.environ.get("WDTT_DB_FILE", "/etc/wdtt/passwords.json"))
 PANEL_STATE_DB = Path(os.environ.get("WDTT_PANEL_STATE", "/var/lib/wdtt-panel/panel.db"))
-VK_HASH_LIMIT = 4
+VK_HASH_LIMIT = 6  # qWDTT 1.4.5: до шести VK-хешей на ключ
 PANEL_LABELS_FILE = Path(os.environ.get("WDTT_PANEL_LABELS_FILE", "/var/lib/wdtt-panel-private/user-labels.json"))
 WDTT_EXTENSION_STATE = Path(os.environ.get("WDTT_EXTENSION_STATE", "/var/lib/wdtt-panel-private/wdtt-extensions.json"))
 WDTT_EXTENSION_MARKER = "wdtt-panel-extension-v10"
@@ -447,6 +447,41 @@ def telegram_test(payload: dict[str, Any]) -> dict[str, Any]:
     return {"sent": True, "admin_id": admin_id}
 
 
+DIAG_KEY_FILE = Path(os.environ.get("WDTT_DIAG_KEY_FILE", "/etc/wdtt/diag.key"))
+
+
+def read_diag_key() -> str:
+    """dk= для ссылок qwdtt://: base64url(32 байта diag.key) без паддинга.
+
+    Ключ создаёт ядро qWDTT 1.4.5 при первом старте (см. netdiag.go); панель
+    запускается под root, поэтому может прочитать файл напрямую. Нет файла —
+    ссылка остаётся legacy wdtt://.
+    """
+    try:
+        raw = DIAG_KEY_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    try:
+        secret = bytes.fromhex(raw)
+    except ValueError:
+        return ""
+    if len(secret) != 32:
+        return ""
+    return base64.urlsafe_b64encode(secret).decode("ascii").rstrip("=")
+
+
+def diag_link_fields(settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Данные для qwdtt:// ссылки: ключ диагностики и реальные порты ядра."""
+    if settings is None:
+        settings = load_wdtt_settings()
+    return {
+        "diag_key": read_diag_key(),
+        "dtls_port": int(settings.get("dtls_port") or 0),
+        "raw_port": int(settings.get("raw_port") or 0),
+        "direct_port": int(settings.get("direct_port") or 0),
+    }
+
+
 def empty_database() -> dict[str, Any]:
     return {
         "main_password": "",
@@ -726,7 +761,9 @@ def list_users() -> dict[str, Any]:
     data = load_database()
     panel_labels = {} if wdtt_extensions_are_verified() else load_panel_labels()
     handshakes = wireguard_handshakes()
-    window = int(load_wdtt_settings().get("online_window_s") or 75)
+    settings = load_wdtt_settings()
+    window = int(settings.get("online_window_s") or 75)
+    link_fields = diag_link_fields(settings)
     users = [
         connected_user_view(
             user_view(
@@ -740,6 +777,8 @@ def list_users() -> dict[str, Any]:
         for password, entry in data["passwords"].items()
     ]
     users.sort(key=lambda item: (item["expired"], item["is_deactivated"], item["password"]))
+    for user in users:
+        user.update(link_fields)
     records = _admin_device_records(data, handshakes, window)
     main_traffic_supported = "main_down_bytes" in data or "main_up_bytes" in data
     admins: list[dict[str, Any]] = []
@@ -929,7 +968,7 @@ def _missing_library_hashes(current: list[str], library: list[str]) -> list[str]
     return missing
 
 
-def ensure_four_hashes(entry: dict[str, Any], library: list[str]) -> bool:
+def ensure_hash_quota(entry: dict[str, Any], library: list[str]) -> bool:
     current = split_vk_hashes(str(entry.get("vk_hash") or ""))
     if len(current) >= VK_HASH_LIMIT:
         return False
@@ -961,7 +1000,7 @@ def fill_missing_hashes(payload: dict[str, Any]) -> dict[str, Any]:
     def apply(state: dict[str, Any]) -> dict[str, Any]:
         updated = 0
         for entry in state["passwords"].values():
-            if isinstance(entry, dict) and ensure_four_hashes(entry, library):
+            if isinstance(entry, dict) and ensure_hash_quota(entry, library):
                 updated += 1
         return {"updated": updated, "scanned": summary["scanned"], "library": len(library)}
 
@@ -1004,9 +1043,9 @@ def create_user(payload: dict[str, Any]) -> dict[str, Any]:
             "is_deactivated": bool(payload.get("is_deactivated", False)),
             **initial_traffic_fields(payload),
         }
-        ensure_four_hashes(entry, library)
+        ensure_hash_quota(entry, library)
         data["passwords"][password] = entry
-        return user_view(password, entry, data["devices"]).as_dict()
+        return {**user_view(password, entry, data["devices"]).as_dict(), **diag_link_fields()}
 
     result = mutate_database("create", apply)
     update_panel_label(password, label)
@@ -1033,6 +1072,7 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
     max_up_mbps = normalize_speed_mbps(payload.get("max_up_mbps"))
     is_deactivated = bool(payload.get("is_deactivated", False))
     label_prefix = normalize_user_label(str(payload.get("label_prefix") or ""))
+    link_fields = diag_link_fields()
 
     def apply(data: dict[str, Any]) -> dict[str, Any]:
         purge_expired(data)
@@ -1068,9 +1108,9 @@ def create_users_bulk(payload: dict[str, Any]) -> dict[str, Any]:
                 "is_deactivated": is_deactivated,
                 **initial_traffic_fields(payload),
             }
-            ensure_four_hashes(entry, library)
+            ensure_hash_quota(entry, library)
             data["passwords"][password] = entry
-            created.append(user_view(password, entry, data["devices"]).as_dict())
+            created.append({**user_view(password, entry, data["devices"]).as_dict(), **link_fields})
         return {"users": created, "count": len(created)}
 
     result = mutate_database("bulk-create", apply)
@@ -1096,7 +1136,7 @@ def update_user(payload: dict[str, Any]) -> dict[str, Any]:
             data["passwords"][replacement] = entry
         if "vk_hash" in payload:
             entry["vk_hash"] = normalize_hashes(str(payload["vk_hash"]))
-            ensure_four_hashes(entry, library)
+            ensure_hash_quota(entry, library)
         if "ports" in payload:
             entry["ports"] = validate_ports(str(payload["ports"]))
         if "max_devices" in payload:

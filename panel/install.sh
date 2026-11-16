@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # и оставалось лишь гадать, на каком шаге всё встало.
 trap 'printf "\n[wdtt-panel] ОШИБКА (код %s), строка %s: %s\n" "$?" "$LINENO" "$BASH_COMMAND" >&2; printf "[wdtt-panel] Лог установки: %s\n" "${LOG_FILE:-/var/log/wdtt-panel-install.log}" >&2' ERR
 
-PANEL_VERSION="2.4.0"
+PANEL_VERSION="2.5.0"
 PANEL_REPOSITORY="${WDTT_PANEL_REPOSITORY:-lebrit/wdtt-control-panel}"
 PANEL_BRANCH="${WDTT_PANEL_BRANCH:-main}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
